@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.local
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+uploads/public/*
+!uploads/public/.gitkeep
+uploads/private/*
+!uploads/private/.gitkeep
+
+public/*
+!public/.gitkeep

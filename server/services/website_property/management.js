@@ -1,0 +1,288 @@
+const { HttpError } = require('../../middleware/errors');
+const wp = require('../../db/queries/website_properties');
+const sellers = require('../../db/queries/sellers');
+const propertyFiles = require('../../db/queries/property_files');
+const imageUpload = require('../files/imageUpload');
+const documentUpload = require('../files/documentUpload');
+const excel = require('../files/excel');
+
+const PUBLIC_URL_PREFIX = '/uploads/public';
+
+const WEBSITE_HEADERS = [
+  'property_code', 'approval_status', 'is_active', 'is_featured',
+  'title', 'property_type', 'transaction_type', 'location',
+  'bhk', 'area_value', 'area_unit', 'price',
+  'seller_name', 'seller_type', 'seller_mobile', 'seller_email',
+  'leads_count', 'created_at', 'approved_at',
+];
+
+function websiteRowValues(r) {
+  return [
+    r.property_code,
+    r.approval_status,
+    r.is_active ? 'yes' : 'no',
+    r.is_featured ? 'yes' : 'no',
+    r.title,
+    r.property_type,
+    r.transaction_type,
+    r.location || '',
+    r.bhk || '',
+    r.area_value !== null && r.area_value !== undefined ? Number(r.area_value) : '',
+    r.area_unit || '',
+    Number(r.price) || 0,
+    r.seller_full_name || r.seller_name || '',
+    r.seller_user_type || '',
+    r.seller_mobile || '',
+    r.seller_email || '',
+    Number(r.leads_count) || 0,
+    r.created_at,
+    r.approved_at || '',
+  ];
+}
+
+function csvField(value) {
+  if (value === null || value === undefined) return '';
+  const s = String(value);
+  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+async function listProperties(query) {
+  const { rows, total } = await wp.list(query);
+  return {
+    data: rows.map(toListItem),
+    page: query.page,
+    pageSize: query.pageSize,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
+  };
+}
+
+async function getProperty(id) {
+  const row = await wp.findById(id);
+  if (!row) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  const [images, documents] = await Promise.all([
+    propertyFiles.listForProperty(null, 'website', id),
+    documentUpload.listPropertyDocuments('website', id),
+  ]);
+  return toDetail(row, images, documents);
+}
+
+async function createProperty(payload) {
+  const seller = await sellers.findById(payload.sellerId);
+  if (!seller) throw new HttpError(400, 'INVALID_SELLER', 'Seller not found');
+
+  const id = await wp.create({ ...payload, propertyCode: 'PENDING' });
+  const code = `WEB-${String(id).padStart(6, '0')}`;
+  await wp.updatePropertyCode(id, code);
+  return getProperty(id);
+}
+
+async function updateProperty(id, payload) {
+  const existing = await wp.findById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  await wp.update(id, payload);
+  return getProperty(id);
+}
+
+async function approveProperty(id, adminId) {
+  const existing = await wp.findById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  await wp.approve(id, adminId);
+  return getProperty(id);
+}
+
+async function rejectProperty(id, adminId, reason) {
+  const existing = await wp.findById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  await wp.reject(id, adminId, reason);
+  return getProperty(id);
+}
+
+async function setActive(id, isActive) {
+  const existing = await wp.findById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  await wp.setActive(id, isActive);
+  return getProperty(id);
+}
+
+async function setFeatured(id, isFeatured) {
+  const existing = await wp.findById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  await wp.setFeatured(id, isFeatured);
+  return getProperty(id);
+}
+
+async function removeProperty(id) {
+  const existing = await wp.findById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  await wp.softDelete(id);
+}
+
+async function addImages(id, files) {
+  const existing = await wp.findById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  await imageUpload.persistImages({ propertyKind: 'website', propertyId: id, files });
+  return getProperty(id);
+}
+
+async function removeImage(id, fileId) {
+  const existing = await wp.findById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  await imageUpload.deleteImage({ fileId, propertyKind: 'website', propertyId: id });
+  return getProperty(id);
+}
+
+async function addDocuments(id, files) {
+  const existing = await wp.findById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  await documentUpload.persistPropertyDocuments({ propertyKind: 'website', propertyId: id, files });
+  return getProperty(id);
+}
+
+async function removeDocument(id, fileId) {
+  const existing = await wp.findById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  await documentUpload.deletePropertyDocument({ fileId, propertyKind: 'website', propertyId: id });
+  return getProperty(id);
+}
+
+async function findDocument(fileId) {
+  return propertyFiles.findById(null, fileId);
+}
+
+async function streamDocument(res, file) {
+  return documentUpload.streamPropertyDocument(res, file);
+}
+
+async function suggest({ q, limit = 8 }) {
+  const { pool } = require('../../db/pool');
+  const where = [`wp.deleted_at IS NULL`];
+  const params = [];
+  if (q && q.trim()) {
+    where.push('(wp.property_code LIKE ? OR wp.title LIKE ? OR wp.location LIKE ? OR s.full_name LIKE ?)');
+    const t = `%${q.trim()}%`;
+    params.push(t, t, t, t);
+  }
+  const [rows] = await pool.query(
+    `SELECT wp.id, wp.property_code, wp.title, wp.location, wp.property_type,
+            wp.transaction_type, wp.price, wp.approval_status, wp.is_active,
+            s.full_name AS seller_name
+     FROM website_properties wp LEFT JOIN sellers s ON s.id = wp.seller_id
+     WHERE ${where.join(' AND ')}
+     ORDER BY wp.created_at DESC, wp.id DESC
+     LIMIT ?`,
+    [...params, Math.min(20, Math.max(1, limit))],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    propertyCode: r.property_code,
+    title: r.title,
+    location: r.location,
+    propertyType: r.property_type,
+    transactionType: r.transaction_type,
+    price: Number(r.price),
+    approvalStatus: r.approval_status,
+    isActive: Boolean(r.is_active),
+    sellerName: r.seller_name,
+  }));
+}
+
+function toListItem(row) {
+  return {
+    id: row.id,
+    propertyCode: row.property_code,
+    title: row.title,
+    propertyType: row.property_type,
+    transactionType: row.transaction_type,
+    location: row.location,
+    areaValue: row.area_value !== null ? Number(row.area_value) : null,
+    areaUnit: row.area_unit,
+    bhk: row.bhk,
+    price: Number(row.price),
+    approvalStatus: row.approval_status,
+    isActive: Boolean(row.is_active),
+    isFeatured: Boolean(row.is_featured),
+    approvedAt: row.approved_at,
+    rejectionReason: row.rejection_reason,
+    leadsCount: Number(row.leads_count || 0),
+    seller: {
+      id: row.seller_id,
+      name: row.seller_name,
+      type: row.seller_type,
+      email: row.seller_email,
+      mobile: row.seller_mobile,
+    },
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toDetail(row, images, documents = []) {
+  return {
+    ...toListItem(row),
+    description: row.description,
+    latitude: row.latitude !== null ? Number(row.latitude) : null,
+    longitude: row.longitude !== null ? Number(row.longitude) : null,
+    seller: {
+      id: row.seller_id,
+      name: row.seller_name,
+      type: row.seller_type,
+      email: row.seller_email,
+      mobile: row.seller_mobile,
+      agency: row.seller_agency,
+    },
+    documents: documents.map((f) => ({
+      id: f.id,
+      downloadPath: `/admin/website-properties/${row.id}/documents/${f.id}`,
+      originalName: f.original_name,
+      mimeType: f.mime_type,
+      sizeBytes: Number(f.size_bytes),
+    })),
+    images: images.map((f) => ({
+      id: f.id,
+      url: `${PUBLIC_URL_PREFIX}/${f.stored_name}`,
+      originalName: f.original_name,
+      mimeType: f.mime_type,
+      sizeBytes: Number(f.size_bytes),
+      sortOrder: f.sort_order,
+    })),
+  };
+}
+
+async function exportCsv(filters) {
+  const { rows } = await wp.list({ ...filters, page: 1, pageSize: 100000 });
+  const lines = [WEBSITE_HEADERS.join(',')];
+  for (const r of rows) lines.push(websiteRowValues(r).map(csvField).join(','));
+  return lines.join('\r\n');
+}
+
+async function exportXlsx(filters) {
+  const { rows } = await wp.list({ ...filters, page: 1, pageSize: 100000 });
+  return excel.buildWorkbook({
+    sheetName: 'Website Properties',
+    headers: WEBSITE_HEADERS,
+    rows: rows.map(websiteRowValues),
+  });
+}
+
+module.exports = {
+  listProperties,
+  getProperty,
+  createProperty,
+  updateProperty,
+  approveProperty,
+  rejectProperty,
+  setActive,
+  setFeatured,
+  removeProperty,
+  addImages,
+  removeImage,
+  addDocuments,
+  removeDocument,
+  findDocument,
+  streamDocument,
+  suggest,
+  exportCsv,
+  exportXlsx,
+};

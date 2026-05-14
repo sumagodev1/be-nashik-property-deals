@@ -1,0 +1,77 @@
+const express = require('express');
+const Joi = require('joi');
+
+const { validate } = require('../../middleware/validate');
+const { requireAuth, requireRole } = require('../../middleware/auth');
+const notifications = require('../../db/queries/notifications');
+
+const router = express.Router();
+
+// Auth: any logged-in admin or sub-admin can hit notifications endpoints.
+// Module-scoping is applied per-row inside the query (admins see all,
+// sub-admins see only notifications matching their assigned module_keys).
+router.use(requireAuth, requireRole('admin', 'sub_admin'));
+
+const listQuery = Joi.object({
+  isRead: Joi.boolean().optional(),
+  limit: Joi.number().integer().min(1).max(100).default(50),
+  offset: Joi.number().integer().min(0).default(0),
+});
+
+const idParam = Joi.object({ id: Joi.number().integer().positive().required() });
+
+function allowedModulesFor(req) {
+  // Admin sees everything (null = no module filter).
+  // Sub-admin sees only notifications whose module_key is null OR in their modules.
+  if (req.auth.role === 'admin') return null;
+  return Array.isArray(req.auth.modules) ? req.auth.modules : [];
+}
+
+router.get('/', validate(listQuery, 'query'), async (req, res, next) => {
+  try {
+    const { rows, total } = await notifications.list({
+      allowedModules: allowedModulesFor(req),
+      isRead: req.query.isRead,
+      limit: req.query.limit,
+      offset: req.query.offset,
+    });
+    res.json({ data: rows.map(toItem), total, limit: req.query.limit, offset: req.query.offset });
+  } catch (e) { next(e); }
+});
+
+router.get('/unread-count', async (req, res, next) => {
+  try {
+    const count = await notifications.unreadCount({ allowedModules: allowedModulesFor(req) });
+    res.json({ count });
+  } catch (e) { next(e); }
+});
+
+router.patch('/:id/read', validate(idParam, 'params'), async (req, res, next) => {
+  try {
+    const ok = await notifications.markRead(req.params.id);
+    res.json({ ok });
+  } catch (e) { next(e); }
+});
+
+router.post('/read-all', async (req, res, next) => {
+  try {
+    const updated = await notifications.markAllRead({ allowedModules: allowedModulesFor(req) });
+    res.json({ updated });
+  } catch (e) { next(e); }
+});
+
+function toItem(row) {
+  return {
+    id: row.id,
+    kind: row.kind,
+    title: row.title,
+    body: row.body,
+    relatedKind: row.related_kind,
+    relatedId: row.related_id !== null ? Number(row.related_id) : null,
+    moduleKey: row.module_key,
+    isRead: Boolean(row.is_read),
+    createdAt: row.created_at,
+  };
+}
+
+module.exports = router;

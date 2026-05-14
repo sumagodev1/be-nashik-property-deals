@@ -1,0 +1,161 @@
+/**
+ * Seller-scoped property operations. Every function takes the authenticated
+ * seller id and refuses to touch rows owned by someone else.
+ */
+
+const { pool } = require('../../db/pool');
+const { HttpError } = require('../../middleware/errors');
+const wp = require('../../db/queries/website_properties');
+const propertyFiles = require('../../db/queries/property_files');
+const imageUpload = require('../files/imageUpload');
+
+const PUBLIC_URL_PREFIX = '/uploads/public';
+const SORTABLE_COLUMNS = {
+  created_at: 'created_at',
+  price: 'price',
+  approval_status: 'approval_status',
+};
+
+function buildOrderBy(sort) {
+  const [col, dir] = (sort || 'created_at:desc').split(':');
+  const safeCol = SORTABLE_COLUMNS[col] || 'created_at';
+  const safeDir = dir && dir.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  return `ORDER BY ${safeCol} ${safeDir}, id DESC`;
+}
+
+async function listOwn(sellerId, { page, pageSize, sort }) {
+  const offset = (page - 1) * pageSize;
+  const orderSql = buildOrderBy(sort);
+
+  const [[{ total }]] = await pool.query(
+    `SELECT COUNT(*) AS total FROM website_properties WHERE seller_id = ? AND deleted_at IS NULL`,
+    [sellerId],
+  );
+
+  const [rows] = await pool.query(
+    `SELECT id, property_code, title, property_type, transaction_type, location,
+            area_value, area_unit, bhk, price, approval_status, is_active, is_featured,
+            approved_at, rejection_reason, created_at, updated_at
+     FROM website_properties
+     WHERE seller_id = ? AND deleted_at IS NULL
+     ${orderSql}
+     LIMIT ? OFFSET ?`,
+    [sellerId, pageSize, offset],
+  );
+
+  return {
+    data: rows.map(toListItem),
+    page,
+    pageSize,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+  };
+}
+
+async function getOwn(sellerId, id) {
+  const property = await loadOwnOrThrow(sellerId, id);
+  const images = await propertyFiles.listForProperty(null, 'website', property.id);
+  return toDetail(property, images);
+}
+
+async function createOwn(sellerId, payload) {
+  const id = await wp.create({
+    ...payload,
+    sellerId,
+    propertyCode: 'PENDING',
+    approvalStatus: 'pending',
+    isActive: true,
+  });
+  const code = `WEB-${String(id).padStart(6, '0')}`;
+  await wp.updatePropertyCode(id, code);
+  return getOwn(sellerId, id);
+}
+
+async function updateOwn(sellerId, id, payload) {
+  const existing = await loadOwnOrThrow(sellerId, id);
+  if (existing.approval_status === 'approved') {
+    throw new HttpError(
+      409,
+      'NOT_EDITABLE',
+      'This listing is already approved and live. Contact support to request a change.',
+    );
+  }
+  await wp.update(id, payload);
+  return getOwn(sellerId, id);
+}
+
+async function removeOwn(sellerId, id) {
+  await loadOwnOrThrow(sellerId, id);
+  await wp.softDelete(id);
+}
+
+async function addImages(sellerId, id, files) {
+  await loadOwnOrThrow(sellerId, id);
+  await imageUpload.persistImages({ propertyKind: 'website', propertyId: id, files });
+  return getOwn(sellerId, id);
+}
+
+async function removeImage(sellerId, id, fileId) {
+  await loadOwnOrThrow(sellerId, id);
+  await imageUpload.deleteImage({ fileId, propertyKind: 'website', propertyId: id });
+  return getOwn(sellerId, id);
+}
+
+async function loadOwnOrThrow(sellerId, id) {
+  const row = await wp.findById(id);
+  if (!row || Number(row.seller_id) !== Number(sellerId)) {
+    // Mirror the "not found" response for both unknown and not-owned rows
+    // so seller can't probe other sellers' property ids.
+    throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  }
+  return row;
+}
+
+function toListItem(row) {
+  return {
+    id: row.id,
+    propertyCode: row.property_code,
+    title: row.title,
+    propertyType: row.property_type,
+    transactionType: row.transaction_type,
+    location: row.location,
+    areaValue: row.area_value !== null ? Number(row.area_value) : null,
+    areaUnit: row.area_unit,
+    bhk: row.bhk,
+    price: Number(row.price),
+    approvalStatus: row.approval_status,
+    isActive: Boolean(row.is_active),
+    isFeatured: Boolean(row.is_featured),
+    approvedAt: row.approved_at,
+    rejectionReason: row.rejection_reason,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toDetail(row, images) {
+  return {
+    ...toListItem(row),
+    description: row.description,
+    latitude: row.latitude !== null ? Number(row.latitude) : null,
+    longitude: row.longitude !== null ? Number(row.longitude) : null,
+    images: images.map((f) => ({
+      id: f.id,
+      url: `${PUBLIC_URL_PREFIX}/${f.stored_name}`,
+      originalName: f.original_name,
+      mimeType: f.mime_type,
+      sizeBytes: Number(f.size_bytes),
+      sortOrder: f.sort_order,
+    })),
+  };
+}
+
+module.exports = {
+  listOwn,
+  getOwn,
+  createOwn,
+  updateOwn,
+  removeOwn,
+  addImages,
+  removeImage,
+};
