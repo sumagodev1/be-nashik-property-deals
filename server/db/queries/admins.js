@@ -34,4 +34,19 @@ async function create({ email, passwordHash, fullName }) {
   return result.insertId;
 }
 
-module.exports = { findActiveByEmail, findActiveById, updateLastLogin, create };
+async function updatePassword(id, passwordHash) {
+  await pool.query(
+    `UPDATE admins
+     SET password_hash = ?
+     WHERE id = ? AND deleted_at IS NULL`,
+    [passwordHash, id],
+  );
+}
+
+module.exports = {
+  findActiveByEmail,
+  findActiveById,
+  updateLastLogin,
+  create,
+  updatePassword,
+};

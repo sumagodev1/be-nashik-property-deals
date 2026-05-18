@@ -5,11 +5,8 @@ const { validate } = require('../../middleware/validate');
 const { requireAuth, requireRole } = require('../../middleware/auth');
 const { imageUploadMiddleware } = require('../../middleware/imageMulter');
 const sellerProperties = require('../../services/seller/properties');
-const {
-  PROPERTY_TYPES,
-  TRANSACTION_TYPES,
-  AREA_UNITS,
-} = require('../../constants/property');
+const { AREA_UNITS } = require('../../constants/property');
+const masterCodeField = Joi.string().trim().lowercase().pattern(/^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$/);
 const { HttpError } = require('../../middleware/errors');
 
 const router = express.Router();
@@ -37,14 +34,14 @@ const listQuery = Joi.object({
 const propertyBody = Joi.object({
   title: titleField.required(),
   description: descField.optional(),
-  propertyType: Joi.string().valid(...PROPERTY_TYPES).required(),
-  transactionType: Joi.string().valid(...TRANSACTION_TYPES).required(),
+  propertyType: masterCodeField.required(),
+  transactionType: masterCodeField.required(),
   location: locField.required(),
   latitude: Joi.number().min(-90).max(90).optional().allow(null),
   longitude: Joi.number().min(-180).max(180).optional().allow(null),
   areaValue: Joi.number().min(0).optional().allow(null),
   areaUnit: Joi.string().valid(...AREA_UNITS).optional().allow('', null),
-  bhk: Joi.string().trim().max(16).optional().allow('', null),
+  bhk: masterCodeField.optional().allow('', null),
   price: Joi.number().min(0).required(),
 });
 

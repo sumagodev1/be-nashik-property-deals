@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { HttpError } = require('../../middleware/errors');
 const wp = require('../../db/queries/website_properties');
 const sellers = require('../../db/queries/sellers');
@@ -5,6 +6,14 @@ const propertyFiles = require('../../db/queries/property_files');
 const imageUpload = require('../files/imageUpload');
 const documentUpload = require('../files/documentUpload');
 const excel = require('../files/excel');
+const { assignUniqueCode } = require('../properties/propertyCode');
+const masters = require('../masters/management');
+
+async function validateMasterCodes(payload) {
+  await masters.assertActiveCode('property_type', payload.propertyType);
+  await masters.assertActiveCode('transaction_type', payload.transactionType);
+  await masters.assertActiveCode('flat_type', payload.bhk);
+}
 
 const PUBLIC_URL_PREFIX = '/uploads/public';
 
@@ -69,16 +78,29 @@ async function getProperty(id) {
 }
 
 async function createProperty(payload) {
+  await validateMasterCodes(payload);
   const seller = await sellers.findById(payload.sellerId);
   if (!seller) throw new HttpError(400, 'INVALID_SELLER', 'Seller not found');
 
-  const id = await wp.create({ ...payload, propertyCode: 'PENDING' });
-  const code = `WEB-${String(id).padStart(6, '0')}`;
-  await wp.updatePropertyCode(id, code);
+  // property_code is UNIQUE in MySQL. Insert with a UUID placeholder so
+  // concurrent creates can never collide on the constraint, then assign
+  // the final NSK-<TYPE>-YY-XXXXXX code with retry-on-collision.
+  const tmpCode = `TMP-${crypto.randomUUID()}`;
+  const id = await wp.create({ ...payload, propertyCode: tmpCode });
+  await assignUniqueCode(payload.propertyType, async (code) => {
+    try {
+      await wp.updatePropertyCode(id, code);
+      return true;
+    } catch (err) {
+      if (err && err.code === 'ER_DUP_ENTRY') return false;
+      throw err;
+    }
+  });
   return getProperty(id);
 }
 
 async function updateProperty(id, payload) {
+  await validateMasterCodes(payload);
   const existing = await wp.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   await wp.update(id, payload);

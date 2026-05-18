@@ -5,11 +5,8 @@ const { validate } = require('../../middleware/validate');
 const { requireAuth, requireModule } = require('../../middleware/auth');
 const { imageUploadMiddleware, documentUploadMiddleware } = require('../../middleware/imageMulter');
 const management = require('../../services/website_property/management');
-const {
-  PROPERTY_TYPES,
-  TRANSACTION_TYPES,
-  AREA_UNITS,
-} = require('../../constants/property');
+const { AREA_UNITS } = require('../../constants/property');
+const masterCodeField = Joi.string().trim().lowercase().pattern(/^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$/);
 const { APPROVAL_STATUSES } = require('../../constants/website');
 const { MODULES } = require('../../constants/modules');
 const { HttpError } = require('../../middleware/errors');
@@ -32,8 +29,8 @@ const listQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   pageSize: Joi.number().integer().min(1).max(100).default(10),
   search: Joi.string().trim().max(255).allow('').optional(),
-  propertyType: Joi.string().valid(...PROPERTY_TYPES).optional(),
-  transactionType: Joi.string().valid(...TRANSACTION_TYPES).optional(),
+  propertyType: masterCodeField.optional(),
+  transactionType: masterCodeField.optional(),
   approvalStatus: Joi.string().valid(...APPROVAL_STATUSES).optional(),
   isActive: Joi.boolean().optional(),
   isFeatured: Joi.boolean().optional(),
@@ -51,14 +48,14 @@ const createBody = Joi.object({
   sellerId: Joi.number().integer().positive().required(),
   title: titleField.required(),
   description: descField.optional(),
-  propertyType: Joi.string().valid(...PROPERTY_TYPES).required(),
-  transactionType: Joi.string().valid(...TRANSACTION_TYPES).required(),
+  propertyType: masterCodeField.required(),
+  transactionType: masterCodeField.required(),
   location: locField.required(),
   latitude: Joi.number().min(-90).max(90).optional().allow(null),
   longitude: Joi.number().min(-180).max(180).optional().allow(null),
   areaValue: Joi.number().min(0).optional().allow(null),
   areaUnit: Joi.string().valid(...AREA_UNITS).optional().allow('', null),
-  bhk: Joi.string().trim().max(16).optional().allow('', null),
+  bhk: masterCodeField.optional().allow('', null),
   price: Joi.number().min(0).required(),
   approvalStatus: Joi.string().valid(...APPROVAL_STATUSES).default('pending'),
   isActive: Joi.boolean().default(true),
@@ -67,14 +64,14 @@ const createBody = Joi.object({
 const updateBody = Joi.object({
   title: titleField.required(),
   description: descField.optional(),
-  propertyType: Joi.string().valid(...PROPERTY_TYPES).required(),
-  transactionType: Joi.string().valid(...TRANSACTION_TYPES).required(),
+  propertyType: masterCodeField.required(),
+  transactionType: masterCodeField.required(),
   location: locField.required(),
   latitude: Joi.number().min(-90).max(90).optional().allow(null),
   longitude: Joi.number().min(-180).max(180).optional().allow(null),
   areaValue: Joi.number().min(0).optional().allow(null),
   areaUnit: Joi.string().valid(...AREA_UNITS).optional().allow('', null),
-  bhk: Joi.string().trim().max(16).optional().allow('', null),
+  bhk: masterCodeField.optional().allow('', null),
   price: Joi.number().min(0).required(),
 });
 

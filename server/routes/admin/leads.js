@@ -54,6 +54,16 @@ router.get('/export.xlsx', validate(exportQuery, 'query'), async (req, res, next
   } catch (e) { next(e); }
 });
 
+router.get('/export.pdf', validate(exportQuery, 'query'), async (req, res, next) => {
+  try {
+    const buffer = await leadsService.exportPdf(req.query);
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="leads-${stamp}.pdf"`);
+    res.send(buffer);
+  } catch (e) { next(e); }
+});
+
 router.get('/:id', validate(idParam, 'params'), async (req, res, next) => {
   try { res.json(await leadsService.getLead(req.params.id)); } catch (e) { next(e); }
 });

@@ -9,6 +9,7 @@ const cms = require('./cms');
 const emailOutbox = require('./email-outbox');
 const notifications = require('./notifications');
 const constants = require('./constants');
+const masters = require('./masters');
 const { MODULE_KEYS } = require('../../constants/modules');
 const { requireAuth, requireRole } = require('../../middleware/auth');
 
@@ -24,6 +25,7 @@ router.use('/cms', cms);
 router.use('/email-outbox', emailOutbox);
 router.use('/notifications', notifications);
 router.use('/constants', constants);
+router.use('/masters', masters);
 
 router.get('/modules', requireAuth, requireRole('admin'), (req, res) => {
   res.json({ modules: MODULE_KEYS });

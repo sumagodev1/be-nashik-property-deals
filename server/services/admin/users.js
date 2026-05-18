@@ -3,6 +3,7 @@ const sellersRepo = require('../../db/queries/sellers');
 const buyersRepo = require('../../db/queries/users_buyers');
 const documentUpload = require('../files/documentUpload');
 const excel = require('../files/excel');
+const pdf = require('../files/pdf');
 
 async function listSellers(filters) {
   const { rows, total } = await sellersRepo.listForAdmin(filters);
@@ -61,46 +62,104 @@ async function removeSeller(id) {
   await sellersRepo.softDelete(id);
 }
 
-const SELLER_HEADERS = [
-  'seller_id', 'user_type', 'full_name', 'mobile', 'email',
-  'alternate_contact', 'agency_name', 'business_address', 'area',
-  'is_active', 'is_verified', 'listing_count', 'created_at',
+function sellerStatusLabel(r) {
+  if (!r.is_active) return 'Inactive';
+  return r.is_verified ? 'Active' : 'Unverified';
+}
+
+function formatDateIN(value) {
+  if (!value) return '';
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric',
+  });
+}
+
+// Single source of truth for the Sellers report — CSV / XLSX / PDF.
+const SELLER_COLUMNS = [
+  { label: 'Sr. No.',    key: 'sr',         width: 8,  pdf: { weight: 0.7, align: 'center' },
+    value: (_r, i) => i + 1 },
+  { label: 'Type',       key: 'type',       width: 10, pdf: { weight: 0.9, align: 'center' },
+    value: (r) => r.user_type === 'agent' ? 'Agent' : 'Owner' },
+  { label: 'Name',       key: 'name',       width: 24, pdf: { weight: 2.0 },
+    value: (r) => r.full_name || '' },
+  { label: 'Mobile',     key: 'mobile',     width: 14, excelText: true, pdf: { weight: 1.5, noWrap: true },
+    value: (r) => r.mobile_number || '' },
+  { label: 'Email',      key: 'email',      width: 28, pdf: { weight: 2.2 },
+    value: (r) => r.email || '' },
+  { label: 'Agency',     key: 'agency',     width: 22, pdf: { weight: 1.6 },
+    value: (r) => r.agency_name || '' },
+  { label: 'Area',       key: 'area',       width: 18, pdf: { weight: 1.2 },
+    value: (r) => r.area || '' },
+  { label: 'Listings',   key: 'listings',   width: 10, pdf: { weight: 0.8, align: 'center' },
+    value: (r) => Number(r.listing_count || 0) },
+  { label: 'Status',     key: 'status',     width: 12, pdf: { weight: 1.0, align: 'center' },
+    value: sellerStatusLabel },
+  { label: 'Registered', key: 'registered', width: 14, pdf: { weight: 1.3, noWrap: true },
+    value: (r) => formatDateIN(r.created_at) },
+  { label: 'Alt. Contact',     key: 'alternateContact', width: 16, excelText: true,
+    value: (r) => r.alternate_contact || '' },
+  { label: 'Business Address', key: 'businessAddress',  width: 32,
+    value: (r) => r.business_address || '' },
 ];
 
-function sellerRowValues(r) {
-  return [
-    r.id,
-    r.user_type,
-    r.full_name || '',
-    r.mobile_number || '',
-    r.email || '',
-    r.alternate_contact || '',
-    r.agency_name || '',
-    r.business_address || '',
-    r.area || '',
-    r.is_active ? 1 : 0,
-    r.is_verified ? 1 : 0,
-    Number(r.listing_count || 0),
-    r.created_at,
-  ];
+function prepareSellerReport(rawRows) {
+  return rawRows.map((r, i) => {
+    const out = {};
+    for (const col of SELLER_COLUMNS) out[col.key] = col.value(r, i);
+    return out;
+  });
 }
 
 async function exportSellersCsv(filters) {
   const rows = await sellersRepo.listForExport(filters);
-  const lines = [SELLER_HEADERS.join(',')];
-  for (const r of rows) {
-    lines.push(sellerRowValues(r).map(csvField).join(','));
+  const data = prepareSellerReport(rows);
+  const BOM = '﻿';
+  const lines = [SELLER_COLUMNS.map((c) => c.label).join(',')];
+  for (const row of data) {
+    lines.push(SELLER_COLUMNS.map((col) => csvCell(row[col.key], col)).join(','));
   }
-  return lines.join('\r\n');
+  return BOM + lines.join('\r\n');
 }
 
 async function exportSellersXlsx(filters) {
   const rows = await sellersRepo.listForExport(filters);
-  return excel.buildWorkbook({
+  const data = prepareSellerReport(rows);
+  return excel.buildWorkbookFromColumns({
     sheetName: 'Sellers',
-    headers: SELLER_HEADERS,
-    rows: rows.map(sellerRowValues),
+    columns: SELLER_COLUMNS.map((c) => ({
+      label: c.label,
+      key: c.key,
+      width: c.width,
+      type: c.excelText ? 's' : undefined,
+    })),
+    rows: data,
   });
+}
+
+const SELLER_PDF_KEYS = ['sr', 'type', 'name', 'mobile', 'email', 'agency', 'area', 'listings', 'status', 'registered'];
+const SELLER_PDF_COLUMNS = SELLER_COLUMNS
+  .filter((c) => SELLER_PDF_KEYS.includes(c.key))
+  .map((c) => ({ label: c.label, key: c.key, ...(c.pdf || {}) }));
+
+async function exportSellersPdf(filters) {
+  const rows = await sellersRepo.listForExport(filters);
+  const data = prepareSellerReport(rows);
+  return pdf.buildTablePdf({
+    title: 'Sellers',
+    subtitle: `${rows.length} seller record${rows.length === 1 ? '' : 's'}`,
+    columns: SELLER_PDF_COLUMNS,
+    rows: data,
+  });
+}
+
+function csvCell(value, col) {
+  if (value === null || value === undefined) return '';
+  const s = String(value);
+  if (col.excelText && s !== '') return `="${s.replace(/"/g, '""')}"`;
+  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
 }
 
 async function listBuyers(filters) {
@@ -112,13 +171,6 @@ async function listBuyers(filters) {
     total,
     totalPages: Math.max(1, Math.ceil(total / filters.pageSize)),
   };
-}
-
-function csvField(value) {
-  if (value === null || value === undefined) return '';
-  const s = String(value);
-  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
 }
 
 function toSellerListItem(row) {
@@ -185,5 +237,6 @@ module.exports = {
   removeSeller,
   exportSellersCsv,
   exportSellersXlsx,
+  exportSellersPdf,
   listBuyers,
 };

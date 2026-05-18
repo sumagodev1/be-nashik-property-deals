@@ -6,11 +6,13 @@ const { requireAuth, requireModule } = require('../../middleware/auth');
 const { imageUploadMiddleware, documentUploadMiddleware } = require('../../middleware/imageMulter');
 const management = require('../../services/inventory/management');
 const {
-  PROPERTY_TYPES,
-  TRANSACTION_TYPES,
-  INVENTORY_STATUSES,
   AREA_UNITS,
 } = require('../../constants/property');
+
+// Master codes are validated semantically in the service layer against the
+// current master_* tables (which the admin can edit). The shape check below
+// just ensures the value looks like a master code so we fail fast on garbage.
+const masterCodeField = Joi.string().trim().lowercase().pattern(/^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$/);
 const { MODULES } = require('../../constants/modules');
 const { HttpError } = require('../../middleware/errors');
 
@@ -34,9 +36,9 @@ const listQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   pageSize: Joi.number().integer().min(1).max(100).default(10),
   search: Joi.string().trim().max(255).allow('').optional(),
-  propertyType: Joi.string().valid(...PROPERTY_TYPES).optional(),
-  transactionType: Joi.string().valid(...TRANSACTION_TYPES).optional(),
-  status: Joi.string().valid(...INVENTORY_STATUSES).optional(),
+  propertyType: masterCodeField.optional(),
+  transactionType: masterCodeField.optional(),
+  status: masterCodeField.optional(),
   location: Joi.string().trim().max(255).optional(),
   priceMin: Joi.number().min(0).optional(),
   priceMax: Joi.number().min(0).optional(),
@@ -53,8 +55,8 @@ const listQuery = Joi.object({
 const propertyBody = Joi.object({
   title: titleField.required(),
   description: descField.optional(),
-  propertyType: Joi.string().valid(...PROPERTY_TYPES).when('isDraft', { is: true, then: Joi.optional(), otherwise: Joi.required() }),
-  transactionType: Joi.string().valid(...TRANSACTION_TYPES).when('isDraft', { is: true, then: Joi.optional(), otherwise: Joi.required() }),
+  propertyType: masterCodeField.when('isDraft', { is: true, then: Joi.optional(), otherwise: Joi.required() }),
+  transactionType: masterCodeField.when('isDraft', { is: true, then: Joi.optional(), otherwise: Joi.required() }),
   location: Joi.alternatives().conditional('isDraft', {
     is: true,
     then: locField.optional().allow('', null),
@@ -62,9 +64,9 @@ const propertyBody = Joi.object({
   }),
   areaValue: Joi.number().min(0).optional().allow(null),
   areaUnit: Joi.string().valid(...AREA_UNITS).optional().allow('', null),
-  bhk: Joi.string().trim().max(16).optional().allow('', null),
+  bhk: masterCodeField.optional().allow('', null),
   price: Joi.number().min(0).when('isDraft', { is: true, then: Joi.optional(), otherwise: Joi.required() }),
-  status: Joi.string().valid(...INVENTORY_STATUSES).default('available'),
+  status: masterCodeField.default('available'),
   isDraft: Joi.boolean().default(false),
   ownerName: personField.optional(),
   ownerContact: phoneField.optional(),
@@ -73,7 +75,7 @@ const propertyBody = Joi.object({
 });
 
 const statusBody = Joi.object({
-  status: Joi.string().valid(...INVENTORY_STATUSES).required(),
+  status: masterCodeField.required(),
 });
 
 const suggestQuery = Joi.object({

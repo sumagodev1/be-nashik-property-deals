@@ -7,6 +7,7 @@ const MODULES = Object.freeze({
   LEAD_MANAGEMENT: 'lead_management',
   USER_MANAGEMENT: 'user_management',
   CMS_MANAGEMENT: 'cms_management',
+  MASTER_MANAGEMENT: 'master_management',
 });
 
 const MODULE_KEYS = Object.values(MODULES);

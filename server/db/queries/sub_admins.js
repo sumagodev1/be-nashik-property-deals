@@ -11,6 +11,20 @@ async function findActiveByEmail(email) {
   return rows[0] || null;
 }
 
+// Like findActiveByEmail but also returns rows where is_active = 0.
+// Used by the login flow so we can distinguish "wrong password" from
+// "account is deactivated" after the password has been verified.
+async function findByEmail(email) {
+  const [rows] = await pool.query(
+    `SELECT id, email, password_hash, full_name, is_active
+     FROM sub_admins
+     WHERE email = ? AND deleted_at IS NULL
+     LIMIT 1`,
+    [email],
+  );
+  return rows[0] || null;
+}
+
 async function findById(id) {
   const [rows] = await pool.query(
     `SELECT id, email, full_name, is_active, last_login_at, created_at, updated_at
@@ -111,6 +125,7 @@ async function updateLastLogin(id) {
 
 module.exports = {
   findActiveByEmail,
+  findByEmail,
   findById,
   findActiveById,
   emailTaken,

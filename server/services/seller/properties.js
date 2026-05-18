@@ -3,11 +3,20 @@
  * seller id and refuses to touch rows owned by someone else.
  */
 
+const crypto = require('crypto');
 const { pool } = require('../../db/pool');
 const { HttpError } = require('../../middleware/errors');
 const wp = require('../../db/queries/website_properties');
 const propertyFiles = require('../../db/queries/property_files');
 const imageUpload = require('../files/imageUpload');
+const { assignUniqueCode } = require('../properties/propertyCode');
+const masters = require('../masters/management');
+
+async function validateMasterCodes(payload) {
+  await masters.assertActiveCode('property_type', payload.propertyType);
+  await masters.assertActiveCode('transaction_type', payload.transactionType);
+  await masters.assertActiveCode('flat_type', payload.bhk);
+}
 
 const PUBLIC_URL_PREFIX = '/uploads/public';
 const SORTABLE_COLUMNS = {
@@ -59,19 +68,32 @@ async function getOwn(sellerId, id) {
 }
 
 async function createOwn(sellerId, payload) {
+  await validateMasterCodes(payload);
+  // property_code is UNIQUE in MySQL. Insert with a UUID placeholder so
+  // concurrent submissions can never collide on the constraint, then assign
+  // the final NSK-<TYPE>-YY-XXXXXX code with retry-on-collision.
+  const tmpCode = `TMP-${crypto.randomUUID()}`;
   const id = await wp.create({
     ...payload,
     sellerId,
-    propertyCode: 'PENDING',
+    propertyCode: tmpCode,
     approvalStatus: 'pending',
     isActive: true,
   });
-  const code = `WEB-${String(id).padStart(6, '0')}`;
-  await wp.updatePropertyCode(id, code);
+  await assignUniqueCode(payload.propertyType, async (code) => {
+    try {
+      await wp.updatePropertyCode(id, code);
+      return true;
+    } catch (err) {
+      if (err && err.code === 'ER_DUP_ENTRY') return false;
+      throw err;
+    }
+  });
   return getOwn(sellerId, id);
 }
 
 async function updateOwn(sellerId, id, payload) {
+  await validateMasterCodes(payload);
   const existing = await loadOwnOrThrow(sellerId, id);
   if (existing.approval_status === 'approved') {
     throw new HttpError(

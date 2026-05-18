@@ -1,9 +1,19 @@
+const crypto = require('crypto');
 const { HttpError } = require('../../middleware/errors');
 const inventory = require('../../db/queries/inventory_properties');
 const propertyFiles = require('../../db/queries/property_files');
 const imageUpload = require('../files/imageUpload');
 const documentUpload = require('../files/documentUpload');
 const excel = require('../files/excel');
+const { assignUniqueCode } = require('../properties/propertyCode');
+const masters = require('../masters/management');
+
+async function validateMasterCodes(payload) {
+  await masters.assertActiveCode('property_type', payload.propertyType);
+  await masters.assertActiveCode('transaction_type', payload.transactionType);
+  await masters.assertActiveCode('flat_type', payload.bhk);
+  await masters.assertActiveCode('status_type', payload.status);
+}
 
 const PUBLIC_URL_PREFIX = '/uploads/public';
 
@@ -67,30 +77,36 @@ async function getProperty(id) {
 }
 
 async function createProperty(payload) {
-  const id = await inventory.create({ ...payload, propertyCode: 'PENDING' });
-  // Drafts get a DRAFT- prefix so they're visually obvious in any export/log.
-  const prefix = payload.isDraft ? 'DRAFT' : 'INV';
-  const code = `${prefix}-${String(id).padStart(6, '0')}`;
-  await inventory.updatePropertyCode(id, code);
+  await validateMasterCodes(payload);
+  // property_code is UNIQUE in MySQL. Insert with a UUID placeholder so
+  // concurrent creates can never collide on the constraint, then assign
+  // the final NSK-<TYPE>-YY-XXXXXX code with retry-on-collision.
+  const tmpCode = `TMP-${crypto.randomUUID()}`;
+  const id = await inventory.create({ ...payload, propertyCode: tmpCode });
+  await assignUniqueCode(payload.propertyType, async (code) => {
+    try {
+      await inventory.updatePropertyCode(id, code);
+      return true;
+    } catch (err) {
+      if (err && err.code === 'ER_DUP_ENTRY') return false;
+      throw err;
+    }
+  });
   return getProperty(id);
 }
 
 async function updateProperty(id, payload) {
+  await validateMasterCodes(payload);
   const existing = await inventory.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   await inventory.update(id, payload);
-  // If transitioning out of (or into) draft, rename the code prefix.
-  const wasDraft = Boolean(existing.is_draft);
-  const willBeDraft = Boolean(payload.isDraft);
-  if (wasDraft && !willBeDraft && existing.property_code?.startsWith('DRAFT-')) {
-    await inventory.updatePropertyCode(id, `INV-${String(id).padStart(6, '0')}`);
-  } else if (!wasDraft && willBeDraft && existing.property_code?.startsWith('INV-')) {
-    await inventory.updatePropertyCode(id, `DRAFT-${String(id).padStart(6, '0')}`);
-  }
+  // Code format is independent of draft state — the UI surfaces draft
+  // separately via the is_draft column, so no renaming on toggle.
   return getProperty(id);
 }
 
 async function updateStatus(id, status) {
+  await masters.assertActiveCode('status_type', status);
   const existing = await inventory.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   await inventory.updateStatus(id, status);

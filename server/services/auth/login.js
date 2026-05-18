@@ -32,10 +32,21 @@ async function login({ email, password }) {
     };
   }
 
-  const sub = await subAdmins.findActiveByEmail(email);
+  // Look up sub admin INCLUDING inactive rows. We verify the password first
+  // (so an attacker can't enumerate which accounts are deactivated without
+  // knowing the password), then surface ACCOUNT_INACTIVE if the row is
+  // present but is_active = 0.
+  const sub = await subAdmins.findByEmail(email);
   if (sub) {
     const ok = await bcrypt.compare(password, sub.password_hash);
     if (!ok) throw GENERIC_FAILURE;
+    if (!sub.is_active) {
+      throw new HttpError(
+        403,
+        'ACCOUNT_INACTIVE',
+        'Sub admin account is not active. Contact the administrator to reactivate.',
+      );
+    }
     const modules = await subAdminModules.listForSubAdmin(sub.id);
     await subAdmins.updateLastLogin(sub.id);
     const token = signAccessToken({ subjectId: sub.id, role: 'sub_admin', modules });
