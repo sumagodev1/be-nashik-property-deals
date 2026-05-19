@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('total:', d.get\\('total'\\), 'count:', len\\(d.get\\('data',[]\\)\\)\\)\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('total:', d.get\\('total'\\), 'first id+price:', d.get\\('data',[{}]\\)[0].get\\('id'\\), d.get\\('data',[{}]\\)[0].get\\('price'\\)\\)\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('total:', d.get\\('total'\\)\\)\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('total:', d.get\\('total'\\), '\\(was returning 1 before fix - silently ignored\\)'\\)\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('total:', d.get\\('total'\\), '\\(unknown keys stripped, defaults to sort=latest\\)'\\)\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('response:', json.dumps\\(d\\)[:200]\\)\")",
+      "Bash(mysql *)"
+    ]
+  }
+}
