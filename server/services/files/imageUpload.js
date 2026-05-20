@@ -40,7 +40,7 @@ function ensureDirSync(dir) {
  * @param {Array<{originalname: string, mimetype: string, buffer: Buffer, size: number}>} ctx.files
  * @returns {Promise<Array<{id:number, storedName:string, originalName:string, mimeType:string, sizeBytes:number, sortOrder:number}>>}
  */
-async function persistImages({ propertyKind, propertyId, files }) {
+async function persistImages({ propertyKind, propertyId, files, fileKind = 'image' }) {
   if (!files || files.length === 0) return [];
 
   const validated = [];
@@ -86,7 +86,7 @@ async function persistImages({ propertyKind, propertyId, files }) {
       rowsForInsert.push({
         property_kind: propertyKind,
         property_id: propertyId,
-        file_kind: 'image',
+        file_kind: fileKind,
         original_name: f.originalname.slice(0, 255),
         stored_name: `${propertyKind}/${storedName}`,
         mime_type: f.detectedMime,

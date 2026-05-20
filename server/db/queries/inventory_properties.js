@@ -88,7 +88,8 @@ async function list({
 
   const [rows] = await pool.query(
     `SELECT id, property_code, title, property_type, transaction_type, location,
-            area_value, area_unit, bhk, price, status, is_draft, owner_name, owner_contact,
+            area_value, area_unit, bhk, price, status, status_note, status_changed_at,
+            is_draft, owner_name, owner_contact,
             agent_name, agent_contact, created_at, updated_at
      FROM inventory_properties
      ${whereSql}
@@ -117,12 +118,15 @@ async function findByIdForConn(conn, id) {
 }
 
 async function create(payload) {
+  const detailsJson = payload.details && Object.keys(payload.details).length
+    ? JSON.stringify(payload.details)
+    : null;
   const [result] = await pool.query(
     `INSERT INTO inventory_properties
      (property_code, title, description, property_type, transaction_type, location,
       area_value, area_unit, bhk, price, status, is_draft,
-      owner_name, owner_contact, agent_name, agent_contact, created_by_admin_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      owner_name, owner_contact, agent_name, agent_contact, details, created_by_admin_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.propertyCode,
       payload.title,
@@ -140,6 +144,7 @@ async function create(payload) {
       payload.ownerContact || null,
       payload.agentName || null,
       payload.agentContact || null,
+      detailsJson,
       payload.createdByAdminId || null,
     ],
   );
@@ -151,11 +156,14 @@ async function updatePropertyCode(id, code) {
 }
 
 async function update(id, payload) {
+  const detailsJson = payload.details && Object.keys(payload.details).length
+    ? JSON.stringify(payload.details)
+    : null;
   await pool.query(
     `UPDATE inventory_properties SET
        title = ?, description = ?, property_type = ?, transaction_type = ?, location = ?,
        area_value = ?, area_unit = ?, bhk = ?, price = ?, status = ?, is_draft = ?,
-       owner_name = ?, owner_contact = ?, agent_name = ?, agent_contact = ?
+       owner_name = ?, owner_contact = ?, agent_name = ?, agent_contact = ?, details = ?
      WHERE id = ? AND deleted_at IS NULL`,
     [
       payload.title,
@@ -173,15 +181,21 @@ async function update(id, payload) {
       payload.ownerContact || null,
       payload.agentName || null,
       payload.agentContact || null,
+      detailsJson,
       id,
     ],
   );
 }
 
-async function updateStatus(id, status) {
+async function updateStatus(id, status, note, changedBy) {
   await pool.query(
-    `UPDATE inventory_properties SET status = ? WHERE id = ? AND deleted_at IS NULL`,
-    [status, id],
+    `UPDATE inventory_properties
+        SET status            = ?,
+            status_note       = ?,
+            status_changed_at = NOW(),
+            status_changed_by = ?
+      WHERE id = ? AND deleted_at IS NULL`,
+    [status, note && note.trim() ? note.trim() : null, changedBy || null, id],
   );
 }
 

@@ -63,8 +63,11 @@ async function listOwn(sellerId, { page, pageSize, sort }) {
 
 async function getOwn(sellerId, id) {
   const property = await loadOwnOrThrow(sellerId, id);
-  const images = await propertyFiles.listForProperty(null, 'website', property.id);
-  return toDetail(property, images);
+  const [images, amenityFiles] = await Promise.all([
+    propertyFiles.listForProperty(null, 'website', property.id),
+    propertyFiles.listAmenitiesForProperty(null, 'website', property.id),
+  ]);
+  return toDetail(property, images, amenityFiles);
 }
 
 async function createOwn(sellerId, payload) {
@@ -117,6 +120,37 @@ async function addImages(sellerId, id, files) {
   return getOwn(sellerId, id);
 }
 
+// Add amenity thumbnails. `names` is a string[] in the same order as `files`
+// — each name is stamped into the file's `originalname` so it persists into
+// `property_files.original_name` and serves as the amenity label.
+async function addAmenities(sellerId, id, files, names) {
+  await loadOwnOrThrow(sellerId, id);
+  if (!files || files.length === 0) {
+    throw new HttpError(400, 'NO_FILES', 'No amenity images uploaded');
+  }
+  if (!Array.isArray(names) || names.length !== files.length) {
+    throw new HttpError(400, 'NAMES_MISMATCH', 'One name required per amenity image');
+  }
+  const tagged = files.map((f, i) => {
+    const label = String(names[i] || '').trim();
+    if (!label) throw new HttpError(400, 'EMPTY_AMENITY_NAME', `Amenity #${i + 1} is missing a name`);
+    return { ...f, originalname: label.slice(0, 100) };
+  });
+  await imageUpload.persistImages({
+    propertyKind: 'website',
+    propertyId: id,
+    files: tagged,
+    fileKind: 'amenity',
+  });
+  return getOwn(sellerId, id);
+}
+
+async function removeAmenity(sellerId, id, fileId) {
+  await loadOwnOrThrow(sellerId, id);
+  await imageUpload.deleteImage({ fileId, propertyKind: 'website', propertyId: id });
+  return getOwn(sellerId, id);
+}
+
 async function removeImage(sellerId, id, fileId) {
   await loadOwnOrThrow(sellerId, id);
   await imageUpload.deleteImage({ fileId, propertyKind: 'website', propertyId: id });
@@ -155,12 +189,13 @@ function toListItem(row) {
   };
 }
 
-function toDetail(row, images) {
+function toDetail(row, images, amenityFiles = []) {
   return {
     ...toListItem(row),
     description: row.description,
     latitude: row.latitude !== null ? Number(row.latitude) : null,
     longitude: row.longitude !== null ? Number(row.longitude) : null,
+    details: parseDetailsField(row.details),
     images: images.map((f) => ({
       id: f.id,
       url: `${PUBLIC_URL_PREFIX}/${f.stored_name}`,
@@ -169,7 +204,23 @@ function toDetail(row, images) {
       sizeBytes: Number(f.size_bytes),
       sortOrder: f.sort_order,
     })),
+    // Amenity thumbnails — { id, name, imageUrl } per item. Name lives in
+    // original_name. UI renders them in a grid below the main gallery.
+    amenities: amenityFiles.map((f) => ({
+      id: f.id,
+      name: f.original_name,
+      imageUrl: `${PUBLIC_URL_PREFIX}/${f.stored_name}`,
+      sortOrder: f.sort_order,
+    })),
   };
+}
+
+// MySQL JSON columns can come back either as a parsed object (newer mysql2
+// builds) or as a raw string. Normalise so the API always returns an object.
+function parseDetailsField(raw) {
+  if (raw === null || raw === undefined) return {};
+  if (typeof raw === 'object') return raw;
+  try { return JSON.parse(raw) || {}; } catch { return {}; }
 }
 
 module.exports = {
@@ -180,4 +231,6 @@ module.exports = {
   removeOwn,
   addImages,
   removeImage,
+  addAmenities,
+  removeAmenity,
 };

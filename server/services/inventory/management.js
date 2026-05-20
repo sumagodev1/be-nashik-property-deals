@@ -5,6 +5,7 @@ const propertyFiles = require('../../db/queries/property_files');
 const imageUpload = require('../files/imageUpload');
 const documentUpload = require('../files/documentUpload');
 const excel = require('../files/excel');
+const { buildTablePdf } = require('../files/pdf');
 const { assignUniqueCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
 
@@ -105,11 +106,11 @@ async function updateProperty(id, payload) {
   return getProperty(id);
 }
 
-async function updateStatus(id, status) {
+async function updateStatus(id, status, note, changedBy) {
   await masters.assertActiveCode('status_type', status);
   const existing = await inventory.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
-  await inventory.updateStatus(id, status);
+  await inventory.updateStatus(id, status, note, changedBy);
   return getProperty(id);
 }
 
@@ -172,6 +173,10 @@ function toListItem(row) {
     bhk: row.bhk,
     price: Number(row.price),
     status: row.status,
+    // Last status-change context — list endpoint omits these to keep the
+    // payload light, detail endpoint pulls them via SELECT * → toDetail.
+    statusNote: row.status_note ?? null,
+    statusChangedAt: row.status_changed_at ?? null,
     isDraft: Boolean(row.is_draft),
     ownerName: row.owner_name,
     ownerContact: row.owner_contact,
@@ -217,11 +222,21 @@ async function suggest({ q, limit = 8, includeDrafts = false }) {
   }));
 }
 
+// MySQL's JSON column comes back as either a string (older drivers) or a
+// parsed object (newer drivers). Normalise to a plain object so the frontend
+// always sees the same shape.
+function parseDetailsField(raw) {
+  if (raw === null || raw === undefined) return {};
+  if (typeof raw === 'object') return raw;
+  try { return JSON.parse(raw) || {}; } catch { return {}; }
+}
+
 function toDetail(row, images, documents = []) {
   return {
     ...toListItem(row),
     description: row.description,
     isDraft: Boolean(row.is_draft),
+    details: parseDetailsField(row.details),
     images: images.map((f) => ({
       id: f.id,
       url: `${PUBLIC_URL_PREFIX}/${f.stored_name}`,
@@ -258,6 +273,55 @@ async function exportXlsx(filters) {
   });
 }
 
+// PDF export — a curated, human-readable subset of columns (the full CSV/Excel
+// dump is too wide to fit a printable page). Column `weight` controls how the
+// available landscape width is shared out.
+const INVENTORY_PDF_COLUMNS = [
+  { key: 'property_code',   label: 'Property ID',  weight: 2.3, noWrap: true },
+  { key: 'title',           label: 'Title',        weight: 2.6 },
+  { key: 'property_type',   label: 'Type',         weight: 1.4, noWrap: true },
+  { key: 'transaction_type', label: 'Txn',         weight: 1.2, noWrap: true },
+  { key: 'location',        label: 'Location',     weight: 2.4 },
+  { key: 'price',           label: 'Price (₹)',    weight: 1.6, align: 'right', headerAlign: 'right', noWrap: true },
+  { key: 'status',          label: 'Status',       weight: 1.2, noWrap: true, align: 'center', headerAlign: 'center' },
+  { key: 'owner_name',      label: 'Owner',        weight: 1.8 },
+  { key: 'agent_name',      label: 'Agent',        weight: 1.8 },
+  { key: 'created_at',      label: 'Created',      weight: 1.5, noWrap: true },
+];
+
+function formatInr(n) {
+  if (n === null || n === undefined || n === '') return '';
+  return Number(n).toLocaleString('en-IN');
+}
+function formatDate(d) {
+  if (!d) return '';
+  const date = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(date.getTime())) return String(d);
+  return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+async function exportPdf(filters) {
+  const { rows } = await inventory.list({ ...filters, page: 1, pageSize: 100000 });
+  const pdfRows = rows.map((r) => ({
+    property_code: r.property_code,
+    title: r.title,
+    property_type: r.property_type,
+    transaction_type: r.transaction_type,
+    location: r.location || '',
+    price: formatInr(r.price),
+    status: r.status,
+    owner_name: r.owner_name || '—',
+    agent_name: r.agent_name || '—',
+    created_at: formatDate(r.created_at),
+  }));
+  return buildTablePdf({
+    title: 'Inventory Properties',
+    subtitle: `${rows.length} record${rows.length === 1 ? '' : 's'} · Admin-managed inventory`,
+    columns: INVENTORY_PDF_COLUMNS,
+    rows: pdfRows,
+  });
+}
+
 module.exports = {
   listProperties,
   getProperty,
@@ -275,4 +339,5 @@ module.exports = {
   suggest,
   exportCsv,
   exportXlsx,
+  exportPdf,
 };

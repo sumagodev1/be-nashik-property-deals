@@ -12,6 +12,20 @@ async function listForProperty(conn, propertyKind, propertyId) {
   return rows;
 }
 
+// Sibling lister for amenity thumbnails — same table, different file_kind.
+// The amenity label is stored in `original_name`.
+async function listAmenitiesForProperty(conn, propertyKind, propertyId) {
+  const c = conn || pool;
+  const [rows] = await c.query(
+    `SELECT id, original_name, stored_name, mime_type, size_bytes, sort_order, created_at
+     FROM property_files
+     WHERE property_kind = ? AND property_id = ? AND file_kind = 'amenity'
+     ORDER BY sort_order ASC, id ASC`,
+    [propertyKind, propertyId],
+  );
+  return rows;
+}
+
 async function insertMany(conn, rows) {
   if (rows.length === 0) return [];
   const placeholders = rows.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
@@ -71,4 +85,4 @@ async function maxSortOrder(conn, propertyKind, propertyId) {
   return row.max_sort;
 }
 
-module.exports = { listForProperty, insertMany, findById, deleteById, deleteAllForProperty, maxSortOrder };
+module.exports = { listForProperty, listAmenitiesForProperty, insertMany, findById, deleteById, deleteAllForProperty, maxSortOrder };

@@ -45,6 +45,10 @@ function toListItem(row) {
     propertyType: row.property_type,
     transactionType: row.transaction_type,
     location: row.location,
+    // Lat/lng on list items so the website's Map view can plot pins from
+    // the listing payload without firing a detail request per property.
+    latitude: row.latitude !== null && row.latitude !== undefined ? Number(row.latitude) : null,
+    longitude: row.longitude !== null && row.longitude !== undefined ? Number(row.longitude) : null,
     areaValue: row.area_value !== null && row.area_value !== undefined ? Number(row.area_value) : null,
     areaUnit: row.area_unit,
     bhk: row.bhk,

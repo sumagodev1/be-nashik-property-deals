@@ -6,6 +6,7 @@ const { validate } = require('../middleware/validate');
 const { requireAuth } = require('../middleware/auth');
 const auth = require('../services/auth/login');
 const passwordReset = require('../services/auth/password_reset');
+const { verifyCaptcha } = require('../services/auth/captcha');
 
 const router = express.Router();
 
@@ -30,11 +31,14 @@ const forgotLimiter = rateLimit({
 const loginSchema = Joi.object({
   email: Joi.string().email({ tlds: { allow: false } }).max(255).required(),
   password: Joi.string().min(1).max(128).required(),
+  captchaToken: Joi.string().allow('', null).optional(),
 });
 
 router.post('/login', loginLimiter, validate(loginSchema), async (req, res, next) => {
   try {
-    res.json(await auth.login(req.body));
+    await verifyCaptcha(req.body.captchaToken, req.ip);
+    const { captchaToken, ...credentials } = req.body;
+    res.json(await auth.login(credentials));
   } catch (err) {
     next(err);
   }

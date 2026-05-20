@@ -6,6 +6,7 @@ const propertyFiles = require('../../db/queries/property_files');
 const imageUpload = require('../files/imageUpload');
 const documentUpload = require('../files/documentUpload');
 const excel = require('../files/excel');
+const { buildTablePdf } = require('../files/pdf');
 const { assignUniqueCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
 
@@ -288,6 +289,62 @@ async function exportXlsx(filters) {
   });
 }
 
+// PDF export — curated subset of columns that fits a landscape A4 sheet.
+// `weight` controls relative column width; the helper allocates space
+// proportionally to remaining columns.
+const WEBSITE_PDF_COLUMNS = [
+  { key: 'property_code',   label: 'Property ID', weight: 2.3, noWrap: true },
+  { key: 'title',           label: 'Title',       weight: 2.6 },
+  { key: 'property_type',   label: 'Type',        weight: 1.3, noWrap: true },
+  { key: 'transaction_type', label: 'Txn',        weight: 1.1, noWrap: true },
+  { key: 'location',        label: 'Location',    weight: 2.2 },
+  { key: 'price',           label: 'Price (₹)',   weight: 1.6, align: 'right', headerAlign: 'right', noWrap: true },
+  { key: 'approval_status', label: 'Approval',    weight: 1.3, noWrap: true, align: 'center', headerAlign: 'center' },
+  { key: 'visibility',      label: 'Visibility',  weight: 1.3, noWrap: true, align: 'center', headerAlign: 'center' },
+  { key: 'seller_name',     label: 'Seller',      weight: 1.8 },
+  { key: 'leads_count',     label: 'Leads',       weight: 0.8, align: 'right', headerAlign: 'right', noWrap: true },
+  { key: 'created_at',      label: 'Created',     weight: 1.5, noWrap: true },
+];
+
+function formatInr(n) {
+  if (n === null || n === undefined || n === '') return '';
+  return Number(n).toLocaleString('en-IN');
+}
+function formatDate(d) {
+  if (!d) return '';
+  const date = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(date.getTime())) return String(d);
+  return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+function visibilityLabel(r) {
+  if (!r.is_active) return 'Inactive';
+  if (r.is_featured) return 'Featured';
+  return 'Active';
+}
+
+async function exportPdf(filters) {
+  const { rows } = await wp.list({ ...filters, page: 1, pageSize: 100000 });
+  const pdfRows = rows.map((r) => ({
+    property_code: r.property_code,
+    title: r.title,
+    property_type: r.property_type,
+    transaction_type: r.transaction_type,
+    location: r.location || '',
+    price: formatInr(r.price),
+    approval_status: r.approval_status,
+    visibility: visibilityLabel(r),
+    seller_name: r.seller_full_name || r.seller_name || '—',
+    leads_count: Number(r.leads_count) || 0,
+    created_at: formatDate(r.created_at),
+  }));
+  return buildTablePdf({
+    title: 'Website Properties',
+    subtitle: `${rows.length} record${rows.length === 1 ? '' : 's'} · Seller-submitted listings`,
+    columns: WEBSITE_PDF_COLUMNS,
+    rows: pdfRows,
+  });
+}
+
 module.exports = {
   listProperties,
   getProperty,
@@ -307,4 +364,5 @@ module.exports = {
   suggest,
   exportCsv,
   exportXlsx,
+  exportPdf,
 };

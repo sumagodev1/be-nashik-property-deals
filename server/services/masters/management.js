@@ -255,6 +255,7 @@ module.exports = {
   masterKeys,
   masterMeta,
   list,
+  listAll,
   getOne,
   activeCodes,
   assertActiveCode,

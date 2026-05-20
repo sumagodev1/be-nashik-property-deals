@@ -98,12 +98,15 @@ async function findById(id) {
 }
 
 async function create(payload) {
+  const detailsJson = payload.details && Object.keys(payload.details).length
+    ? JSON.stringify(payload.details)
+    : null;
   const [result] = await pool.query(
     `INSERT INTO website_properties
      (property_code, seller_id, title, description, property_type, transaction_type, location,
       latitude, longitude, area_value, area_unit, bhk, price,
-      approval_status, is_active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      approval_status, is_active, details)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.propertyCode,
       payload.sellerId,
@@ -120,6 +123,7 @@ async function create(payload) {
       payload.price,
       payload.approvalStatus || 'pending',
       payload.isActive === false ? 0 : 1,
+      detailsJson,
     ],
   );
   return result.insertId;
@@ -130,10 +134,14 @@ async function updatePropertyCode(id, code) {
 }
 
 async function update(id, payload) {
+  const detailsJson = payload.details && Object.keys(payload.details).length
+    ? JSON.stringify(payload.details)
+    : null;
   await pool.query(
     `UPDATE website_properties SET
        title = ?, description = ?, property_type = ?, transaction_type = ?, location = ?,
-       latitude = ?, longitude = ?, area_value = ?, area_unit = ?, bhk = ?, price = ?
+       latitude = ?, longitude = ?, area_value = ?, area_unit = ?, bhk = ?, price = ?,
+       details = ?
      WHERE id = ? AND deleted_at IS NULL`,
     [
       payload.title,
@@ -147,6 +155,7 @@ async function update(id, payload) {
       payload.areaUnit || null,
       payload.bhk || null,
       payload.price,
+      detailsJson,
       id,
     ],
   );

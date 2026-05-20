@@ -23,6 +23,16 @@ async function getLead(id) {
 async function updateStatus(id, status) {
   const row = await leadsRepo.findById(id);
   if (!row) throw new HttpError(404, 'NOT_FOUND', 'Lead not found');
+  // Contact is a one-way step in the funnel — once a lead is marked "contacted"
+  // we don't allow it to revert to "new". UI disables the option, but enforce
+  // it server-side too so a hand-crafted request can't bypass the rule.
+  if (row.status === 'contacted' && status === 'new') {
+    throw new HttpError(
+      409,
+      'LEAD_STATUS_LOCKED',
+      'This lead has already been contacted and cannot be reset to New.',
+    );
+  }
   await leadsRepo.updateStatus(id, status);
   return getLead(id);
 }

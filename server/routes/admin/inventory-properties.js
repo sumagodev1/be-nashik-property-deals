@@ -72,10 +72,19 @@ const propertyBody = Joi.object({
   ownerContact: phoneField.optional(),
   agentName: personField.optional(),
   agentContact: phoneField.optional(),
+  // Open-ended bag of category-specific fields (flat floor / plot zoning /
+  // hostel timing / stamp duty breakdown / etc.). The form shape is defined
+  // on the client; the server just stores it as JSON. Capped at 64 KB to
+  // prevent abuse — well above what any real registration form would need.
+  details: Joi.object().unknown(true).max(200).optional().allow(null),
 });
 
 const statusBody = Joi.object({
   status: masterCodeField.required(),
+  // Free-text "why" the admin recorded when flipping the status. Optional so a
+  // quick status flip doesn't force typing; capped at 500 chars (well over a
+  // sentence or two of context).
+  note: Joi.string().trim().max(500).allow('', null).optional(),
 });
 
 const suggestQuery = Joi.object({
@@ -130,6 +139,18 @@ router.get('/export.xlsx', validate(exportQuery, 'query'), async (req, res, next
   }
 });
 
+router.get('/export.pdf', validate(exportQuery, 'query'), async (req, res, next) => {
+  try {
+    const buffer = await management.exportPdf(req.query);
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="inventory-${stamp}.pdf"`);
+    res.send(buffer);
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/:id', validate(idParam, 'params'), async (req, res, next) => {
   try {
     res.json(await management.getProperty(req.params.id));
@@ -171,7 +192,8 @@ router.put('/:id', validate(idParam, 'params'), validate(propertyBody), async (r
 
 router.patch('/:id/status', validate(idParam, 'params'), validate(statusBody), async (req, res, next) => {
   try {
-    res.json(await management.updateStatus(req.params.id, req.body.status));
+    const changedBy = req.auth?.role === 'admin' ? Number(req.auth.sub) : null;
+    res.json(await management.updateStatus(req.params.id, req.body.status, req.body.note || null, changedBy));
   } catch (err) {
     next(err);
   }

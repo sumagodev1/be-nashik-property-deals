@@ -43,6 +43,9 @@ const propertyBody = Joi.object({
   areaUnit: Joi.string().valid(...AREA_UNITS).optional().allow('', null),
   bhk: masterCodeField.optional().allow('', null),
   price: Joi.number().min(0).required(),
+  // Open-ended bag of extra fields the seller form collects (amenities,
+  // landmark, etc.). Stored as JSON. Capped at 50 keys to keep payload sane.
+  details: Joi.object().unknown(true).max(50).optional().allow(null),
 });
 
 router.get('/', validate(listQuery, 'query'), async (req, res, next) => {
@@ -84,6 +87,34 @@ router.post('/:id/images', validate(idParam, 'params'), imageUploadMiddleware, a
 router.delete('/:id/images/:fileId', validate(subIdParam, 'params'), async (req, res, next) => {
   try {
     res.json(await sellerProperties.removeImage(Number(req.auth.sub), req.params.id, req.params.fileId));
+  } catch (e) { next(e); }
+});
+
+// Amenities upload — multipart with `images[]` files and `names` field (either
+// a JSON-encoded array or a multi-valued form field, in the same order as the
+// files). Each entry becomes a property_files row with file_kind='amenity'
+// and the typed amenity label stored in original_name.
+router.post('/:id/amenities', validate(idParam, 'params'), imageUploadMiddleware, async (req, res, next) => {
+  try {
+    if (!req.files || req.files.length === 0) throw new HttpError(400, 'NO_FILES', 'No amenity images uploaded');
+    // `names` may arrive as a JSON string, a single string, or an array
+    // depending on how the client built the FormData. Normalise to string[].
+    let names = req.body.names;
+    if (typeof names === 'string') {
+      try {
+        const parsed = JSON.parse(names);
+        if (Array.isArray(parsed)) names = parsed;
+        else names = [names];
+      } catch { names = [names]; }
+    }
+    if (!Array.isArray(names)) names = names ? [names] : [];
+    res.status(201).json(await sellerProperties.addAmenities(Number(req.auth.sub), req.params.id, req.files, names));
+  } catch (e) { next(e); }
+});
+
+router.delete('/:id/amenities/:fileId', validate(subIdParam, 'params'), async (req, res, next) => {
+  try {
+    res.json(await sellerProperties.removeAmenity(Number(req.auth.sub), req.params.id, req.params.fileId));
   } catch (e) { next(e); }
 });
 
