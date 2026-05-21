@@ -88,7 +88,7 @@ async function findByIdentifier(identifier) {
   const [rows] = await pool.query(
     `SELECT wp.id, wp.property_code, wp.title, wp.description, wp.property_type, wp.transaction_type,
             wp.location, wp.latitude, wp.longitude, wp.area_value, wp.area_unit, wp.bhk, wp.price,
-            wp.is_featured, wp.approved_at, wp.created_at
+            wp.is_featured, wp.approved_at, wp.created_at, wp.details
      FROM website_properties wp
      WHERE ${PUBLIC_WHERE} AND (${numeric ? 'wp.id = ?' : 'wp.property_code = ?'})
      LIMIT 1`,

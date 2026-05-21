@@ -8,7 +8,7 @@ const { trySendMail } = require('../email/transporter');
 const BCRYPT_COST = 12;
 
 function buildLoginUrl() {
-  const base = (process.env.APP_PUBLIC_URL || 'http://localhost:5173').replace(/\/+$/, '');
+  const base = (process.env.APP_PUBLIC_URL || 'https://nashikpropertybackend.sumagodemo.com/').replace(/\/+$/, '');
   return `${base}/admin/login`;
 }
 
