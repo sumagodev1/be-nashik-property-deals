@@ -30,8 +30,13 @@ async function updateSeller(id, payload) {
   const seller = await sellersRepo.findById(id);
   if (!seller) throw new HttpError(404, 'NOT_FOUND', 'Seller not found');
 
-  if (payload.email && payload.email !== seller.email) {
-    const existing = await sellersRepo.findByEmail(payload.email);
+  // Normalise empty-string email to NULL so the unique index doesn't fire
+  // for multiple sellers that left their email blank. (MySQL allows
+  // multiple NULLs in a UNIQUE column but rejects duplicate '' values.)
+  const email = payload.email && payload.email.trim() ? payload.email.trim() : null;
+
+  if (email && email !== seller.email) {
+    const existing = await sellersRepo.findByEmail(email);
     if (existing && existing.id !== seller.id) {
       throw new HttpError(409, 'EMAIL_TAKEN', 'This email is already linked to another seller.');
     }
@@ -40,7 +45,7 @@ async function updateSeller(id, payload) {
   const isOwner = seller.user_type === 'owner';
   await sellersRepo.adminUpdateProfile(id, {
     fullName: payload.fullName,
-    email: payload.email,
+    email,
     alternateContact: payload.alternateContact,
     agencyName: isOwner ? null : payload.agencyName,
     businessAddress: isOwner ? null : payload.businessAddress,

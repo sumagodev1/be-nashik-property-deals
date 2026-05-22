@@ -3,6 +3,9 @@ const Joi = require('joi');
 
 const { validate } = require('../../middleware/validate');
 const { requireAuth, requireModule } = require('../../middleware/auth');
+const { documentUploadMiddleware } = require('../../middleware/imageMulter');
+const { HttpError } = require('../../middleware/errors');
+const documentUpload = require('../../services/files/documentUpload');
 const users = require('../../services/admin/users');
 const { MODULES } = require('../../constants/modules');
 
@@ -37,7 +40,9 @@ const sellersExportQuery = sellersListQuery.fork(['page', 'pageSize'], (s) => s.
 
 const sellerUpdateBody = Joi.object({
   fullName: nameField.required(),
-  email: emailField.required(),
+  // Email is optional now — admins can leave it blank when editing a seller
+  // that registered without one. Format is still validated when provided.
+  email: emailField.optional().allow('', null),
   alternateContact: phoneField.optional().allow('', null),
   agencyName: Joi.string().trim().max(255).optional().allow('', null),
   businessAddress: Joi.string().trim().max(1000).optional().allow('', null),
@@ -118,12 +123,47 @@ const docParam = Joi.object({
 });
 router.get('/sellers/:id/documents/:fileId', validate(docParam, 'params'), async (req, res, next) => {
   try {
-    const documentUpload = require('../../services/files/documentUpload');
     const doc = await documentUpload.findSellerDocumentById(req.params.fileId);
     if (!doc || Number(doc.seller_id) !== Number(req.params.id)) {
       return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Document not found' } });
     }
     return documentUpload.streamSellerDocument(res, doc);
+  } catch (e) { next(e); }
+});
+
+// Admin upload — attach a business document to a seller. Used by the
+// admin panel's seller-edit screen so support staff can add docs on behalf
+// of agents who can't (or won't) upload from their own profile.
+router.post(
+  '/sellers/:id/documents',
+  validate(idParam, 'params'),
+  documentUploadMiddleware,
+  async (req, res, next) => {
+    try {
+      if (!req.files || req.files.length === 0) {
+        throw new HttpError(400, 'NO_FILES', 'No files uploaded');
+      }
+      const sellerId = Number(req.params.id);
+      await documentUpload.persistSellerDocuments({ sellerId, files: req.files });
+      const documents = await documentUpload.listSellerDocuments(sellerId);
+      res.status(201).json({ documents });
+    } catch (e) { next(e); }
+  },
+);
+
+// Admin delete — remove a seller's business document. Same ownership
+// check as the GET endpoint above (file must actually belong to that
+// seller) so admins can't accidentally delete cross-seller documents by
+// guessing IDs.
+router.delete('/sellers/:id/documents/:fileId', validate(docParam, 'params'), async (req, res, next) => {
+  try {
+    const doc = await documentUpload.findSellerDocumentById(req.params.fileId);
+    if (!doc || Number(doc.seller_id) !== Number(req.params.id)) {
+      throw new HttpError(404, 'NOT_FOUND', 'Document not found');
+    }
+    await documentUpload.deleteSellerDocument(req.params.fileId);
+    const documents = await documentUpload.listSellerDocuments(req.params.id);
+    res.json({ documents });
   } catch (e) { next(e); }
 });
 
