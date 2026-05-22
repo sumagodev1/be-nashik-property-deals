@@ -59,6 +59,17 @@ async function setSellerActive(id, isActive) {
 async function removeSeller(id) {
   const seller = await sellersRepo.findById(id);
   if (!seller) throw new HttpError(404, 'NOT_FOUND', 'Seller not found');
+  // Block deletion while the seller still owns property listings. The admin
+  // must remove (or reassign) their listings first — orphaning rows would
+  // break the website properties feed and lead-routing back to the owner.
+  const listingCount = await sellersRepo.countActiveListingsForSeller(id);
+  if (listingCount > 0) {
+    throw new HttpError(
+      409,
+      'SELLER_HAS_LISTINGS',
+      `Seller has ${listingCount} active property listing${listingCount === 1 ? '' : 's'}. Delete those listings before deleting the seller.`,
+    );
+  }
   await sellersRepo.softDelete(id);
 }
 

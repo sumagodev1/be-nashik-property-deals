@@ -55,10 +55,10 @@ const settingsBody = Joi.object({
   social_instagram:  optionalUrl(),
   social_linkedin:   optionalUrl(),
   social_youtube:    optionalUrl(),
-  site_tagline:      optionalLen(100),
+  site_tagline:      optionalLen(200),
   support_hours:     optionalLen(200),
   about_heading:     optionalLen(100),
-  about_content:     optionalLen(10000),
+  about_content:     optionalLen(500),
   contact_heading:   optionalLen(100),
   contact_intro:     optionalLen(500),
 }).min(1).unknown(false);

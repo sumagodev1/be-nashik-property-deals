@@ -282,7 +282,7 @@ const INVENTORY_PDF_COLUMNS = [
   { key: 'property_type',   label: 'Type',         weight: 1.4, noWrap: true },
   { key: 'transaction_type', label: 'Txn',         weight: 1.2, noWrap: true },
   { key: 'location',        label: 'Location',     weight: 2.4 },
-  { key: 'price',           label: 'Price (₹)',    weight: 1.6, align: 'right', headerAlign: 'right', noWrap: true },
+  { key: 'price',           label: 'Price (INR)',  weight: 1.6, align: 'right', headerAlign: 'right', noWrap: true },
   { key: 'status',          label: 'Status',       weight: 1.2, noWrap: true, align: 'center', headerAlign: 'center' },
   { key: 'owner_name',      label: 'Owner',        weight: 1.8 },
   { key: 'agent_name',      label: 'Agent',        weight: 1.8 },

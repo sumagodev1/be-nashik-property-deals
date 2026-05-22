@@ -41,6 +41,11 @@ async function registerStart(payload) {
     await sellers.updateRegistrationDraft(existingByMobile.id, payload);
     sellerId = existingByMobile.id;
   } else {
+    // A previously-deleted seller may still own the mobile_number slot in
+    // the unique index even though `findByMobile` (which filters out
+    // soft-deleted rows) returned nothing. Release it before INSERT so the
+    // signup doesn't trip ER_DUP_ENTRY for a row the admin already removed.
+    await sellers.releaseSoftDeletedMobile(payload.mobileNumber);
     sellerId = await sellers.create(payload);
   }
 
@@ -80,7 +85,20 @@ async function registerVerify({ mobileNumber, code }) {
 }
 
 async function loginStart({ mobileNumber }) {
-  // Don't reveal whether the mobile is registered. Always claim "OTP sent".
+  // Distinguish three cases up-front so the user gets an actionable message
+  // instead of a generic "not found" when their account was just deactivated.
+  //
+  //   1. Verified but inactive → ACCOUNT_DEACTIVATED (403)
+  //   2. No verified account   → NOT_FOUND (dev) / silent OK (prod, anti-enum)
+  //   3. Verified + active     → issue OTP normally
+  const verified = await sellers.findVerifiedByMobile(mobileNumber);
+  if (verified && !verified.is_active) {
+    throw new HttpError(
+      403,
+      'ACCOUNT_DEACTIVATED',
+      'Your account has been deactivated by the admin. Please contact support to restore access.',
+    );
+  }
   const seller = await sellers.findActiveVerifiedByMobile(mobileNumber);
   if (!seller) {
     // In production, don't reveal whether the mobile is registered — silently

@@ -298,7 +298,7 @@ const WEBSITE_PDF_COLUMNS = [
   { key: 'property_type',   label: 'Type',        weight: 1.3, noWrap: true },
   { key: 'transaction_type', label: 'Txn',        weight: 1.1, noWrap: true },
   { key: 'location',        label: 'Location',    weight: 2.2 },
-  { key: 'price',           label: 'Price (₹)',   weight: 1.6, align: 'right', headerAlign: 'right', noWrap: true },
+  { key: 'price',           label: 'Price (INR)', weight: 1.6, align: 'right', headerAlign: 'right', noWrap: true },
   { key: 'approval_status', label: 'Approval',    weight: 1.3, noWrap: true, align: 'center', headerAlign: 'center' },
   { key: 'visibility',      label: 'Visibility',  weight: 1.3, noWrap: true, align: 'center', headerAlign: 'center' },
   { key: 'seller_name',     label: 'Seller',      weight: 1.8 },

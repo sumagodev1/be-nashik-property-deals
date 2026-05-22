@@ -212,6 +212,16 @@ async function findWithListingCount(id) {
   return rows[0] || null;
 }
 
+async function countActiveListingsForSeller(sellerId) {
+  const [rows] = await pool.query(
+    `SELECT COUNT(*) AS n
+     FROM website_properties
+     WHERE seller_id = ? AND deleted_at IS NULL`,
+    [sellerId],
+  );
+  return Number(rows[0]?.n || 0);
+}
+
 async function listRecentPropertiesForSeller(sellerId, { limit = 5 } = {}) {
   const [rows] = await pool.query(
     `SELECT id, property_code, title, location, price, approval_status, is_active, created_at
@@ -249,9 +259,31 @@ async function setActive(id, isActive) {
 }
 
 async function softDelete(id) {
+  // Free the mobile_number slot on the soft-deleted row by rewriting it
+  // to a guaranteed-unique placeholder (`_DEL_<id>`). MySQL's unique index
+  // ignores `deleted_at`, so without this rewrite a soft-deleted seller's
+  // number permanently blocks re-registration with the same number.
+  // VARCHAR(20) limit easily fits `_DEL_<id>` for any realistic id.
   await pool.query(
-    `UPDATE sellers SET deleted_at = NOW(), is_active = 0 WHERE id = ? AND deleted_at IS NULL`,
+    `UPDATE sellers
+       SET mobile_number = CONCAT('_DEL_', id),
+           deleted_at = NOW(),
+           is_active = 0
+     WHERE id = ? AND deleted_at IS NULL`,
     [id],
+  );
+}
+
+// Catch-up helper for sellers that were soft-deleted BEFORE the above fix
+// was deployed (their mobile_number is still the original value, blocking
+// re-registration). Called from the seller registerStart flow just before
+// INSERT so a fresh signup with the same number succeeds.
+async function releaseSoftDeletedMobile(mobileNumber) {
+  await pool.query(
+    `UPDATE sellers
+       SET mobile_number = CONCAT('_DEL_', id)
+     WHERE mobile_number = ? AND deleted_at IS NOT NULL`,
+    [mobileNumber],
   );
 }
 
@@ -270,8 +302,10 @@ module.exports = {
   listForAdmin,
   listForExport,
   findWithListingCount,
+  countActiveListingsForSeller,
   listRecentPropertiesForSeller,
   adminUpdateProfile,
   setActive,
   softDelete,
+  releaseSoftDeletedMobile,
 };
