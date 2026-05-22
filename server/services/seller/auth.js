@@ -80,21 +80,17 @@ async function registerVerify({ mobileNumber, code }) {
 }
 
 async function loginStart({ mobileNumber }) {
-  // Look up the verified seller first regardless of active state so we can
-  // tell the user *why* they can't sign in if an admin has deactivated them.
-  // Existence of an unverified / non-existent mobile is still hidden behind
-  // the silent "ok: true" response below (no user enumeration leak).
-  const verified = await sellers.findVerifiedByMobile(mobileNumber);
-  if (verified && !verified.is_active) {
-    throw new HttpError(
-      403,
-      'ACCOUNT_DEACTIVATED',
-      'Your account has been deactivated by the admin. Please contact support to restore access.',
-    );
-  }
+  // Don't reveal whether the mobile is registered. Always claim "OTP sent".
   const seller = await sellers.findActiveVerifiedByMobile(mobileNumber);
   if (!seller) {
-    return { ok: true };
+    // In production, don't reveal whether the mobile is registered — silently
+    // claim "OTP sent" so attackers can't enumerate which numbers exist.
+    // In dev/staging, return a clear 404 so the developer gets fast feedback
+    // instead of advancing to an OTP step that's guaranteed to fail.
+    if (process.env.NODE_ENV === 'production') {
+      return { ok: true };
+    }
+    throw new HttpError(404, 'NOT_FOUND', 'No account found for this mobile number.');
   }
   const issued = await otp.issue({
     purpose: 'seller_login',
