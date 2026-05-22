@@ -80,10 +80,16 @@ async function registerVerify({ mobileNumber, code }) {
 }
 
 async function loginStart({ mobileNumber }) {
-  // Don't reveal whether the mobile is registered. Always claim "OTP sent".
   const seller = await sellers.findActiveVerifiedByMobile(mobileNumber);
   if (!seller) {
-    return { ok: true };
+    // In production, don't reveal whether the mobile is registered — silently
+    // claim "OTP sent" so attackers can't enumerate which numbers exist.
+    // In dev/staging, return a clear 404 so the developer gets fast feedback
+    // instead of advancing to an OTP step that's guaranteed to fail.
+    if (process.env.NODE_ENV === 'production') {
+      return { ok: true };
+    }
+    throw new HttpError(404, 'NOT_FOUND', 'No account found for this mobile number.');
   }
   const issued = await otp.issue({
     purpose: 'seller_login',
