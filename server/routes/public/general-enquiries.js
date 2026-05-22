@@ -3,6 +3,7 @@ const Joi = require('joi');
 const rateLimit = require('express-rate-limit');
 
 const { validate } = require('../../middleware/validate');
+const idempotency = require('../../middleware/idempotency');
 const service = require('../../services/public/general_enquiries');
 const { TRANSACTION_TYPES } = require('../../constants/property');
 
@@ -16,9 +17,12 @@ const limiter = rateLimit({
   message: { error: { code: 'RATE_LIMITED', message: 'Too many requests. Try again later.' } },
 });
 
+const LETTERS_ONLY = /^[A-Za-z\s]+$/;
 const emailField = Joi.string().email({ tlds: { allow: false } }).max(255);
-const mobileField = Joi.string().trim().pattern(/^[+\-0-9 ()]{6,20}$/);
-const nameField = Joi.string().trim().min(1).max(255);
+const mobileField = Joi.string().trim().pattern(/^\d{10}$/)
+  .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number' });
+const nameField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY)
+  .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
 const codeField = Joi.string().pattern(/^\d{6}$/);
 const categoryField = Joi.string().valid(...TRANSACTION_TYPES);
 
@@ -37,11 +41,11 @@ const verifyBody = Joi.object({
   categories: Joi.array().items(categoryField).unique().max(3).optional(),
 });
 
-router.post('/start', limiter, validate(startBody), async (req, res, next) => {
+router.post('/start', limiter, idempotency(), validate(startBody), async (req, res, next) => {
   try { res.json(await service.start(req.body)); } catch (e) { next(e); }
 });
 
-router.post('/verify', limiter, validate(verifyBody), async (req, res, next) => {
+router.post('/verify', limiter, idempotency(), validate(verifyBody), async (req, res, next) => {
   try { res.json(await service.verify(req.body)); } catch (e) { next(e); }
 });
 

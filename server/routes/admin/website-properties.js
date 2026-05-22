@@ -4,6 +4,7 @@ const Joi = require('joi');
 const { validate } = require('../../middleware/validate');
 const { requireAuth, requireModule } = require('../../middleware/auth');
 const { imageUploadMiddleware, documentUploadMiddleware } = require('../../middleware/imageMulter');
+const idempotency = require('../../middleware/idempotency');
 const management = require('../../services/website_property/management');
 const { AREA_UNITS } = require('../../constants/property');
 const masterCodeField = Joi.string().trim().lowercase().pattern(/^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$/);
@@ -21,9 +22,12 @@ const subIdParam = Joi.object({
   fileId: Joi.number().integer().positive().required(),
 });
 
-const titleField = Joi.string().trim().min(1).max(255);
+// Names: letters + spaces only. Titles: letters + digits + spaces (3 BHK ok).
+const ALPHANUM_SPACE = /^[A-Za-z0-9\s]+$/;
+const titleField = Joi.string().trim().min(3).max(50).pattern(ALPHANUM_SPACE)
+  .messages({ 'string.pattern.base': 'Title can only contain letters, digits and spaces' });
 const locField = Joi.string().trim().min(1).max(255);
-const descField = Joi.string().trim().max(10000).allow('', null);
+const descField = Joi.string().trim().max(200).allow('', null);
 
 const listQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
@@ -134,7 +138,7 @@ router.get('/:id', validate(idParam, 'params'), async (req, res, next) => {
   try { res.json(await management.getProperty(req.params.id)); } catch (e) { next(e); }
 });
 
-router.post('/', validate(createBody), async (req, res, next) => {
+router.post('/', idempotency(), validate(createBody), async (req, res, next) => {
   try { res.status(201).json(await management.createProperty(req.body)); } catch (e) { next(e); }
 });
 
@@ -142,25 +146,25 @@ router.put('/:id', validate(idParam, 'params'), validate(updateBody), async (req
   try { res.json(await management.updateProperty(req.params.id, req.body)); } catch (e) { next(e); }
 });
 
-router.patch('/:id/approve', validate(idParam, 'params'), async (req, res, next) => {
+router.patch('/:id/approve', idempotency(), validate(idParam, 'params'), async (req, res, next) => {
   try {
     const adminId = req.auth.role === 'admin' ? Number(req.auth.sub) : null;
     res.json(await management.approveProperty(req.params.id, adminId));
   } catch (e) { next(e); }
 });
 
-router.patch('/:id/reject', validate(idParam, 'params'), validate(rejectBody), async (req, res, next) => {
+router.patch('/:id/reject', idempotency(), validate(idParam, 'params'), validate(rejectBody), async (req, res, next) => {
   try {
     const adminId = req.auth.role === 'admin' ? Number(req.auth.sub) : null;
     res.json(await management.rejectProperty(req.params.id, adminId, req.body.reason));
   } catch (e) { next(e); }
 });
 
-router.patch('/:id/active', validate(idParam, 'params'), validate(activeBody), async (req, res, next) => {
+router.patch('/:id/active', idempotency(), validate(idParam, 'params'), validate(activeBody), async (req, res, next) => {
   try { res.json(await management.setActive(req.params.id, req.body.isActive)); } catch (e) { next(e); }
 });
 
-router.patch('/:id/featured', validate(idParam, 'params'), validate(featuredBody), async (req, res, next) => {
+router.patch('/:id/featured', idempotency(), validate(idParam, 'params'), validate(featuredBody), async (req, res, next) => {
   try { res.json(await management.setFeatured(req.params.id, req.body.isFeatured)); } catch (e) { next(e); }
 });
 

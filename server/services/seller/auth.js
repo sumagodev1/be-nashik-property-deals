@@ -80,7 +80,18 @@ async function registerVerify({ mobileNumber, code }) {
 }
 
 async function loginStart({ mobileNumber }) {
-  // Don't reveal whether the mobile is registered. Always claim "OTP sent".
+  // Look up the verified seller first regardless of active state so we can
+  // tell the user *why* they can't sign in if an admin has deactivated them.
+  // Existence of an unverified / non-existent mobile is still hidden behind
+  // the silent "ok: true" response below (no user enumeration leak).
+  const verified = await sellers.findVerifiedByMobile(mobileNumber);
+  if (verified && !verified.is_active) {
+    throw new HttpError(
+      403,
+      'ACCOUNT_DEACTIVATED',
+      'Your account has been deactivated by the admin. Please contact support to restore access.',
+    );
+  }
   const seller = await sellers.findActiveVerifiedByMobile(mobileNumber);
   if (!seller) {
     return { ok: true };
@@ -95,6 +106,17 @@ async function loginStart({ mobileNumber }) {
 }
 
 async function loginVerify({ mobileNumber, code }) {
+  // Same deactivation guard — somebody who already had a session start
+  // (OTP requested before deactivation) shouldn't slip through the verify
+  // step afterwards either.
+  const verified = await sellers.findVerifiedByMobile(mobileNumber);
+  if (verified && !verified.is_active) {
+    throw new HttpError(
+      403,
+      'ACCOUNT_DEACTIVATED',
+      'Your account has been deactivated by the admin. Please contact support to restore access.',
+    );
+  }
   const seller = await sellers.findActiveVerifiedByMobile(mobileNumber);
   if (!seller) throw new HttpError(400, 'OTP_INVALID', 'Code is invalid or has expired.');
   await otp.verify({

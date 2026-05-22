@@ -4,6 +4,7 @@ const Joi = require('joi');
 const { validate } = require('../../middleware/validate');
 const { requireAuth, requireRole } = require('../../middleware/auth');
 const { imageUploadMiddleware } = require('../../middleware/imageMulter');
+const idempotency = require('../../middleware/idempotency');
 const sellerProperties = require('../../services/seller/properties');
 const { AREA_UNITS } = require('../../constants/property');
 const masterCodeField = Joi.string().trim().lowercase().pattern(/^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$/);
@@ -19,9 +20,12 @@ const subIdParam = Joi.object({
   fileId: Joi.number().integer().positive().required(),
 });
 
-const titleField = Joi.string().trim().min(1).max(255);
+// Names: letters + spaces only. Titles: letters + digits + spaces (3 BHK ok).
+const ALPHANUM_SPACE = /^[A-Za-z0-9\s]+$/;
+const titleField = Joi.string().trim().min(3).max(50).pattern(ALPHANUM_SPACE)
+  .messages({ 'string.pattern.base': 'Title can only contain letters, digits and spaces' });
 const locField = Joi.string().trim().min(1).max(255);
-const descField = Joi.string().trim().max(10000).allow('', null);
+const descField = Joi.string().trim().max(200).allow('', null);
 
 const listQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
@@ -31,6 +35,10 @@ const listQuery = Joi.object({
     .default('created_at:desc'),
 });
 
+// Mirrors admin/inventory-properties.js caps so the two routes don't drift.
+const PRICE_MAX = 1_000_00_00_000;   // 1000 crore
+const AREA_MAX = 10_00_000;          // 10 lakh sq.ft
+
 const propertyBody = Joi.object({
   title: titleField.required(),
   description: descField.optional(),
@@ -39,10 +47,10 @@ const propertyBody = Joi.object({
   location: locField.required(),
   latitude: Joi.number().min(-90).max(90).optional().allow(null),
   longitude: Joi.number().min(-180).max(180).optional().allow(null),
-  areaValue: Joi.number().min(0).optional().allow(null),
+  areaValue: Joi.number().min(0).max(AREA_MAX).optional().allow(null),
   areaUnit: Joi.string().valid(...AREA_UNITS).optional().allow('', null),
   bhk: masterCodeField.optional().allow('', null),
-  price: Joi.number().min(0).required(),
+  price: Joi.number().min(1).max(PRICE_MAX).required(),
   // Open-ended bag of extra fields the seller form collects (amenities,
   // landmark, etc.). Stored as JSON. Capped at 50 keys to keep payload sane.
   details: Joi.object().unknown(true).max(50).optional().allow(null),
@@ -58,7 +66,7 @@ router.get('/:id', validate(idParam, 'params'), async (req, res, next) => {
   catch (e) { next(e); }
 });
 
-router.post('/', validate(propertyBody), async (req, res, next) => {
+router.post('/', idempotency(), validate(propertyBody), async (req, res, next) => {
   try {
     res.status(201).json(await sellerProperties.createOwn(Number(req.auth.sub), req.body));
   } catch (e) { next(e); }

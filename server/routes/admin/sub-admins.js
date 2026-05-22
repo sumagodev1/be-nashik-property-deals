@@ -13,7 +13,9 @@ router.use(requireAuth, requireRole('admin'));
 
 const emailField = Joi.string().email({ tlds: { allow: false } }).max(255);
 const passwordField = Joi.string().min(8).max(128);
-const nameField = Joi.string().min(1).max(255).trim();
+const LETTERS_ONLY = /^[A-Za-z\s]+$/;
+const nameField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY)
+  .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
 const moduleField = Joi.string().valid(...MODULE_KEYS);
 
 const idParam = Joi.object({ id: Joi.number().integer().positive().required() });

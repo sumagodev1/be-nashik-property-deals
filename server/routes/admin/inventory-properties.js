@@ -4,6 +4,7 @@ const Joi = require('joi');
 const { validate } = require('../../middleware/validate');
 const { requireAuth, requireModule } = require('../../middleware/auth');
 const { imageUploadMiddleware, documentUploadMiddleware } = require('../../middleware/imageMulter');
+const idempotency = require('../../middleware/idempotency');
 const management = require('../../services/inventory/management');
 const {
   AREA_UNITS,
@@ -26,11 +27,22 @@ const subIdParam = Joi.object({
   fileId: Joi.number().integer().positive().required(),
 });
 
-const titleField = Joi.string().trim().min(1).max(255);
-const descField = Joi.string().trim().max(10000).allow('', null);
+// Project-wide rules:
+//   - Names (person names): 3–50 chars, letters + spaces ONLY.
+//   - Titles (property titles): 3–50 chars, letters + digits + spaces. No
+//     punctuation. "3 BHK Apartment" is valid; "3-BHK!" is not.
+//   - Descriptions: capped at 200 chars.
+// Mirror in src/shared/validation/rules.js on the frontend.
+const LETTERS_ONLY = /^[A-Za-z\s]+$/;
+const ALPHANUM_SPACE = /^[A-Za-z0-9\s]+$/;
+const titleField = Joi.string().trim().min(3).max(50).pattern(ALPHANUM_SPACE)
+  .messages({ 'string.pattern.base': 'Title can only contain letters, digits and spaces' });
+const descField = Joi.string().trim().max(200).allow('', null);
 const locField = Joi.string().trim().min(1).max(255);
-const phoneField = Joi.string().trim().pattern(/^[+\-0-9 ()]{6,20}$/).allow('', null);
-const personField = Joi.string().trim().max(255).allow('', null);
+const phoneField = Joi.string().trim().pattern(/^\d{10}$/).allow('', null)
+  .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number' });
+const personField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY).allow('', null)
+  .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
 
 const listQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
@@ -50,6 +62,13 @@ const listQuery = Joi.object({
     .default('created_at:desc'),
 });
 
+// Sanity ceilings — catch typos like an extra zero on price/area without
+// being so tight that they reject a real ultra-prime Nashik property.
+// 1000 crore (1e10) covers any conceivable real-estate price; 10 lakh sq.ft
+// covers any realistic land parcel.
+const PRICE_MAX = 1_000_00_00_000;
+const AREA_MAX = 10_00_000;
+
 // Drafts skip strict validation on price/transaction/etc — only title + type
 // are required for identification. Non-drafts use the standard required set.
 const propertyBody = Joi.object({
@@ -62,10 +81,13 @@ const propertyBody = Joi.object({
     then: locField.optional().allow('', null),
     otherwise: locField.required(),
   }),
-  areaValue: Joi.number().min(0).optional().allow(null),
+  areaValue: Joi.number().min(0).max(AREA_MAX).optional().allow(null),
   areaUnit: Joi.string().valid(...AREA_UNITS).optional().allow('', null),
   bhk: masterCodeField.optional().allow('', null),
-  price: Joi.number().min(0).when('isDraft', { is: true, then: Joi.optional(), otherwise: Joi.required() }),
+  price: Joi.number()
+    .min(0)
+    .max(PRICE_MAX)
+    .when('isDraft', { is: true, then: Joi.optional(), otherwise: Joi.number().min(1).required() }),
   status: masterCodeField.default('available'),
   isDraft: Joi.boolean().default(false),
   ownerName: personField.optional(),
@@ -73,9 +95,10 @@ const propertyBody = Joi.object({
   agentName: personField.optional(),
   agentContact: phoneField.optional(),
   // Open-ended bag of category-specific fields (flat floor / plot zoning /
-  // hostel timing / stamp duty breakdown / etc.). The form shape is defined
-  // on the client; the server just stores it as JSON. Capped at 64 KB to
-  // prevent abuse — well above what any real registration form would need.
+  // hostel timing / stamp duty breakdown / etc. + lat/lng map pin). The form
+  // shape is defined on the client; the server just stores it as JSON.
+  // Capped at 200 keys to prevent abuse — well above what any real
+  // registration form would need.
   details: Joi.object().unknown(true).max(200).optional().allow(null),
 });
 
@@ -159,7 +182,7 @@ router.get('/:id', validate(idParam, 'params'), async (req, res, next) => {
   }
 });
 
-router.post('/', validate(propertyBody), async (req, res, next) => {
+router.post('/', idempotency(), validate(propertyBody), async (req, res, next) => {
   try {
     const created = await management.createProperty({
       ...req.body,
@@ -190,7 +213,7 @@ router.put('/:id', validate(idParam, 'params'), validate(propertyBody), async (r
   }
 });
 
-router.patch('/:id/status', validate(idParam, 'params'), validate(statusBody), async (req, res, next) => {
+router.patch('/:id/status', idempotency(), validate(idParam, 'params'), validate(statusBody), async (req, res, next) => {
   try {
     const changedBy = req.auth?.role === 'admin' ? Number(req.auth.sub) : null;
     res.json(await management.updateStatus(req.params.id, req.body.status, req.body.note || null, changedBy));

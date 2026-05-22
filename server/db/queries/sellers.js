@@ -68,6 +68,20 @@ async function findActiveVerifiedByMobile(mobileNumber) {
   return rows[0] || null;
 }
 
+// Verified-but-possibly-inactive lookup — used by the login flow so we can
+// distinguish "no such account / not verified" (silent OTP no-op) from
+// "account was deactivated by admin" (explicit error to the user).
+async function findVerifiedByMobile(mobileNumber) {
+  const [rows] = await pool.query(
+    `SELECT id, user_type, full_name, mobile_number, email, is_active, is_verified
+     FROM sellers
+     WHERE mobile_number = ? AND deleted_at IS NULL AND is_verified = 1
+     LIMIT 1`,
+    [mobileNumber],
+  );
+  return rows[0] || null;
+}
+
 async function create(payload) {
   const [result] = await pool.query(
     `INSERT INTO sellers
@@ -248,6 +262,7 @@ module.exports = {
   findByEmail,
   findActiveVerifiedByEmail,
   findActiveVerifiedByMobile,
+  findVerifiedByMobile,
   create,
   updateRegistrationDraft,
   markVerified,

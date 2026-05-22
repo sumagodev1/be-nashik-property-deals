@@ -12,9 +12,12 @@ router.use(requireAuth, requireModule(MODULES.USER_MANAGEMENT));
 
 const idParam = Joi.object({ id: Joi.number().integer().positive().required() });
 
+const LETTERS_ONLY = /^[A-Za-z\s]+$/;
 const emailField = Joi.string().email({ tlds: { allow: false } }).max(255);
-const phoneField = Joi.string().trim().pattern(/^[+\-0-9 ()]{6,20}$/);
-const nameField = Joi.string().trim().min(1).max(255);
+const phoneField = Joi.string().trim().pattern(/^\d{10}$/)
+  .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number' });
+const nameField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY)
+  .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
 
 const sellersListQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),

@@ -25,11 +25,43 @@ const bannerUpdateBody = Joi.object({
 
 // Settings: only allowlisted keys can be written. Values are arbitrary text
 // (URLs, phone numbers, addresses, and longer free-form copy for about/contact).
-// 10k cap is generous — the underlying column is MEDIUMTEXT.
-const settingsBody = Joi.object().pattern(
-  Joi.string().valid(...CMS_SETTING_KEYS),
-  Joi.string().trim().max(10000).allow('', null),
-).min(1);
+// Per-key validators. The shape is intentionally lenient on empty values
+// (`.allow('', null)`) because clearing a setting is a valid operation —
+// the public site falls back to its default copy when a key is empty.
+// Non-empty values must satisfy the matching pattern + length cap. Mirror
+// these rules in src/admin/pages/Cms/ContactInfoForm.jsx on the frontend.
+// Strict 10-digit Indian mobile — matches the seller / buyer registration
+// flows and the frontend PHONE_PATTERN in src/shared/validation/rules.js.
+const PHONE_RE = /^\d{10}$/;
+const URL_RE   = /^https?:\/\/[^\s]+$/i;
+
+const optionalLen = (max) => Joi.string().trim().max(max).allow('', null);
+const optionalPhone = () => Joi.string().trim().length(10).pattern(PHONE_RE).allow('', null)
+  .messages({
+    'string.pattern.base': 'Enter a valid 10-digit mobile number',
+    'string.length': 'Mobile number must be exactly 10 digits',
+  });
+const optionalEmail = () => Joi.string().trim().max(255).email({ tlds: { allow: false } }).allow('', null);
+const optionalUrl = () => Joi.string().trim().max(500).pattern(URL_RE).allow('', null)
+  .messages({ 'string.pattern.base': 'Enter a full URL starting with http(s)://' });
+
+const settingsBody = Joi.object({
+  contact_number:    optionalPhone(),
+  alternate_contact: optionalPhone(),
+  contact_email:     optionalEmail(),
+  office_address:    optionalLen(500),
+  social_facebook:   optionalUrl(),
+  social_twitter:    optionalUrl(),
+  social_instagram:  optionalUrl(),
+  social_linkedin:   optionalUrl(),
+  social_youtube:    optionalUrl(),
+  site_tagline:      optionalLen(100),
+  support_hours:     optionalLen(200),
+  about_heading:     optionalLen(100),
+  about_content:     optionalLen(10000),
+  contact_heading:   optionalLen(100),
+  contact_intro:     optionalLen(500),
+}).min(1).unknown(false);
 
 // Banners --------------------------------------------------------------------
 
