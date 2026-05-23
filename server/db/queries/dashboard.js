@@ -154,6 +154,35 @@ async function topAreas({ limit = 10 } = {}) {
   return rows.map((r) => ({ location: r.location, count: Number(r.count) }));
 }
 
+// Website-only top areas. Used by the dashboard's split "Top areas" cards
+// so admin can see hotspots in seller-submitted listings vs the admin-
+// curated inventory side-by-side instead of as one merged total.
+async function topAreasWebsite({ limit = 10 } = {}) {
+  const [rows] = await pool.query(
+    `SELECT location, COUNT(*) AS count
+     FROM website_properties
+     WHERE deleted_at IS NULL AND location IS NOT NULL AND location != ''
+     GROUP BY location
+     ORDER BY count DESC, location ASC
+     LIMIT ?`,
+    [limit],
+  );
+  return rows.map((r) => ({ location: r.location, count: Number(r.count) }));
+}
+
+async function topAreasInventory({ limit = 10 } = {}) {
+  const [rows] = await pool.query(
+    `SELECT location, COUNT(*) AS count
+     FROM inventory_properties
+     WHERE deleted_at IS NULL AND location IS NOT NULL AND location != ''
+     GROUP BY location
+     ORDER BY count DESC, location ASC
+     LIMIT ?`,
+    [limit],
+  );
+  return rows.map((r) => ({ location: r.location, count: Number(r.count) }));
+}
+
 /**
  * Aggregated listings (website + inventory side-by-side) at a chosen bucket
  * granularity. Buckets are continuous — days/weeks/months with zero rows
@@ -365,6 +394,8 @@ module.exports = {
   listingsByPropertyType,
   listingsByTransactionType,
   topAreas,
+  topAreasWebsite,
+  topAreasInventory,
   sellerOnboardingByDay,
   sellerOnboardingByBucket,
   sellersByArea,

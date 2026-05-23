@@ -10,6 +10,8 @@ async function charts({ days = 30, granularity = 'daily', dateFrom = null, dateT
     propertyTypeDistribution,
     transactionTypeDistribution,
     topAreas,
+    topAreasWebsite,
+    topAreasInventory,
     sellerOnboarding,
     sellersByArea,
   ] = await Promise.all([
@@ -17,6 +19,8 @@ async function charts({ days = 30, granularity = 'daily', dateFrom = null, dateT
     dashboardRepo.listingsByPropertyType(),
     dashboardRepo.listingsByTransactionType(),
     dashboardRepo.topAreas({ limit: 10 }),
+    dashboardRepo.topAreasWebsite({ limit: 10 }),
+    dashboardRepo.topAreasInventory({ limit: 10 }),
     // Use the bucket version so weekly/monthly/custom granularity now applies
     // to the sellers chart too (was previously fixed at daily-30d).
     dashboardRepo.sellerOnboardingByBucket({ granularity, dateFrom, dateTo }),
@@ -27,6 +31,8 @@ async function charts({ days = 30, granularity = 'daily', dateFrom = null, dateT
     propertyTypeDistribution,
     transactionTypeDistribution,
     topAreas,
+    topAreasWebsite,
+    topAreasInventory,
     sellerOnboarding,
     sellersByArea,
     granularity,
