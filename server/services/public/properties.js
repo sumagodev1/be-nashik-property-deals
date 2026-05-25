@@ -2,7 +2,7 @@ const { HttpError } = require('../../middleware/errors');
 const publicProps = require('../../db/queries/public_properties');
 const propertyFiles = require('../../db/queries/property_files');
 
-const PUBLIC_URL_PREFIX = '/uploads/public';
+const { PUBLIC_URL_PREFIX } = require('../files/publicUrl');
 
 async function listPublic(query) {
   const { rows, total } = await publicProps.list(query);

@@ -18,7 +18,7 @@ async function validateMasterCodes(payload) {
   await masters.assertActiveCode('flat_type', payload.bhk);
 }
 
-const PUBLIC_URL_PREFIX = '/uploads/public';
+const { PUBLIC_URL_PREFIX } = require('../files/publicUrl');
 const SORTABLE_COLUMNS = {
   created_at: 'created_at',
   price: 'price',

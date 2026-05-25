@@ -16,7 +16,7 @@ async function validateMasterCodes(payload) {
   await masters.assertActiveCode('status_type', payload.status);
 }
 
-const PUBLIC_URL_PREFIX = '/uploads/public';
+const { PUBLIC_URL_PREFIX } = require('../files/publicUrl');
 
 // Export column order — matches what the admin would expect when reviewing
 // inventory offline. ALL columns from the data-entry form so nothing is lost.

@@ -40,7 +40,13 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
 }));
 
-app.use(helmet());
+// Helmet's default Cross-Origin-Resource-Policy is `same-origin`, which
+// prevents the frontend (on a different origin) from loading uploaded images
+// served from /uploads/public. Relax it to `cross-origin` so <img src> works
+// across origins. All other security headers stay enforced.
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 

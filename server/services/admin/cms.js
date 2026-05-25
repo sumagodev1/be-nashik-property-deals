@@ -1,6 +1,7 @@
 const { HttpError } = require('../../middleware/errors');
 const cmsRepo = require('../../db/queries/cms');
 const banners = require('../files/cmsBannerUpload');
+const { toAbsolutePublicUrl } = require('../files/publicUrl');
 const { isValidSettingKey, CMS_SETTING_KEYS } = require('../../constants/cms');
 
 // ---------- banners ----------
@@ -88,7 +89,7 @@ async function writeSettings(payload) {
 function toBanner(row) {
   return {
     id: row.id,
-    imageUrl: row.image_url,
+    imageUrl: toAbsolutePublicUrl(row.image_url),
     altText: row.alt_text,
     caption: row.caption,
     subcaption: row.subcaption,

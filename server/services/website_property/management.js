@@ -16,7 +16,7 @@ async function validateMasterCodes(payload) {
   await masters.assertActiveCode('flat_type', payload.bhk);
 }
 
-const PUBLIC_URL_PREFIX = '/uploads/public';
+const { PUBLIC_URL_PREFIX } = require('../files/publicUrl');
 
 const WEBSITE_HEADERS = [
   'property_code', 'approval_status', 'is_active', 'is_featured',
