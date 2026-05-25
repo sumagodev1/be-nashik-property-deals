@@ -88,6 +88,23 @@ async function findByCode(table, code) {
   return rows[0] || null;
 }
 
+// Case-insensitive lookup by label. Returns the row (with is_active) so the
+// caller can give the admin a useful "already exists" error that says
+// whether the conflicting row is active or inactive and what its id is.
+async function findByLabel(table, label, excludeId = null) {
+  assertTable(table);
+  const params = [String(label).toLowerCase()];
+  let sql = `SELECT id, code, label, sort_order, is_active
+             FROM ${table} WHERE LOWER(label) = ? AND deleted_at IS NULL`;
+  if (excludeId !== null) {
+    sql += ' AND id <> ?';
+    params.push(excludeId);
+  }
+  sql += ' LIMIT 1';
+  const [rows] = await pool.query(sql, params);
+  return rows[0] || null;
+}
+
 async function activeCodes(table) {
   assertTable(table);
   const [rows] = await pool.query(
@@ -155,6 +172,7 @@ module.exports = {
   listAll,
   findById,
   findByCode,
+  findByLabel,
   activeCodes,
   codeTaken,
   labelTaken,

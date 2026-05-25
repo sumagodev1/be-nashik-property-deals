@@ -163,11 +163,29 @@ async function create(masterKey, payload) {
   const table = tableFor(masterKey);
   const label = assertValidLabel(masterKey, payload.label);
   const code = String(payload.code || '').trim().toLowerCase();
-  if (await repo.codeTaken(table, code)) {
-    throw new HttpError(409, 'CODE_TAKEN', `A ${MASTER_LABELS[masterKey].toLowerCase()} with code "${code}" already exists`);
+
+  // Helpful duplicate errors — include the existing row's id + status so
+  // the admin knows *where to find it* (often on a later pagination page
+  // they didn't think to check) and whether it just needs reactivating.
+  const existingByCode = await repo.findByCode(table, code);
+  if (existingByCode) {
+    const status = existingByCode.is_active ? 'currently active' : 'currently inactive — you can reactivate it';
+    throw new HttpError(
+      409,
+      'CODE_TAKEN',
+      `A ${MASTER_LABELS[masterKey].toLowerCase()} with code "${code}" already exists (#${existingByCode.id}, ${status}). Search the list for "${existingByCode.label}" to find it.`,
+      { existingId: existingByCode.id, existingLabel: existingByCode.label, isActive: Boolean(existingByCode.is_active) },
+    );
   }
-  if (await repo.labelTaken(table, label)) {
-    throw new HttpError(409, 'LABEL_TAKEN', `A ${MASTER_LABELS[masterKey].toLowerCase()} named "${label}" already exists`);
+  const existingByLabel = await repo.findByLabel(table, label);
+  if (existingByLabel) {
+    const status = existingByLabel.is_active ? 'currently active' : 'currently inactive — you can reactivate it';
+    throw new HttpError(
+      409,
+      'LABEL_TAKEN',
+      `A ${MASTER_LABELS[masterKey].toLowerCase()} named "${existingByLabel.label}" already exists (#${existingByLabel.id}, ${status}). Search the list for "${existingByLabel.label}" to find it.`,
+      { existingId: existingByLabel.id, existingLabel: existingByLabel.label, isActive: Boolean(existingByLabel.is_active) },
+    );
   }
   const id = await repo.create(table, {
     code,

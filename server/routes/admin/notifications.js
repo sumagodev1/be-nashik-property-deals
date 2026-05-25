@@ -3,6 +3,7 @@ const Joi = require('joi');
 
 const { validate } = require('../../middleware/validate');
 const { requireAuth, requireRole } = require('../../middleware/auth');
+const { HttpError } = require('../../middleware/errors');
 const notifications = require('../../db/queries/notifications');
 
 const router = express.Router();
@@ -48,7 +49,13 @@ router.get('/unread-count', async (req, res, next) => {
 
 router.patch('/:id/read', validate(idParam, 'params'), async (req, res, next) => {
   try {
-    const ok = await notifications.markRead(req.params.id);
+    const ok = await notifications.markRead(req.params.id, {
+      allowedModules: allowedModulesFor(req),
+    });
+    // `ok = false` means the row doesn't exist OR is outside the caller's
+    // module scope. 404 in both cases so we don't leak whether a notification
+    // exists for a module the sub-admin can't see.
+    if (!ok) throw new HttpError(404, 'NOT_FOUND', 'Notification not found');
     res.json({ ok });
   } catch (e) { next(e); }
 });

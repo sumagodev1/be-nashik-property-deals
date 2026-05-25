@@ -4,10 +4,12 @@
  * (Buy / Rent / Lease) are prepended to the message field at storage time so
  * we don't need a separate schema column.
  *
- * As of 2026-05-14 this uses mobile-channel OTP, matching all other public
- * OTP flows. Email is optional auxiliary contact info, not the OTP destination.
+ * Per CLAUDE.md the OTP delivery channel is SMTP (email). Email is REQUIRED
+ * — without it we have no OTP delivery address. Mobile is captured as the
+ * contact-back number the admin will dial.
  */
 
+const { HttpError } = require('../../middleware/errors');
 const leadsQ = require('../../db/queries/leads');
 const notificationsQ = require('../../db/queries/notifications');
 const otp = require('../auth/otp');
@@ -21,9 +23,19 @@ const TRANSACTION_TYPE_LABELS = {
 };
 
 async function start({ name, mobile, email }) {
+  if (!email || !String(email).trim()) {
+    throw new HttpError(
+      400,
+      'EMAIL_REQUIRED',
+      'Email is required so we can send your verification code.',
+    );
+  }
+  const buyerEmail = String(email).trim().toLowerCase();
+
   const issued = await otp.issue({
     purpose: 'buyer_lead',
-    channel: 'sms',
+    channel: 'email',
+    email: buyerEmail,
     mobileNumber: mobile,
     label: 'enquiry',
   });
@@ -34,17 +46,21 @@ async function start({ name, mobile, email }) {
 }
 
 async function verify({ name, mobile, email, code, message, categories }) {
+  if (!email || !String(email).trim()) {
+    throw new HttpError(400, 'EMAIL_REQUIRED', 'Email is required to verify your code.');
+  }
+  const buyerEmail = String(email).trim().toLowerCase();
+
   await otp.verify({
     purpose: 'buyer_lead',
-    channel: 'sms',
-    mobileNumber: mobile,
+    channel: 'email',
+    email: buyerEmail,
     code,
   });
 
   const cleanedMessage = composeMessage({ categories, message });
   const buyerName = name.trim();
   const buyerMobile = mobile.trim();
-  const buyerEmail = email && email.trim() ? email.trim().toLowerCase() : null;
 
   const leadId = await leadsQ.create({
     websitePropertyId: null,

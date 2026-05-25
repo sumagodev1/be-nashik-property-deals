@@ -5,12 +5,22 @@ const { signAccessToken } = require('../auth/tokens');
 
 /**
  * Start registration: validate uniqueness, upsert an unverified seller record,
- * issue a mobile (SMS) OTP. Same mobile re-attempt updates the pending record.
+ * issue an EMAIL OTP. Same mobile re-attempt updates the pending record.
  *
- * Email is optional. When provided, we still guard against collisions with a
- * different verified seller's email.
+ * Per CLAUDE.md the OTP delivery channel is SMTP (email), not SMS. Mobile
+ * stays the unique key for the seller account — email is just the OTP
+ * delivery address. Email is REQUIRED for registration.
  */
 async function registerStart(payload) {
+  if (!payload.email || !String(payload.email).trim()) {
+    throw new HttpError(
+      400,
+      'EMAIL_REQUIRED',
+      'Email is required so we can send your verification code.',
+    );
+  }
+  const email = String(payload.email).trim().toLowerCase();
+
   const existingByMobile = await sellers.findByMobile(payload.mobileNumber);
 
   if (existingByMobile && existingByMobile.is_verified) {
@@ -21,24 +31,22 @@ async function registerStart(payload) {
     );
   }
 
-  if (payload.email) {
-    const existingByEmail = await sellers.findByEmail(payload.email);
-    if (
-      existingByEmail &&
-      existingByEmail.is_verified &&
-      (!existingByMobile || existingByEmail.id !== existingByMobile.id)
-    ) {
-      throw new HttpError(
-        409,
-        'EMAIL_TAKEN',
-        'This email is already linked to another account.',
-      );
-    }
+  const existingByEmail = await sellers.findByEmail(email);
+  if (
+    existingByEmail &&
+    existingByEmail.is_verified &&
+    (!existingByMobile || existingByEmail.id !== existingByMobile.id)
+  ) {
+    throw new HttpError(
+      409,
+      'EMAIL_TAKEN',
+      'This email is already linked to another account.',
+    );
   }
 
   let sellerId;
   if (existingByMobile) {
-    await sellers.updateRegistrationDraft(existingByMobile.id, payload);
+    await sellers.updateRegistrationDraft(existingByMobile.id, { ...payload, email });
     sellerId = existingByMobile.id;
   } else {
     // A previously-deleted seller may still own the mobile_number slot in
@@ -46,27 +54,24 @@ async function registerStart(payload) {
     // soft-deleted rows) returned nothing. Release it before INSERT so the
     // signup doesn't trip ER_DUP_ENTRY for a row the admin already removed.
     await sellers.releaseSoftDeletedMobile(payload.mobileNumber);
-    sellerId = await sellers.create(payload);
+    sellerId = await sellers.create({ ...payload, email });
   }
 
   const issued = await otp.issue({
     purpose: 'seller_register',
-    channel: 'sms',
-    mobileNumber: payload.mobileNumber,
+    channel: 'email',
+    email,
+    mobileNumber: payload.mobileNumber, // stored on the OTP row for traceability
     label: 'registration',
   });
 
-  return withDevCode({ mobileNumber: payload.mobileNumber, sellerId }, issued);
+  return withDevCode(
+    { mobileNumber: payload.mobileNumber, email, sellerId },
+    issued,
+  );
 }
 
 async function registerVerify({ mobileNumber, code }) {
-  await otp.verify({
-    purpose: 'seller_register',
-    channel: 'sms',
-    mobileNumber,
-    code,
-  });
-
   const seller = await sellers.findByMobile(mobileNumber);
   if (!seller) {
     throw new HttpError(
@@ -75,6 +80,24 @@ async function registerVerify({ mobileNumber, code }) {
       'No registration in progress for this mobile number.',
     );
   }
+  if (!seller.email) {
+    // Shouldn't happen now that registerStart enforces email, but defend in
+    // depth — without an email there's no way the user could have received
+    // an OTP to verify.
+    throw new HttpError(
+      400,
+      'NO_EMAIL',
+      'This registration is missing an email address. Please start over.',
+    );
+  }
+
+  await otp.verify({
+    purpose: 'seller_register',
+    channel: 'email',
+    email: String(seller.email).toLowerCase(),
+    code,
+  });
+
   if (seller.is_verified) {
     return issueToken(seller);
   }
@@ -90,7 +113,7 @@ async function loginStart({ mobileNumber }) {
   //
   //   1. Verified but inactive → ACCOUNT_DEACTIVATED (403)
   //   2. No verified account   → NOT_FOUND (dev) / silent OK (prod, anti-enum)
-  //   3. Verified + active     → issue OTP normally
+  //   3. Verified + active     → issue OTP to their stored email
   const verified = await sellers.findVerifiedByMobile(mobileNumber);
   if (verified && !verified.is_active) {
     throw new HttpError(
@@ -110,13 +133,25 @@ async function loginStart({ mobileNumber }) {
     }
     throw new HttpError(404, 'NOT_FOUND', 'No account found for this mobile number.');
   }
+  if (!seller.email) {
+    // Edge case — a legacy seller record predating the email requirement.
+    // Without an email we can't deliver the OTP. Surface a clear message.
+    throw new HttpError(
+      409,
+      'NO_EMAIL_ON_FILE',
+      'Your account has no email on file. Please contact support to update it.',
+    );
+  }
   const issued = await otp.issue({
     purpose: 'seller_login',
-    channel: 'sms',
+    channel: 'email',
+    email: String(seller.email).toLowerCase(),
     mobileNumber,
     label: 'sign-in',
   });
-  return withDevCode({ ok: true }, issued);
+  // Return a masked email hint so the UI can tell the user where the OTP went
+  // ("o***@gmail.com") without leaking the full address.
+  return withDevCode({ ok: true, emailHint: maskEmail(seller.email) }, issued);
 }
 
 async function loginVerify({ mobileNumber, code }) {
@@ -133,13 +168,23 @@ async function loginVerify({ mobileNumber, code }) {
   }
   const seller = await sellers.findActiveVerifiedByMobile(mobileNumber);
   if (!seller) throw new HttpError(400, 'OTP_INVALID', 'Code is invalid or has expired.');
+  if (!seller.email) throw new HttpError(409, 'NO_EMAIL_ON_FILE', 'Your account has no email on file.');
   await otp.verify({
     purpose: 'seller_login',
-    channel: 'sms',
-    mobileNumber,
+    channel: 'email',
+    email: String(seller.email).toLowerCase(),
     code,
   });
   return issueToken(seller);
+}
+
+// Mask the local part of an email so we can hint at the OTP destination
+// without revealing the full address. "sakshi@gmail.com" → "s****i@gmail.com".
+function maskEmail(email) {
+  if (!email || typeof email !== 'string' || !email.includes('@')) return '';
+  const [local, domain] = email.split('@');
+  if (local.length <= 2) return `${local[0] || ''}***@${domain}`;
+  return `${local[0]}${'*'.repeat(Math.max(1, local.length - 2))}${local[local.length - 1]}@${domain}`;
 }
 
 function issueToken(seller) {

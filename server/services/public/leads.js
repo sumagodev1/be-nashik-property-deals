@@ -12,17 +12,29 @@ const ACTION_LABELS = {
 };
 
 /**
- * Step 1: validate property exists and is publicly visible, then issue a
- * mobile (SMS) OTP to the buyer. Email is optional — kept only as a
- * follow-up contact channel for admin if the buyer chose to share it.
+ * Step 1: validate property exists and is publicly visible, then issue an
+ * EMAIL OTP to the buyer. Per CLAUDE.md the OTP channel is SMTP (email);
+ * mobile stays the contact-back number the seller/admin will dial.
+ *
+ * Email is REQUIRED — without it we have no OTP delivery address.
  */
 async function start({ propertyId, name, mobile, email }) {
   const prop = await publicProps.findActiveById(propertyId);
   if (!prop) throw new HttpError(404, 'PROPERTY_UNAVAILABLE', 'This property is no longer available.');
 
+  if (!email || !String(email).trim()) {
+    throw new HttpError(
+      400,
+      'EMAIL_REQUIRED',
+      'Email is required so we can send your verification code.',
+    );
+  }
+  const buyerEmail = String(email).trim().toLowerCase();
+
   const issued = await otp.issue({
     purpose: 'buyer_lead',
-    channel: 'sms',
+    channel: 'email',
+    email: buyerEmail,
     mobileNumber: mobile,
     label: 'enquiry',
   });
@@ -38,14 +50,17 @@ async function verify({ propertyId, actionType, name, mobile, email, code, messa
   const prop = await publicProps.findActiveById(propertyId);
   if (!prop) throw new HttpError(404, 'PROPERTY_UNAVAILABLE', 'This property is no longer available.');
 
+  if (!email || !String(email).trim()) {
+    throw new HttpError(400, 'EMAIL_REQUIRED', 'Email is required to verify your code.');
+  }
+  const buyerEmail = String(email).trim().toLowerCase();
+
   await otp.verify({
     purpose: 'buyer_lead',
-    channel: 'sms',
-    mobileNumber: mobile,
+    channel: 'email',
+    email: buyerEmail,
     code,
   });
-
-  const buyerEmail = email && email.trim() ? email.trim().toLowerCase() : null;
 
   const leadId = await leadsQ.create({
     websitePropertyId: propertyId,

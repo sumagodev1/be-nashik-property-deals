@@ -72,10 +72,27 @@ async function unreadCount({ allowedModules }) {
   return Number(count);
 }
 
-async function markRead(id) {
+// Scope-aware mark-read. The same `allowedModules` shape used by list() /
+// unreadCount() / markAllRead() — admin (null) sees everything; sub-admin
+// (array) can only touch rows whose module_key is null OR in their list.
+// Returns true only if a row was actually flipped — false means the row
+// didn't exist OR was outside the caller's scope (caller treats both as 404).
+async function markRead(id, { allowedModules } = {}) {
+  const where = ['id = ?'];
+  const params = [id];
+
+  if (Array.isArray(allowedModules)) {
+    if (allowedModules.length === 0) {
+      where.push('module_key IS NULL');
+    } else {
+      where.push('(module_key IS NULL OR module_key IN (?))');
+      params.push(allowedModules);
+    }
+  }
+
   const [result] = await pool.query(
-    `UPDATE notifications SET is_read = 1 WHERE id = ?`,
-    [id],
+    `UPDATE notifications SET is_read = 1 WHERE ${where.join(' AND ')}`,
+    params,
   );
   return result.affectedRows > 0;
 }

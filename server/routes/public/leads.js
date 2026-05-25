@@ -5,6 +5,7 @@ const rateLimit = require('express-rate-limit');
 const { validate } = require('../../middleware/validate');
 const idempotency = require('../../middleware/idempotency');
 const leadService = require('../../services/public/leads');
+const { verifyCaptcha } = require('../../services/auth/captcha');
 
 const router = express.Router();
 
@@ -29,7 +30,9 @@ const startBody = Joi.object({
   actionType: Joi.string().valid('contact_seller', 'view_location').required(),
   name: nameField.required(),
   mobile: mobileField.required(),
-  email: emailField.optional().allow('', null),
+  // OTP delivery is email per CLAUDE.md, so email is required.
+  email: emailField.required(),
+  captchaToken: Joi.string().allow('', null).optional(),
 });
 
 const verifyBody = Joi.object({
@@ -37,15 +40,22 @@ const verifyBody = Joi.object({
   actionType: Joi.string().valid('contact_seller', 'view_location').required(),
   name: nameField.required(),
   mobile: mobileField.required(),
-  email: emailField.optional().allow('', null),
+  email: emailField.required(),
   code: codeField.required(),
   message: Joi.string().trim().max(2000).allow('', null).optional(),
 });
 
 router.post('/start', captureLimiter, idempotency(), validate(startBody), async (req, res, next) => {
-  try { res.json(await leadService.start(req.body)); } catch (e) { next(e); }
+  try {
+    await verifyCaptcha(req.body.captchaToken, req.ip);
+    const { captchaToken, ...payload } = req.body;
+    res.json(await leadService.start(payload));
+  } catch (e) { next(e); }
 });
 
+// /verify is intentionally not captcha-gated — the 6-digit OTP code is the
+// gate at this stage, and the user already passed captcha at /start. Adding
+// a second captcha here would force a re-solve mid-flow with no security gain.
 router.post('/verify', captureLimiter, idempotency(), validate(verifyBody), async (req, res, next) => {
   try { res.json(await leadService.verify(req.body)); } catch (e) { next(e); }
 });

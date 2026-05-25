@@ -5,6 +5,7 @@ const subAdmins = require('../../db/queries/sub_admins');
 const subAdminModules = require('../../db/queries/sub_admin_modules');
 const sellers = require('../../db/queries/sellers');
 const { signAccessToken } = require('./tokens');
+const refresh = require('./refresh');
 
 const GENERIC_FAILURE = new HttpError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
 const DUMMY_HASH = '$2b$12$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalida';
@@ -20,8 +21,10 @@ async function login({ email, password }) {
     if (!ok) throw GENERIC_FAILURE;
     await admins.updateLastLogin(admin.id);
     const token = signAccessToken({ subjectId: admin.id, role: 'admin', modules: [] });
+    const refreshToken = await refresh.issue({ subjectKind: 'admin', subjectId: admin.id });
     return {
       token,
+      refreshToken,
       user: {
         id: admin.id,
         email: admin.email,
@@ -50,8 +53,10 @@ async function login({ email, password }) {
     const modules = await subAdminModules.listForSubAdmin(sub.id);
     await subAdmins.updateLastLogin(sub.id);
     const token = signAccessToken({ subjectId: sub.id, role: 'sub_admin', modules });
+    const refreshToken = await refresh.issue({ subjectKind: 'sub_admin', subjectId: sub.id });
     return {
       token,
+      refreshToken,
       user: {
         id: sub.id,
         email: sub.email,

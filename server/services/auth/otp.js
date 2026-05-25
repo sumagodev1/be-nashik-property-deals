@@ -10,7 +10,13 @@ const TTL_MINUTES = Number(process.env.OTP_TTL_MINUTES) || 10;
 const MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS) || 5;
 const RATE_PER_MINUTE = Number(process.env.OTP_RATE_PER_MINUTE) || 1;
 const RATE_PER_HOUR = Number(process.env.OTP_RATE_PER_HOUR) || 5;
-const BCRYPT_COST = 10;
+// Cost 12 matches the project's password-hashing standard (login.js,
+// sub_admin/management.js, password_reset.js). The OTP space is small
+// (10⁶ codes) so the marginal CPU cost per issue is negligible — a brute
+// force is gated by MAX_ATTEMPTS=5 well before bcrypt cost matters. Kept
+// at 12 anyway so a future bcrypt-rehash audit doesn't flag this row as
+// the weakest link.
+const BCRYPT_COST = 12;
 
 // Static dev OTP — same code every time so manual testing doesn't require
 // hunting through email/SMS during development. Override via env if you want

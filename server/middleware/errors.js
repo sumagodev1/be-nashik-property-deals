@@ -21,7 +21,16 @@ function errorHandler(err, req, res, _next) {
     console.error('[error]', { code, status, msg: err.message, stack: err.stack });
   }
 
-  res.status(status).json({ error: { code, message } });
+  // Include `details` on the response when the thrower provided them and the
+  // status isn't 5xx (don't leak internal context on server errors). The
+  // frontend axios interceptor already forwards `details` to callers, so
+  // pages can use them — e.g. show a "Reactivate existing row" button when
+  // a duplicate-create error returns the existing row's id.
+  const body = { error: { code, message } };
+  if (status < 500 && err.details !== undefined && err.details !== null) {
+    body.error.details = err.details;
+  }
+  res.status(status).json(body);
 }
 
 module.exports = { HttpError, notFound, errorHandler };

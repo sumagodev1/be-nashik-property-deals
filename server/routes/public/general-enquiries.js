@@ -5,6 +5,7 @@ const rateLimit = require('express-rate-limit');
 const { validate } = require('../../middleware/validate');
 const idempotency = require('../../middleware/idempotency');
 const service = require('../../services/public/general_enquiries');
+const { verifyCaptcha } = require('../../services/auth/captcha');
 const { TRANSACTION_TYPES } = require('../../constants/property');
 
 const router = express.Router();
@@ -29,22 +30,30 @@ const categoryField = Joi.string().valid(...TRANSACTION_TYPES);
 const startBody = Joi.object({
   name: nameField.required(),
   mobile: mobileField.required(),
-  email: emailField.optional().allow('', null),
+  // OTP delivery is email per CLAUDE.md, so email is required.
+  email: emailField.required(),
+  captchaToken: Joi.string().allow('', null).optional(),
 });
 
 const verifyBody = Joi.object({
   name: nameField.required(),
   mobile: mobileField.required(),
-  email: emailField.optional().allow('', null),
+  email: emailField.required(),
   code: codeField.required(),
   message: Joi.string().trim().max(2000).allow('', null).optional(),
   categories: Joi.array().items(categoryField).unique().max(3).optional(),
 });
 
 router.post('/start', limiter, idempotency(), validate(startBody), async (req, res, next) => {
-  try { res.json(await service.start(req.body)); } catch (e) { next(e); }
+  try {
+    await verifyCaptcha(req.body.captchaToken, req.ip);
+    const { captchaToken, ...payload } = req.body;
+    res.json(await service.start(payload));
+  } catch (e) { next(e); }
 });
 
+// /verify is intentionally not captcha-gated — the OTP code is the gate at
+// this stage, and the user already solved the captcha at /start.
 router.post('/verify', limiter, idempotency(), validate(verifyBody), async (req, res, next) => {
   try { res.json(await service.verify(req.body)); } catch (e) { next(e); }
 });
