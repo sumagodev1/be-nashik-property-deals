@@ -44,6 +44,16 @@ const verifyBody = Joi.object({
   categories: Joi.array().items(categoryField).unique().max(3).optional(),
 });
 
+// One-step submit for the public Contact Us form. Captcha gates spam; no OTP.
+const submitBody = Joi.object({
+  name: nameField.required(),
+  mobile: mobileField.required(),
+  email: emailField.required(),
+  message: Joi.string().trim().max(2000).allow('', null).optional(),
+  categories: Joi.array().items(categoryField).unique().max(3).optional(),
+  captchaToken: Joi.string().allow('', null).optional(),
+});
+
 router.post('/start', limiter, idempotency(), validate(startBody), async (req, res, next) => {
   try {
     await verifyCaptcha(req.body.captchaToken, req.ip);
@@ -56,6 +66,17 @@ router.post('/start', limiter, idempotency(), validate(startBody), async (req, r
 // this stage, and the user already solved the captcha at /start.
 router.post('/verify', limiter, idempotency(), validate(verifyBody), async (req, res, next) => {
   try { res.json(await service.verify(req.body)); } catch (e) { next(e); }
+});
+
+// /submit is the no-OTP path used by the public Contact Us form. Captcha is
+// the spam gate (same widget as /start). Property-specific lead capture
+// (Contact Seller / View Location) keeps the OTP flow above.
+router.post('/submit', limiter, idempotency(), validate(submitBody), async (req, res, next) => {
+  try {
+    await verifyCaptcha(req.body.captchaToken, req.ip);
+    const { captchaToken, ...payload } = req.body;
+    res.json(await service.submit(payload));
+  } catch (e) { next(e); }
 });
 
 module.exports = router;

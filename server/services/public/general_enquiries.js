@@ -148,4 +148,54 @@ function escapeHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
-module.exports = { start, verify };
+/**
+ * One-step submit used by the public Contact Us form. No OTP — captcha is the
+ * spam gate at the route level. Property-specific lead capture flows
+ * (Contact Seller / View Location on a property detail page) still go through
+ * start() + verify() per CLAUDE.md.
+ */
+async function submit({ name, mobile, email, message, categories }) {
+  const buyerEmail = email && String(email).trim()
+    ? String(email).trim().toLowerCase()
+    : null;
+  const buyerName = name.trim();
+  const buyerMobile = mobile.trim();
+  const cleanedMessage = composeMessage({ categories, message });
+
+  const leadId = await leadsQ.create({
+    websitePropertyId: null,
+    actionType: 'general_enquiry',
+    buyerName,
+    buyerMobile,
+    buyerEmail,
+    message: cleanedMessage,
+  });
+
+  try {
+    await notificationsQ.create({
+      kind: 'lead.created',
+      title: `New general enquiry from ${buyerName}`,
+      body: `${buyerName} (${buyerMobile}${buyerEmail ? ` / ${buyerEmail}` : ''}) submitted a general enquiry${categoriesSummary(categories) ? ` — interested in: ${categoriesSummary(categories)}` : ''}.`,
+      relatedKind: 'lead',
+      relatedId: leadId,
+      moduleKey: MODULES.LEAD_MANAGEMENT,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[general-enquiry] notification insert failed:', err.message);
+  }
+
+  const adminEmail = process.env.ADMIN_NOTIFICATION_EMAIL;
+  if (adminEmail) {
+    void trySendMail({
+      to: adminEmail,
+      subject: `[Enquiry] General — ${buyerName}`,
+      text: buildAdminEmailText({ buyerName, buyerMobile, buyerEmail, message, categories }),
+      html: buildAdminEmailHtml({ buyerName, buyerMobile, buyerEmail, message, categories }),
+    });
+  }
+
+  return { ok: true, leadId };
+}
+
+module.exports = { start, verify, submit };
