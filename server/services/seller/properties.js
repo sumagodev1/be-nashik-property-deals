@@ -223,6 +223,66 @@ function parseDetailsField(raw) {
   try { return JSON.parse(raw) || {}; } catch { return {}; }
 }
 
+/**
+ * Per-listing analytics for the seller dashboard: view counts (from the
+ * denormalized counter bumped by the public detail endpoint) + per-status
+ * lead counts (joined from `leads`). Limited to the seller's own listings.
+ */
+async function analyticsOwn(sellerId) {
+  const [rows] = await pool.query(
+    `SELECT wp.id, wp.property_code, wp.title, wp.approval_status, wp.is_featured,
+            wp.is_active, wp.view_count, wp.created_at, wp.approved_at,
+            COALESCE(lc.total_leads, 0)     AS total_leads,
+            COALESCE(lc.new_leads, 0)       AS new_leads,
+            COALESCE(lc.contacted_leads, 0) AS contacted_leads,
+            COALESCE(lc.closed_won, 0)      AS closed_won
+       FROM website_properties wp
+       LEFT JOIN (
+         SELECT website_property_id,
+                COUNT(*)                                  AS total_leads,
+                SUM(status = 'new')                       AS new_leads,
+                SUM(status = 'contacted')                 AS contacted_leads,
+                SUM(status = 'closed_won')                AS closed_won
+           FROM leads
+           WHERE deleted_at IS NULL
+           GROUP BY website_property_id
+       ) lc ON lc.website_property_id = wp.id
+      WHERE wp.seller_id = ? AND wp.deleted_at IS NULL
+      ORDER BY wp.created_at DESC, wp.id DESC`,
+    [sellerId],
+  );
+  const totals = rows.reduce(
+    (acc, r) => {
+      acc.views     += Number(r.view_count);
+      acc.leads     += Number(r.total_leads);
+      acc.contacted += Number(r.contacted_leads);
+      acc.won       += Number(r.closed_won);
+      return acc;
+    },
+    { views: 0, leads: 0, contacted: 0, won: 0 },
+  );
+  return {
+    totals,
+    properties: rows.map((r) => ({
+      id: r.id,
+      propertyCode: r.property_code,
+      title: r.title,
+      approvalStatus: r.approval_status,
+      isFeatured: Boolean(r.is_featured),
+      isActive: Boolean(r.is_active),
+      viewCount: Number(r.view_count),
+      leads: {
+        total: Number(r.total_leads),
+        new: Number(r.new_leads),
+        contacted: Number(r.contacted_leads),
+        won: Number(r.closed_won),
+      },
+      createdAt: r.created_at,
+      approvedAt: r.approved_at,
+    })),
+  };
+}
+
 module.exports = {
   listOwn,
   getOwn,
@@ -233,4 +293,5 @@ module.exports = {
   removeImage,
   addAmenities,
   removeAmenity,
+  analyticsOwn,
 };

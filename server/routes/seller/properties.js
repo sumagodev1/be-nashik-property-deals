@@ -61,6 +61,13 @@ router.get('/', validate(listQuery, 'query'), async (req, res, next) => {
   catch (e) { next(e); }
 });
 
+// Per-listing analytics (views + lead counts). Registered before /:id so the
+// router doesn't try to parse "analytics" as a numeric property id.
+router.get('/analytics', async (req, res, next) => {
+  try { res.json(await sellerProperties.analyticsOwn(Number(req.auth.sub))); }
+  catch (e) { next(e); }
+});
+
 router.get('/:id', validate(idParam, 'params'), async (req, res, next) => {
   try { res.json(await sellerProperties.getOwn(Number(req.auth.sub), req.params.id)); }
   catch (e) { next(e); }

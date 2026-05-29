@@ -19,6 +19,15 @@ const chartsQuery = Joi.object({
     .when('granularity', { is: 'custom', then: Joi.required(), otherwise: Joi.optional() }),
   dateTo: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/)
     .when('granularity', { is: 'custom', then: Joi.required(), otherwise: Joi.optional() }),
+}).custom((value, helpers) => {
+  // Cross-field guard: dateFrom must not be after dateTo on custom ranges.
+  // ISO YYYY-MM-DD sorts lexicographically, so a string compare is safe.
+  if (value.granularity === 'custom' && value.dateFrom && value.dateTo && value.dateFrom > value.dateTo) {
+    return helpers.error('any.invalid', { message: 'dateFrom cannot be after dateTo' });
+  }
+  return value;
+}, 'date range order').messages({
+  'any.invalid': 'dateFrom cannot be after dateTo',
 });
 
 router.get('/kpi', async (req, res, next) => {

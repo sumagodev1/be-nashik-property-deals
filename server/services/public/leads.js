@@ -4,6 +4,7 @@ const leadsQ = require('../../db/queries/leads');
 const notificationsQ = require('../../db/queries/notifications');
 const otp = require('../auth/otp');
 const { trySendMail } = require('../email/transporter');
+const { renderEmail, sectionTitle, kvRow, kvTable, infoCard, quoteBlock, BRAND } = require('../email/emailTemplate');
 const { MODULES } = require('../../constants/modules');
 
 const ACTION_LABELS = {
@@ -113,23 +114,36 @@ function buildAdminEmailText({ prop, actionType, name, mobile, email, message })
 }
 
 function buildAdminEmailHtml({ prop, actionType, name, mobile, email, message }) {
-  return `<div style="font-family: Arial, sans-serif; max-width: 560px;">
-  <h2 style="color:#175a96;">New ${ACTION_LABELS[actionType]} enquiry</h2>
-  <p><strong>Property:</strong> ${escapeHtml(prop.property_code)} — ${escapeHtml(prop.title)}</p>
-  <p><strong>Buyer:</strong> ${escapeHtml(name)}<br/>
-     <strong>Mobile:</strong> ${escapeHtml(mobile)}${email ? `<br/><strong>Email:</strong> ${escapeHtml(email)}` : ''}</p>
-  ${message ? `<p><strong>Message:</strong><br/>${escapeHtml(message)}</p>` : ''}
-  <p style="color:#666;font-size:12px;">Manage at /admin/leads</p>
-</div>`;
-}
+  const adminPanelUrl = process.env.ADMIN_PANEL_URL || `${process.env.PUBLIC_BASE_URL || ''}/admin/leads`;
+  const actionLabel = ACTION_LABELS[actionType] || 'Enquiry';
+  const body = `
+    ${infoCard({
+      eyebrow: 'Property',
+      title: prop.property_code,
+      subtitle: prop.title,
+      accent: BRAND.brand,
+    })}
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    ${sectionTitle('Buyer details')}
+    ${kvTable(
+      kvRow('Name', name) +
+      kvRow('Mobile', mobile, { mono: true, link: `tel:${mobile}` }) +
+      (email ? kvRow('Email', email, { link: `mailto:${email}` }) : '') +
+      kvRow('Action', actionLabel)
+    )}
+
+    ${message ? `${sectionTitle('Buyer\'s message')}${quoteBlock(message)}` : ''}
+  `;
+  return renderEmail({
+    preheader: `New ${actionLabel} enquiry for ${prop.property_code} from ${name}`,
+    title: `New ${actionLabel} enquiry`,
+    intro: 'A buyer just submitted an enquiry on one of your listings. Reach out while interest is fresh.',
+    bodyHtml: body,
+    ctaHref: adminPanelUrl,
+    ctaLabel: 'Open in Admin Panel',
+    accentColor: BRAND.primary,
+    footerNote: 'You\'re receiving this because your address is set as the admin notification email.',
+  });
 }
 
 module.exports = { start, verify };

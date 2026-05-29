@@ -107,13 +107,32 @@ async function create({ email, password, fullName, isActive, modules, createdByA
   }
   const moduleKeys = dedupeModules(modules || []);
   const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
-  const id = await subAdmins.create({
-    email,
-    passwordHash,
-    fullName,
-    isActive: isActive !== false,
-    createdByAdminId,
-  });
+
+  // sub_admins.email is UNIQUE at the DB level across ALL rows including
+  // soft-deleted ones. If a previous sub admin with this email was deleted,
+  // a fresh INSERT would crash with ER_DUP_ENTRY. Restore-in-place instead:
+  // wipe deleted_at, re-key the row with the new password / name / modules.
+  // The id stays the same so any historical audit-log / lead-assignment
+  // entries still resolve to a real row, but the row is functionally a
+  // brand-new account.
+  const existing = await subAdmins.findAnyByEmail(email);
+  let id;
+  if (existing && existing.deleted_at) {
+    await subAdmins.restoreSoftDeleted(existing.id, {
+      passwordHash,
+      fullName,
+      isActive: isActive !== false,
+    });
+    id = existing.id;
+  } else {
+    id = await subAdmins.create({
+      email,
+      passwordHash,
+      fullName,
+      isActive: isActive !== false,
+      createdByAdminId,
+    });
+  }
   await modulesRepo.replaceForSubAdmin(id, moduleKeys);
   // Email the new sub admin so they know the account exists. We deliberately
   // do NOT email the password the admin typed — they must use Forgot Password

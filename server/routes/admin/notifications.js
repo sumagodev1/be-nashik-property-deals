@@ -28,10 +28,17 @@ function allowedModulesFor(req) {
   return Array.isArray(req.auth.modules) ? req.auth.modules : [];
 }
 
+function actorFor(req) {
+  // Used for per-user targeted notifications. Privately targeted rows are
+  // visible only when this actor matches the row's target.
+  return { type: req.auth.role, id: Number(req.auth.sub) || 0 };
+}
+
 router.get('/', validate(listQuery, 'query'), async (req, res, next) => {
   try {
     const { rows, total } = await notifications.list({
       allowedModules: allowedModulesFor(req),
+      actor: actorFor(req),
       isRead: req.query.isRead,
       limit: req.query.limit,
       offset: req.query.offset,
@@ -42,7 +49,10 @@ router.get('/', validate(listQuery, 'query'), async (req, res, next) => {
 
 router.get('/unread-count', async (req, res, next) => {
   try {
-    const count = await notifications.unreadCount({ allowedModules: allowedModulesFor(req) });
+    const count = await notifications.unreadCount({
+      allowedModules: allowedModulesFor(req),
+      actor: actorFor(req),
+    });
     res.json({ count });
   } catch (e) { next(e); }
 });
@@ -51,6 +61,7 @@ router.patch('/:id/read', validate(idParam, 'params'), async (req, res, next) =>
   try {
     const ok = await notifications.markRead(req.params.id, {
       allowedModules: allowedModulesFor(req),
+      actor: actorFor(req),
     });
     // `ok = false` means the row doesn't exist OR is outside the caller's
     // module scope. 404 in both cases so we don't leak whether a notification
@@ -62,7 +73,10 @@ router.patch('/:id/read', validate(idParam, 'params'), async (req, res, next) =>
 
 router.post('/read-all', async (req, res, next) => {
   try {
-    const updated = await notifications.markAllRead({ allowedModules: allowedModulesFor(req) });
+    const updated = await notifications.markAllRead({
+      allowedModules: allowedModulesFor(req),
+      actor: actorFor(req),
+    });
     res.json({ updated });
   } catch (e) { next(e); }
 });

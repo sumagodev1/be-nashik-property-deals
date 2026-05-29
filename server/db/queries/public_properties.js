@@ -29,7 +29,22 @@ async function list({ page, pageSize, search, propertyType, transactionType, loc
     const s = `%${search}%`;
     params.push(s, s, s, s);
   }
-  if (propertyType) { where.push('wp.property_type = ?'); params.push(propertyType); }
+  // Multi-select aware. The route layer passes either a single code
+  // ("flat") or a comma-separated list ("flat,villa,land") — collapse into
+  // an IN clause so a buyer can shortlist several property types at once.
+  if (propertyType) {
+    const types = String(propertyType)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (types.length === 1) {
+      where.push('wp.property_type = ?');
+      params.push(types[0]);
+    } else if (types.length > 1) {
+      where.push(`wp.property_type IN (${types.map(() => '?').join(',')})`);
+      params.push(...types);
+    }
+  }
   if (transactionType) { where.push('wp.transaction_type = ?'); params.push(transactionType); }
   if (location) { where.push('wp.location LIKE ?'); params.push(`%${location}%`); }
   if (priceMin !== undefined) { where.push('wp.price >= ?'); params.push(priceMin); }
@@ -95,6 +110,19 @@ async function findByIdentifier(identifier) {
     [identifier],
   );
   return rows[0] || null;
+}
+
+/**
+ * Atomically bump the view counter on a public property. Used by the public
+ * detail endpoint for seller analytics. Failures are non-fatal — the detail
+ * response should still serve even if the counter update hiccups.
+ */
+async function incrementViewCount(id) {
+  await pool.query(
+    `UPDATE website_properties SET view_count = view_count + 1
+     WHERE id = ? AND approval_status = 'approved' AND is_active = 1 AND deleted_at IS NULL`,
+    [id],
+  );
 }
 
 async function attachImageList(rows) {
@@ -166,4 +194,77 @@ async function findActiveById(id) {
   return rows[0] || null;
 }
 
-module.exports = { list, findByIdentifier, listFeatured, listLatest, findActiveById };
+/**
+ * Pick `limit` other approved listings similar to the given property. Match
+ * rules in priority order:
+ *   1. same propertyType + transactionType + price within ±30%
+ *   2. fallback: same propertyType only
+ *   3. fallback: same transactionType only
+ * Excludes the source property itself. Newest first within each tier.
+ */
+async function listSimilar({ excludeId, propertyType, transactionType, price, limit = 4 }) {
+  const cappedLimit = Math.min(20, Math.max(1, limit));
+  const priceMin = price ? Number(price) * 0.7 : null;
+  const priceMax = price ? Number(price) * 1.3 : null;
+
+  const baseSelect = `
+    SELECT wp.id, wp.property_code, wp.title, wp.description, wp.property_type, wp.transaction_type,
+           wp.location, wp.latitude, wp.longitude, wp.price, wp.bhk, wp.area_value, wp.area_unit,
+           wp.is_featured, wp.approved_at,
+           (SELECT pf.stored_name FROM property_files pf
+            WHERE pf.property_kind = 'website' AND pf.property_id = wp.id AND pf.file_kind = 'image'
+            ORDER BY pf.sort_order ASC, pf.id ASC LIMIT 1) AS cover_stored_name
+    FROM website_properties wp
+    WHERE ${PUBLIC_WHERE} AND wp.id <> ?
+  `;
+
+  // Tier 1: same type + transaction + price window
+  let rows = [];
+  if (price && propertyType && transactionType) {
+    const [t1] = await pool.query(
+      `${baseSelect}
+         AND wp.property_type = ?
+         AND wp.transaction_type = ?
+         AND wp.price BETWEEN ? AND ?
+       ORDER BY wp.approved_at DESC, wp.id DESC
+       LIMIT ?`,
+      [excludeId, propertyType, transactionType, priceMin, priceMax, cappedLimit],
+    );
+    rows = t1;
+  }
+
+  // Tier 2: same propertyType only — top up if tier 1 was thin
+  if (rows.length < cappedLimit && propertyType) {
+    const need = cappedLimit - rows.length;
+    const seenIds = rows.map((r) => r.id);
+    const [t2] = await pool.query(
+      `${baseSelect}
+         AND wp.property_type = ?
+         ${seenIds.length ? 'AND wp.id NOT IN (?)' : ''}
+       ORDER BY wp.approved_at DESC, wp.id DESC
+       LIMIT ?`,
+      seenIds.length ? [excludeId, propertyType, seenIds, need] : [excludeId, propertyType, need],
+    );
+    rows = rows.concat(t2);
+  }
+
+  // Tier 3: same transactionType — final top-up
+  if (rows.length < cappedLimit && transactionType) {
+    const need = cappedLimit - rows.length;
+    const seenIds = rows.map((r) => r.id);
+    const [t3] = await pool.query(
+      `${baseSelect}
+         AND wp.transaction_type = ?
+         ${seenIds.length ? 'AND wp.id NOT IN (?)' : ''}
+       ORDER BY wp.approved_at DESC, wp.id DESC
+       LIMIT ?`,
+      seenIds.length ? [excludeId, transactionType, seenIds, need] : [excludeId, transactionType, need],
+    );
+    rows = rows.concat(t3);
+  }
+
+  await attachImageList(rows);
+  return rows;
+}
+
+module.exports = { list, findByIdentifier, listFeatured, listLatest, findActiveById, listSimilar, incrementViewCount };

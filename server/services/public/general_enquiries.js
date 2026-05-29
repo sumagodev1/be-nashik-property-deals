@@ -14,6 +14,7 @@ const leadsQ = require('../../db/queries/leads');
 const notificationsQ = require('../../db/queries/notifications');
 const otp = require('../auth/otp');
 const { trySendMail } = require('../email/transporter');
+const { renderEmail, sectionTitle, kvRow, kvTable, quoteBlock, BRAND } = require('../email/emailTemplate');
 const { MODULES } = require('../../constants/modules');
 
 const TRANSACTION_TYPE_LABELS = {
@@ -129,23 +130,28 @@ function buildAdminEmailText({ buyerName, buyerMobile, buyerEmail, message, cate
 
 function buildAdminEmailHtml({ buyerName, buyerMobile, buyerEmail, message, categories }) {
   const summary = categoriesSummary(categories);
-  return `<div style="font-family: Arial, sans-serif; max-width: 560px;">
-  <h2 style="color:#175a96;">New general enquiry</h2>
-  <p><strong>Buyer:</strong> ${escapeHtml(buyerName)}<br/>
-     <strong>Mobile:</strong> ${escapeHtml(buyerMobile)}${buyerEmail ? `<br/><strong>Email:</strong> ${escapeHtml(buyerEmail)}` : ''}</p>
-  ${summary ? `<p><strong>Interested in:</strong> ${escapeHtml(summary)}</p>` : ''}
-  ${message && message.trim() ? `<p><strong>Message:</strong><br/>${escapeHtml(message)}</p>` : ''}
-  <p style="color:#666;font-size:12px;">Manage at /admin/leads</p>
-</div>`;
-}
+  const adminPanelUrl = process.env.ADMIN_PANEL_URL || `${process.env.PUBLIC_BASE_URL || ''}/admin/leads`;
+  const body = `
+    ${sectionTitle('Buyer details')}
+    ${kvTable(
+      kvRow('Name', buyerName) +
+      kvRow('Mobile', buyerMobile, { mono: true, link: `tel:${buyerMobile}` }) +
+      (buyerEmail ? kvRow('Email', buyerEmail, { link: `mailto:${buyerEmail}` }) : '') +
+      (summary ? kvRow('Interested in', summary) : '')
+    )}
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    ${message && message.trim() ? `${sectionTitle('Their message')}${quoteBlock(message)}` : ''}
+  `;
+  return renderEmail({
+    preheader: `New general enquiry from ${buyerName}`,
+    title: 'New general enquiry',
+    intro: 'A visitor just reached out through the Contact Us form. No specific property — they want to start a conversation.',
+    bodyHtml: body,
+    ctaHref: adminPanelUrl,
+    ctaLabel: 'Open in Admin Panel',
+    accentColor: BRAND.primary,
+    footerNote: 'You\'re receiving this because your address is set as the admin notification email.',
+  });
 }
 
 /**

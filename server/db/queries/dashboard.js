@@ -33,8 +33,11 @@ async function counters() {
   const [[leads]] = await pool.query(`
     SELECT
       SUM(deleted_at IS NULL) AS total_leads,
-      SUM(deleted_at IS NULL AND status = 'new') AS new_leads,
-      SUM(deleted_at IS NULL AND status = 'contacted') AS contacted_leads
+      SUM(deleted_at IS NULL AND status = 'new')          AS new_leads,
+      SUM(deleted_at IS NULL AND status = 'contacted')    AS contacted_leads,
+      SUM(deleted_at IS NULL AND status = 'site_visit')   AS site_visit_leads,
+      SUM(deleted_at IS NULL AND status = 'closed_won')   AS closed_won_leads,
+      SUM(deleted_at IS NULL AND status = 'closed_lost')  AS closed_lost_leads
     FROM leads
   `);
 
@@ -60,6 +63,9 @@ async function counters() {
       total: num(leads.total_leads),
       new: num(leads.new_leads),
       contacted: num(leads.contacted_leads),
+      siteVisit: num(leads.site_visit_leads),
+      closedWon: num(leads.closed_won_leads),
+      closedLost: num(leads.closed_lost_leads),
     },
   };
 }

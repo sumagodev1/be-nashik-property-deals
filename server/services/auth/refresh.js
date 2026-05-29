@@ -4,6 +4,7 @@ const refreshTokensRepo = require('../../db/queries/refresh_tokens');
 const admins = require('../../db/queries/admins');
 const subAdmins = require('../../db/queries/sub_admins');
 const subAdminModules = require('../../db/queries/sub_admin_modules');
+const sellers = require('../../db/queries/sellers');
 const { signAccessToken } = require('./tokens');
 
 // Refresh token TTL — 30 days unless overridden by env. The refresh cookie
@@ -33,7 +34,7 @@ function expiresAtSql(days = REFRESH_TTL_DAYS) {
  * string (to set as a cookie on the response) — the hash is what gets stored.
  */
 async function issue({ subjectKind, subjectId }) {
-  if (subjectKind !== 'admin' && subjectKind !== 'sub_admin') {
+  if (subjectKind !== 'admin' && subjectKind !== 'sub_admin' && subjectKind !== 'seller') {
     throw new Error(`refresh.issue: unsupported subjectKind ${subjectKind}`);
   }
   const raw = generateRandomToken();
@@ -152,6 +153,26 @@ async function loadSubject(subjectKind, subjectId) {
         fullName: sub.full_name,
         role: 'sub_admin',
         modules,
+      }),
+    };
+  }
+  if (subjectKind === 'seller') {
+    const seller = await sellers.findActiveById(Number(subjectId));
+    // Seller must still be verified — an unverified or deactivated seller
+    // shouldn't ride a stale refresh cookie back into the app.
+    if (!seller || !seller.is_verified) return null;
+    return {
+      id: seller.id,
+      role: 'seller',
+      modules: [],
+      toUser: () => ({
+        id: seller.id,
+        email: seller.email,
+        mobile: seller.mobile_number,
+        fullName: seller.full_name,
+        userType: seller.user_type,
+        role: 'seller',
+        modules: [],
       }),
     };
   }

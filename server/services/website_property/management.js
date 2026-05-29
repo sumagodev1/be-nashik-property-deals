@@ -9,6 +9,8 @@ const excel = require('../files/excel');
 const { buildTablePdf } = require('../files/pdf');
 const { assignUniqueCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
+const { trySendMail } = require('../email/transporter');
+const { renderEmail, sectionTitle, kvRow, kvTable, infoCard, quoteBlock, BRAND } = require('../email/emailTemplate');
 
 async function validateMasterCodes(payload) {
   await masters.assertActiveCode('property_type', payload.propertyType);
@@ -112,6 +114,12 @@ async function approveProperty(id, adminId) {
   const existing = await wp.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   await wp.approve(id, adminId);
+  // Tell the seller the good news — fire-and-forget so an email hiccup
+  // never blocks the approval itself.
+  void notifySellerOnApproval(existing).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.warn('[property-approved] seller email failed:', err.message);
+  });
   return getProperty(id);
 }
 
@@ -119,7 +127,104 @@ async function rejectProperty(id, adminId, reason) {
   const existing = await wp.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   await wp.reject(id, adminId, reason);
+  void notifySellerOnRejection(existing, reason).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.warn('[property-rejected] seller email failed:', err.message);
+  });
   return getProperty(id);
+}
+
+/**
+ * Seller-facing email when their submission is approved and goes live on
+ * the public site. Best-effort — the approval transaction commits before
+ * we attempt to email, so SMTP issues never block the workflow.
+ */
+async function notifySellerOnApproval(prop) {
+  if (!prop?.seller_email) return;
+  const publicUrl = `${process.env.PUBLIC_BASE_URL || ''}/properties/${prop.id}`;
+  const subject = `Your listing ${prop.property_code} is live`;
+  const text = [
+    `Hi ${prop.seller_name || 'there'},`,
+    '',
+    `Great news — your property has been approved and is now live on Nashik Property Deals.`,
+    '',
+    `Property: ${prop.property_code} — ${prop.title}`,
+    `View it:  ${publicUrl}`,
+    '',
+    `Buyers can now contact you through the platform.`,
+    '',
+    `— Nashik Property Deals team`,
+  ].join('\n');
+  const html = renderEmail({
+    preheader: `Your listing ${prop.property_code} is approved and live`,
+    title: `Hi ${prop.seller_name || 'there'}, your listing is now live`,
+    intro: 'Great news — your property has been approved and is now visible to buyers on Nashik Property Deals.',
+    bodyHtml: `
+      ${infoCard({
+        eyebrow: 'Your listing',
+        title: prop.property_code,
+        subtitle: prop.title,
+        accent: '#10b981',
+      })}
+      ${sectionTitle('What happens next')}
+      <p style="margin:8px 0 0 0;font-size:13.5px;line-height:1.6;color:${BRAND.text};">
+        Buyers can now click <strong>Contact Seller</strong> or <strong>View Location</strong>
+        on your listing. Every enquiry comes through our team — we verify the buyer with an
+        OTP, then route the lead to you.
+      </p>
+    `,
+    ctaHref: publicUrl,
+    ctaLabel: 'View your live listing',
+    accentColor: '#10b981',
+    footerNote: 'Need to make changes? Log in and visit My Listed Properties.',
+  });
+  await trySendMail({ to: prop.seller_email, subject, text, html });
+}
+
+/**
+ * Seller-facing email when their submission is rejected. The rejection
+ * reason (if the admin typed one) is surfaced as a block-quoted note so
+ * the seller knows what to fix before re-submitting.
+ */
+async function notifySellerOnRejection(prop, reason) {
+  if (!prop?.seller_email) return;
+  const profileUrl = `${process.env.PUBLIC_BASE_URL || ''}/seller/profile`;
+  const subject = `Update on your listing ${prop.property_code}`;
+  const text = [
+    `Hi ${prop.seller_name || 'there'},`,
+    '',
+    `Your submitted property could not be approved at this time.`,
+    '',
+    `Property: ${prop.property_code} — ${prop.title}`,
+    reason ? `\nReviewer's note:\n${reason}\n` : '',
+    `You can edit the listing and re-submit it from your profile: ${profileUrl}`,
+    '',
+    `— Nashik Property Deals team`,
+  ].join('\n');
+  const html = renderEmail({
+    preheader: `Your listing ${prop.property_code} needs changes before it can go live`,
+    title: `Hi ${prop.seller_name || 'there'}, your listing needs some changes`,
+    intro: 'Your property submission was reviewed but could not be approved as-is. You can update it and re-submit from your profile.',
+    bodyHtml: `
+      ${infoCard({
+        eyebrow: 'Listing reviewed',
+        title: prop.property_code,
+        subtitle: prop.title,
+        accent: '#ef4444',
+      })}
+      ${reason ? `${sectionTitle('Reviewer\'s note')}${quoteBlock(reason)}` : ''}
+      ${sectionTitle('What to do next')}
+      <p style="margin:8px 0 0 0;font-size:13.5px;line-height:1.6;color:${BRAND.text};">
+        Open the listing from <strong>My Listed Properties</strong>, address the points above,
+        and submit it again — our team will review the updated version.
+      </p>
+    `,
+    ctaHref: profileUrl,
+    ctaLabel: 'Edit and re-submit',
+    accentColor: '#ef4444',
+    footerNote: 'Need help? Reply to this notification address or reach us through Contact Us.',
+  });
+  await trySendMail({ to: prop.seller_email, subject, text, html });
 }
 
 async function setActive(id, isActive) {

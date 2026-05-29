@@ -22,6 +22,12 @@ async function getPublic(identifier) {
     propertyFiles.listForProperty(null, 'website', row.id),
     propertyFiles.listAmenitiesForProperty(null, 'website', row.id),
   ]);
+  // Fire-and-forget view counter bump for seller analytics. Detail response
+  // serves regardless of whether the counter update succeeds.
+  publicProps.incrementViewCount(row.id).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.warn('[view-count] increment failed:', err.message);
+  });
   return toDetail(row, images, amenityFiles);
 }
 
@@ -98,4 +104,17 @@ function parseDetailsField(raw) {
   try { return JSON.parse(raw) || {}; } catch { return {}; }
 }
 
-module.exports = { listPublic, getPublic, featured, latest };
+async function similar({ id, limit = 4 }) {
+  const source = await publicProps.findByIdentifier(String(id));
+  if (!source) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  const rows = await publicProps.listSimilar({
+    excludeId: source.id,
+    propertyType: source.property_type,
+    transactionType: source.transaction_type,
+    price: source.price,
+    limit,
+  });
+  return rows.map(toListItem);
+}
+
+module.exports = { listPublic, getPublic, featured, latest, similar };

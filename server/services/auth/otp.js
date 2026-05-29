@@ -3,6 +3,7 @@ const bcrypt = require('bcrypt');
 
 const otpQueries = require('../../db/queries/otp_codes');
 const { trySendMail } = require('../email/transporter');
+const { renderEmail, BRAND } = require('../email/emailTemplate');
 const { trySendSms } = require('../sms/sender');
 const { HttpError } = require('../../middleware/errors');
 
@@ -174,12 +175,39 @@ If you did not request this, ignore this email.
 }
 
 function buildHtmlBody(code, label) {
-  return `<div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
-  <h2 style="color: #175a96;">Nasik Property Deals</h2>
-  <p>Your ${label} code is:</p>
-  <p style="font-size: 28px; font-weight: bold; letter-spacing: 4px; background:#f0f7ff; padding: 12px 16px; display:inline-block; border-radius:6px;">${code}</p>
-  <p style="color:#666; font-size: 13px;">Valid for ${TTL_MINUTES} minutes. If you did not request this, ignore this email.</p>
-</div>`;
+  // OTP code rendered as a big, monospace, letter-spaced block so it's
+  // unmistakable in the inbox. Wrapped in the shared template so the OTP
+  // email carries the same brand bar + footer as every other system mail.
+  const otpBlock = `
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:8px 0 0 0;">
+      <tr>
+        <td align="center" style="background:#f0f7ff;border:1px solid #d0e4f7;border-radius:10px;padding:22px 16px;">
+          <div style="font-size:11px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:${BRAND.muted};margin-bottom:8px;">
+            Your ${label} code
+          </div>
+          <div style="font-family:Menlo,Consolas,monospace;font-size:34px;font-weight:700;letter-spacing:10px;color:${BRAND.primary};">
+            ${code}
+          </div>
+          <div style="margin-top:10px;font-size:12px;color:${BRAND.muted};">
+            Expires in ${TTL_MINUTES} minutes
+          </div>
+        </td>
+      </tr>
+    </table>
+  `;
+  return renderEmail({
+    preheader: `Your ${label} code: ${code} (valid ${TTL_MINUTES} min)`,
+    title: `Your ${label} verification code`,
+    intro: `Enter this 6-digit code in the app to complete your ${label}. It expires in ${TTL_MINUTES} minutes.`,
+    bodyHtml: otpBlock + `
+      <p style="margin:18px 0 0 0;font-size:13px;color:${BRAND.muted};line-height:1.6;">
+        Didn't request this code? You can safely ignore this email — no action will be taken on your account.
+        Never share this code with anyone, including someone claiming to be from our team.
+      </p>
+    `,
+    accentColor: BRAND.primary,
+    footerNote: 'For your security, this code expires shortly and cannot be reused.',
+  });
 }
 
 function buildSmsBody(code, label) {

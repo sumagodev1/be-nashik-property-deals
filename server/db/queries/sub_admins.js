@@ -59,6 +59,37 @@ async function emailTaken(email, excludeId = null) {
   return rows.length > 0;
 }
 
+// Returns a row matching `email` even if it's soft-deleted. Used by the
+// create flow to give a friendly error (and an option to restore) instead
+// of letting the INSERT hit MySQL's unique-index and crash with ER_DUP_ENTRY.
+async function findAnyByEmail(email) {
+  const [rows] = await pool.query(
+    `SELECT id, email, full_name, is_active, deleted_at
+     FROM sub_admins
+     WHERE email = ?
+     LIMIT 1`,
+    [email],
+  );
+  return rows[0] || null;
+}
+
+// Bring a previously soft-deleted sub admin back to life with the new
+// password / name supplied in the recreate form. The id stays the same so
+// historical audit-log entries and lead-assignment records still resolve
+// to a real row. Module assignments are wiped — the caller re-inserts the
+// new module set right after this call.
+async function restoreSoftDeleted(id, { passwordHash, fullName, isActive }) {
+  await pool.query(
+    `UPDATE sub_admins
+        SET deleted_at = NULL,
+            password_hash = ?,
+            full_name = ?,
+            is_active = ?
+      WHERE id = ?`,
+    [passwordHash, fullName, isActive ? 1 : 0, id],
+  );
+}
+
 async function list({ page, pageSize, search, isActive }) {
   const offset = (page - 1) * pageSize;
   const where = ['deleted_at IS NULL'];
@@ -123,6 +154,22 @@ async function updateLastLogin(id) {
   await pool.query('UPDATE sub_admins SET last_login_at = NOW() WHERE id = ?', [id]);
 }
 
+// Sub-admins that have lead_management module access AND are active. Used to
+// populate the "Assign to" picker on the Kanban board so admins can route a
+// lead only to a teammate who can actually act on it.
+async function listAssignableForLeads() {
+  const [rows] = await pool.query(
+    `SELECT sa.id, sa.full_name, sa.email
+     FROM sub_admins sa
+     INNER JOIN sub_admin_modules sam ON sam.sub_admin_id = sa.id
+     WHERE sa.deleted_at IS NULL
+       AND sa.is_active = 1
+       AND sam.module_key = 'lead_management'
+     ORDER BY sa.full_name ASC, sa.id ASC`,
+  );
+  return rows;
+}
+
 module.exports = {
   findActiveByEmail,
   findByEmail,
@@ -135,4 +182,7 @@ module.exports = {
   updatePassword,
   softDelete,
   updateLastLogin,
+  listAssignableForLeads,
+  findAnyByEmail,
+  restoreSoftDeleted,
 };

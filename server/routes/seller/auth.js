@@ -6,6 +6,22 @@ const { validate } = require('../../middleware/validate');
 const idempotency = require('../../middleware/idempotency');
 const auth = require('../../services/seller/auth');
 const { verifyCaptcha } = require('../../services/auth/captcha');
+const refresh = require('../../services/auth/refresh');
+
+/**
+ * Some seller auth endpoints (register/verify, login/verify) hand back a
+ * { token, user, refreshToken? } triple. The raw refresh token must land
+ * in an httpOnly cookie — never in the JSON body — so the front end can
+ * silent-refresh after a reload but JS code can't lift it.
+ */
+function respondWithSession(res, result) {
+  if (result && result.refreshToken) {
+    refresh.setRefreshCookie(res, result.refreshToken);
+    const { refreshToken, ...body } = result;
+    return res.json(body);
+  }
+  return res.json(result);
+}
 
 const router = express.Router();
 
@@ -63,12 +79,19 @@ const registerVerify = Joi.object({
 });
 
 const loginStart = Joi.object({
-  mobileNumber: mobileField.required(),
+  email: emailField.required(),
   captchaToken: Joi.string().allow('', null).optional(),
 });
 const loginVerify = Joi.object({
-  mobileNumber: mobileField.required(),
+  email: emailField.required(),
   code: codeField.required(),
+});
+// Registration resend still keys on the mobile number captured at signup
+// (the user hasn't typed an email since registering, so we look them up
+// the same way the registration flow does).
+const registerResend = Joi.object({
+  mobileNumber: mobileField.required(),
+  captchaToken: Joi.string().allow('', null).optional(),
 });
 
 router.post('/register/start', startLimiter, idempotency(), validate(registerStart), async (req, res, next) => {
@@ -80,10 +103,10 @@ router.post('/register/start', startLimiter, idempotency(), validate(registerSta
 });
 
 router.post('/register/verify', verifyLimiter, idempotency(), validate(registerVerify), async (req, res, next) => {
-  try { res.json(await auth.registerVerify(req.body)); } catch (e) { next(e); }
+  try { respondWithSession(res, await auth.registerVerify(req.body)); } catch (e) { next(e); }
 });
 
-router.post('/register/resend', startLimiter, validate(loginStart), async (req, res, next) => {
+router.post('/register/resend', startLimiter, validate(registerResend), async (req, res, next) => {
   try {
     const sellers = require('../../db/queries/sellers');
     const otp = require('../../services/auth/otp');
@@ -115,7 +138,7 @@ router.post('/login/start', startLimiter, validate(loginStart), async (req, res,
 });
 
 router.post('/login/verify', verifyLimiter, validate(loginVerify), async (req, res, next) => {
-  try { res.json(await auth.loginVerify(req.body)); } catch (e) { next(e); }
+  try { respondWithSession(res, await auth.loginVerify(req.body)); } catch (e) { next(e); }
 });
 
 module.exports = router;

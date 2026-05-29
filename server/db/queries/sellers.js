@@ -82,6 +82,19 @@ async function findVerifiedByMobile(mobileNumber) {
   return rows[0] || null;
 }
 
+// Same as findVerifiedByMobile but keyed by email. Used by email-based login
+// so we can tell apart "no such account" / "deactivated" / "active".
+async function findVerifiedByEmail(email) {
+  const [rows] = await pool.query(
+    `SELECT id, user_type, full_name, mobile_number, email, is_active, is_verified
+     FROM sellers
+     WHERE email = ? AND deleted_at IS NULL AND is_verified = 1
+     LIMIT 1`,
+    [email],
+  );
+  return rows[0] || null;
+}
+
 async function create(payload) {
   const [result] = await pool.query(
     `INSERT INTO sellers
@@ -295,6 +308,7 @@ module.exports = {
   findActiveVerifiedByEmail,
   findActiveVerifiedByMobile,
   findVerifiedByMobile,
+  findVerifiedByEmail,
   create,
   updateRegistrationDraft,
   markVerified,

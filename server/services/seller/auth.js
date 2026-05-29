@@ -2,6 +2,7 @@ const { HttpError } = require('../../middleware/errors');
 const sellers = require('../../db/queries/sellers');
 const otp = require('../auth/otp');
 const { signAccessToken } = require('../auth/tokens');
+const refresh = require('../auth/refresh');
 
 /**
  * Start registration: validate uniqueness, upsert an unverified seller record,
@@ -99,22 +100,25 @@ async function registerVerify({ mobileNumber, code }) {
   });
 
   if (seller.is_verified) {
-    return issueToken(seller);
+    return issueTokenWithRefresh(seller);
   }
 
   await sellers.markVerified(seller.id);
   const fresh = await sellers.findById(seller.id);
-  return issueToken(fresh);
+  return issueTokenWithRefresh(fresh);
 }
 
-async function loginStart({ mobileNumber }) {
-  // Distinguish three cases up-front so the user gets an actionable message
-  // instead of a generic "not found" when their account was just deactivated.
+async function loginStart({ email }) {
+  // Login is now keyed by email (the OTP destination). Mobile is still the
+  // unique seller key in the DB, but the user only needs to remember the
+  // address they registered with.
   //
+  // Same three-case branching:
   //   1. Verified but inactive → ACCOUNT_DEACTIVATED (403)
   //   2. No verified account   → NOT_FOUND (dev) / silent OK (prod, anti-enum)
-  //   3. Verified + active     → issue OTP to their stored email
-  const verified = await sellers.findVerifiedByMobile(mobileNumber);
+  //   3. Verified + active     → issue OTP to that email
+  const lowerEmail = String(email).trim().toLowerCase();
+  const verified = await sellers.findVerifiedByEmail(lowerEmail);
   if (verified && !verified.is_active) {
     throw new HttpError(
       403,
@@ -122,43 +126,33 @@ async function loginStart({ mobileNumber }) {
       'Your account has been deactivated by the admin. Please contact support to restore access.',
     );
   }
-  const seller = await sellers.findActiveVerifiedByMobile(mobileNumber);
+  const seller = await sellers.findActiveVerifiedByEmail(lowerEmail);
   if (!seller) {
-    // In production, don't reveal whether the mobile is registered — silently
-    // claim "OTP sent" so attackers can't enumerate which numbers exist.
+    // In production, don't reveal whether the email is registered — silently
+    // claim "OTP sent" so attackers can't enumerate which addresses exist.
     // In dev/staging, return a clear 404 so the developer gets fast feedback
     // instead of advancing to an OTP step that's guaranteed to fail.
     if (process.env.NODE_ENV === 'production') {
       return { ok: true };
     }
-    throw new HttpError(404, 'NOT_FOUND', 'No account found for this mobile number.');
-  }
-  if (!seller.email) {
-    // Edge case — a legacy seller record predating the email requirement.
-    // Without an email we can't deliver the OTP. Surface a clear message.
-    throw new HttpError(
-      409,
-      'NO_EMAIL_ON_FILE',
-      'Your account has no email on file. Please contact support to update it.',
-    );
+    throw new HttpError(404, 'NOT_FOUND', 'No account found for this email.');
   }
   const issued = await otp.issue({
     purpose: 'seller_login',
     channel: 'email',
-    email: String(seller.email).toLowerCase(),
-    mobileNumber,
+    email: lowerEmail,
+    mobileNumber: seller.mobile_number,
     label: 'sign-in',
   });
-  // Return a masked email hint so the UI can tell the user where the OTP went
-  // ("o***@gmail.com") without leaking the full address.
   return withDevCode({ ok: true, emailHint: maskEmail(seller.email) }, issued);
 }
 
-async function loginVerify({ mobileNumber, code }) {
+async function loginVerify({ email, code }) {
+  const lowerEmail = String(email).trim().toLowerCase();
   // Same deactivation guard — somebody who already had a session start
   // (OTP requested before deactivation) shouldn't slip through the verify
   // step afterwards either.
-  const verified = await sellers.findVerifiedByMobile(mobileNumber);
+  const verified = await sellers.findVerifiedByEmail(lowerEmail);
   if (verified && !verified.is_active) {
     throw new HttpError(
       403,
@@ -166,16 +160,15 @@ async function loginVerify({ mobileNumber, code }) {
       'Your account has been deactivated by the admin. Please contact support to restore access.',
     );
   }
-  const seller = await sellers.findActiveVerifiedByMobile(mobileNumber);
+  const seller = await sellers.findActiveVerifiedByEmail(lowerEmail);
   if (!seller) throw new HttpError(400, 'OTP_INVALID', 'Code is invalid or has expired.');
-  if (!seller.email) throw new HttpError(409, 'NO_EMAIL_ON_FILE', 'Your account has no email on file.');
   await otp.verify({
     purpose: 'seller_login',
     channel: 'email',
-    email: String(seller.email).toLowerCase(),
+    email: lowerEmail,
     code,
   });
-  return issueToken(seller);
+  return issueTokenWithRefresh(seller);
 }
 
 // Mask the local part of an email so we can hint at the OTP destination
@@ -193,6 +186,15 @@ function issueToken(seller) {
     token,
     user: toUser(seller),
   };
+}
+
+// Issues both an access token AND a refresh token so the seller's session
+// survives page reload. The raw refresh token is returned for the route
+// layer to set in an httpOnly cookie; it never reaches the JSON body.
+async function issueTokenWithRefresh(seller) {
+  const { token, user } = issueToken(seller);
+  const refreshToken = await refresh.issue({ subjectKind: 'seller', subjectId: seller.id });
+  return { token, user, refreshToken };
 }
 
 function withDevCode(payload, issued) {
