@@ -100,6 +100,119 @@ function toBanner(row) {
   };
 }
 
+// ---------- sidebar ads ----------
+
+async function listSidebarAds() {
+  const rows = await cmsRepo.listAllSidebarAds();
+  return rows.map(toSidebarAd);
+}
+
+async function getSidebarAd(id) {
+  const row = await cmsRepo.findSidebarAdById(id);
+  if (!row) throw new HttpError(404, 'NOT_FOUND', 'Sidebar ad not found');
+  return toSidebarAd(row);
+}
+
+async function getActiveSidebarAd() {
+  const row = await cmsRepo.findActiveSidebarAd();
+  return row ? toSidebarAd(row) : null;
+}
+
+async function createSidebarAd({
+  file,
+  title,
+  subtitle,
+  ctaText,
+  ctaUrl,
+  startDate,
+  endDate,
+  sortOrder,
+  isActive,
+}) {
+  // Image is optional for sidebar ads — admins may want a text-only promo,
+  // and the website renders a sensible layout either way. If a file IS
+  // present we persist it through the existing cms upload pipeline.
+  let persisted = null;
+  if (file) {
+    persisted = await banners.persistBannerImage(file);
+  }
+  try {
+    const id = await cmsRepo.createSidebarAd({
+      imageUrl: persisted ? persisted.publicUrl : null,
+      title,
+      subtitle,
+      ctaText,
+      ctaUrl,
+      startDate,
+      endDate,
+      sortOrder: Number.isFinite(sortOrder) ? sortOrder : 0,
+      isActive: isActive !== false,
+    });
+    return getSidebarAd(id);
+  } catch (err) {
+    if (persisted) await banners.deleteBannerImage(persisted.publicUrl);
+    throw err;
+  }
+}
+
+async function updateSidebarAd(id, payload) {
+  const existing = await cmsRepo.findSidebarAdById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Sidebar ad not found');
+  // PUT is partial — only fields present in payload overwrite existing values.
+  await cmsRepo.updateSidebarAd(id, {
+    imageUrl: 'imageUrl' in payload ? payload.imageUrl : existing.image_url,
+    title: 'title' in payload ? payload.title : existing.title,
+    subtitle: 'subtitle' in payload ? payload.subtitle : existing.subtitle,
+    ctaText: 'ctaText' in payload ? payload.ctaText : existing.cta_text,
+    ctaUrl: 'ctaUrl' in payload ? payload.ctaUrl : existing.cta_url,
+    startDate: 'startDate' in payload ? payload.startDate : existing.start_date,
+    endDate: 'endDate' in payload ? payload.endDate : existing.end_date,
+    sortOrder: Number.isFinite(payload.sortOrder) ? payload.sortOrder : existing.sort_order,
+    isActive: typeof payload.isActive === 'boolean' ? payload.isActive : Boolean(existing.is_active),
+  });
+  return getSidebarAd(id);
+}
+
+async function deleteSidebarAd(id) {
+  const existing = await cmsRepo.findSidebarAdById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Sidebar ad not found');
+  await cmsRepo.deleteSidebarAd(id);
+  if (existing.image_url) {
+    await banners.deleteBannerImage(existing.image_url);
+  }
+}
+
+function toSidebarAd(row) {
+  return {
+    id: row.id,
+    imageUrl: row.image_url ? toAbsolutePublicUrl(row.image_url) : null,
+    title: row.title,
+    subtitle: row.subtitle,
+    ctaText: row.cta_text,
+    ctaUrl: row.cta_url,
+    // Date columns come back as JS Date instances from mysql2. Coerce to
+    // ISO `YYYY-MM-DD` so the frontend's <input type="date"> can bind to
+    // them directly without locale weirdness.
+    startDate: row.start_date ? toIsoDate(row.start_date) : null,
+    endDate: row.end_date ? toIsoDate(row.end_date) : null,
+    sortOrder: Number(row.sort_order || 0),
+    isActive: row.is_active != null ? Boolean(row.is_active) : true,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toIsoDate(d) {
+  if (d instanceof Date) {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  // Already a string (some drivers return DATE as 'YYYY-MM-DD' directly).
+  return String(d).slice(0, 10);
+}
+
 module.exports = {
   listBanners,
   getBanner,
@@ -108,4 +221,10 @@ module.exports = {
   deleteBanner,
   readSettings,
   writeSettings,
+  listSidebarAds,
+  getSidebarAd,
+  getActiveSidebarAd,
+  createSidebarAd,
+  updateSidebarAd,
+  deleteSidebarAd,
 };

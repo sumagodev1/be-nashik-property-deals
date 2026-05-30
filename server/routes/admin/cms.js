@@ -133,4 +133,122 @@ router.put('/settings', validate(settingsBody), async (req, res, next) => {
   try { res.json({ data: await cms.writeSettings(req.body) }); } catch (e) { next(e); }
 });
 
+// Sidebar Ads ----------------------------------------------------------------
+//
+// All requests already require auth + CMS_MANAGEMENT module access (router-
+// level middleware above). Image is optional — text-only ads are valid.
+
+// ISO YYYY-MM-DD (strict). null / '' allowed for "no boundary on this side."
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const optionalIsoDate = () => Joi.alternatives().try(
+  Joi.string().trim().pattern(ISO_DATE_RE).max(10),
+  Joi.valid(null, ''),
+).messages({ 'string.pattern.base': 'Date must be YYYY-MM-DD' });
+
+const sidebarAdUpdateBody = Joi.object({
+  title: Joi.string().trim().min(1).max(120),
+  subtitle: Joi.string().trim().max(240).allow('', null),
+  ctaText: Joi.string().trim().max(60).allow('', null),
+  ctaUrl: Joi.string().trim().max(500).allow('', null),
+  startDate: optionalIsoDate(),
+  endDate: optionalIsoDate(),
+  sortOrder: Joi.number().integer().min(0).max(9999),
+  isActive: Joi.boolean(),
+}).min(1);
+
+function normalizeDate(input) {
+  // Accept '', 'null', or undefined as "no value" so the frontend can clear
+  // the field by submitting any of them.
+  if (input == null) return null;
+  const s = String(input).trim();
+  if (s === '' || s === 'null') return null;
+  if (!ISO_DATE_RE.test(s)) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Date must be YYYY-MM-DD');
+  }
+  return s;
+}
+
+router.get('/sidebar-ads', async (req, res, next) => {
+  try { res.json({ data: await cms.listSidebarAds() }); } catch (e) { next(e); }
+});
+
+router.get('/sidebar-ads/:id', validate(idParam, 'params'), async (req, res, next) => {
+  try { res.json(await cms.getSidebarAd(req.params.id)); } catch (e) { next(e); }
+});
+
+router.post('/sidebar-ads', imageUploadMiddleware, async (req, res, next) => {
+  try {
+    // Image is optional for this resource — req.files may be empty.
+    const file = (req.files || [])[0] || null;
+
+    const title = (req.body.title || '').toString().trim();
+    const subtitle = (req.body.subtitle || '').toString().trim();
+    const ctaText = (req.body.ctaText || '').toString().trim();
+    const ctaUrl = (req.body.ctaUrl || '').toString().trim();
+    const startDate = normalizeDate(req.body.startDate);
+    const endDate = normalizeDate(req.body.endDate);
+    const sortOrder = Number(req.body.sortOrder ?? 0);
+    const isActive = req.body.isActive === 'false' ? false : true;
+
+    if (!title) {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'Title is required');
+    }
+    if (title.length > 120) {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'Title too long (max 120)');
+    }
+    if (subtitle.length > 240) {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'Subtitle too long (max 240)');
+    }
+    if (ctaText.length > 60) {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'CTA text too long (max 60)');
+    }
+    if (ctaUrl.length > 500) {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'CTA URL too long (max 500)');
+    }
+    if (startDate && endDate && endDate < startDate) {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'endDate must be on or after startDate');
+    }
+    if (!Number.isFinite(sortOrder) || sortOrder < 0 || sortOrder > 9999) {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'sortOrder must be 0-9999');
+    }
+
+    const created = await cms.createSidebarAd({
+      file,
+      title,
+      subtitle,
+      ctaText,
+      ctaUrl,
+      startDate,
+      endDate,
+      sortOrder,
+      isActive,
+    });
+    res.status(201).json(created);
+  } catch (e) { next(e); }
+});
+
+router.put(
+  '/sidebar-ads/:id',
+  validate(idParam, 'params'),
+  validate(sidebarAdUpdateBody),
+  async (req, res, next) => {
+    try {
+      // After validate(), startDate/endDate are either valid 'YYYY-MM-DD',
+      // '' (clear), or absent. Normalize '' → null so the service / repo
+      // see a clean shape.
+      const payload = { ...req.body };
+      if ('startDate' in payload) payload.startDate = payload.startDate || null;
+      if ('endDate' in payload) payload.endDate = payload.endDate || null;
+      if (payload.startDate && payload.endDate && payload.endDate < payload.startDate) {
+        throw new HttpError(400, 'VALIDATION_ERROR', 'endDate must be on or after startDate');
+      }
+      res.json(await cms.updateSidebarAd(req.params.id, payload));
+    } catch (e) { next(e); }
+  },
+);
+
+router.delete('/sidebar-ads/:id', validate(idParam, 'params'), async (req, res, next) => {
+  try { await cms.deleteSidebarAd(req.params.id); res.status(204).end(); } catch (e) { next(e); }
+});
+
 module.exports = router;
