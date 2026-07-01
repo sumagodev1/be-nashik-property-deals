@@ -196,20 +196,30 @@ async function streamDocument(res, file) {
 }
 
 function toListItem(row) {
+  // Mirrors every column returned by the list SQL projection so callers can
+  // reconstruct the record without a second fetch. `details` is JSON.parsed
+  // so `dynamicData` and any nested MD-form fields are directly accessible.
   return {
     id: row.id,
     propertyCode: row.property_code,
+    registrationDate: row.registration_date,
     title: row.title,
+    description: row.description ?? null,
     propertyType: row.property_type,
     transactionType: row.transaction_type,
+    transactionVariant: row.transaction_variant ?? null,
     location: row.location,
+    district: row.district ?? null,
+    taluka: row.taluka ?? null,
+    shivar: row.shivar ?? null,
+    latitude: row.latitude !== null && row.latitude !== undefined ? Number(row.latitude) : null,
+    longitude: row.longitude !== null && row.longitude !== undefined ? Number(row.longitude) : null,
+    pincode: row.pincode ?? null,
     areaValue: row.area_value !== null ? Number(row.area_value) : null,
     areaUnit: row.area_unit,
     bhk: row.bhk,
     price: Number(row.price),
     status: row.status,
-    // Last status-change context — list endpoint omits these to keep the
-    // payload light, detail endpoint pulls them via SELECT * → toDetail.
     statusNote: row.status_note ?? null,
     statusChangedAt: row.status_changed_at ?? null,
     isDraft: Boolean(row.is_draft),
@@ -217,6 +227,11 @@ function toListItem(row) {
     ownerContact: row.owner_contact,
     agentName: row.agent_name,
     agentContact: row.agent_contact,
+    // Every field the admin filled in on the registration form — including
+    // the entire dynamicData blob for MD-engine variants — is included so
+    // the frontend can render or export the record without a per-row detail
+    // fetch. `undefined` when the list SQL didn't select `details`.
+    details: row.details !== undefined ? parseDetailsField(row.details) : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

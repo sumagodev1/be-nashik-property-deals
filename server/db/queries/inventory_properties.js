@@ -86,13 +86,19 @@ async function list({
     params,
   );
 
+  // List rows now include the full `description` + `details` JSON blob so
+  // the frontend receives every field the admin submitted. The `details`
+  // column can be a few KB per row for MD-engine forms — at pageSize 100
+  // that's still under a few hundred KB total, well within a reasonable
+  // API response. If this ever grows painful, add an opt-in `?slim=1`
+  // param that falls back to the compact projection.
   const [rows] = await pool.query(
-    `SELECT id, property_code, registration_date, title,
+    `SELECT id, property_code, registration_date, title, description,
             property_type, transaction_type, transaction_variant,
             location, district, taluka, shivar, latitude, longitude, pincode,
             area_value, area_unit, bhk, price, status, status_note, status_changed_at,
             is_draft, owner_name, owner_contact,
-            agent_name, agent_contact, created_at, updated_at
+            agent_name, agent_contact, details, created_at, updated_at
      FROM inventory_properties
      ${whereSql}
      ${orderSql}

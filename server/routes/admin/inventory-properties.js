@@ -6,6 +6,7 @@ const { requireAuth, requireModule } = require('../../middleware/auth');
 const { imageUploadMiddleware, documentUploadMiddleware } = require('../../middleware/imageMulter');
 const idempotency = require('../../middleware/idempotency');
 const management = require('../../services/inventory/management');
+const { validateDynamicData } = require('../../services/inventory/dynamicDataValidation');
 const {
   AREA_UNITS,
 } = require('../../constants/property');
@@ -36,14 +37,31 @@ const subIdParam = Joi.object({
 const LETTERS_ONLY = /^[A-Za-z\s]+$/;
 const ALPHANUM_SPACE = /^[A-Za-z0-9\s]+$/;
 const titleField = Joi.string().trim().min(3).max(50).pattern(ALPHANUM_SPACE)
-  .messages({ 'string.pattern.base': 'Title can only contain letters, digits and spaces' });
-const descField = Joi.string().trim().max(200).allow('', null);
-const locField = Joi.string().trim().min(1).max(255);
-const propertyTypeField = Joi.string().trim().max(255);
+  .messages({
+    'string.pattern.base': 'Title can only contain letters, digits and spaces',
+    'string.min': 'Title must be at least 3 characters',
+    'string.max': 'Title cannot be longer than 50 characters',
+    'any.required': 'Please enter a title',
+    'string.empty': 'Please enter a title',
+  });
+const descField = Joi.string().trim().max(200).allow('', null)
+  .messages({ 'string.max': 'Description cannot be longer than 200 characters' });
+const locField = Joi.string().trim().min(1).max(255)
+  .messages({
+    'string.max': 'Location cannot be longer than 255 characters',
+    'string.empty': 'Please enter a location',
+    'any.required': 'Please enter a location',
+  });
+const propertyTypeField = Joi.string().trim().max(255)
+  .messages({ 'any.required': 'Please choose a property type', 'string.empty': 'Please choose a property type' });
 const phoneField = Joi.string().trim().pattern(/^\d{10}$/).allow('', null)
   .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number' });
 const personField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY).allow('', null)
-  .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
+  .messages({
+    'string.pattern.base': 'Name can only contain letters and spaces',
+    'string.min': 'Name must be at least 3 characters',
+    'string.max': 'Name cannot be longer than 50 characters',
+  });
 
 const listQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
@@ -103,10 +121,36 @@ const propertyBody = Joi.object({
   areaValue: Joi.number().min(0).max(AREA_MAX).optional().allow(null),
   areaUnit: Joi.string().valid(...AREA_UNITS).optional().allow('', null),
   bhk: masterCodeField.optional().allow('', null),
+  // Price handling:
+  //   - Drafts: optional (half-filled records are fine).
+  //   - MD-engine forms (any of the 79 dynamic variants): the frontend does
+  //     NOT render a top-level "Headline price" input — price is captured
+  //     entirely as budget master-code selects inside `details.dynamicData`.
+  //     So a submitted price of 0 is legitimate. Detection heuristic: the
+  //     request carries a non-empty `details.dynamicData` object.
+  //   - Legacy (non-MD) forms: still require price >= 1 (the frontend
+  //     renders and enforces the input; the backend rule is a safety net).
   price: Joi.number()
     .min(0)
     .max(PRICE_MAX)
-    .when('isDraft', { is: true, then: Joi.optional(), otherwise: Joi.number().min(1).required() }),
+    .when('isDraft', {
+      is: true,
+      then: Joi.optional(),
+      // NOTE the trailing `.required()` on the `is` schema — without it,
+      // Joi treats a `details: undefined` request as matching (because a
+      // non-required object schema accepts undefined), which would let
+      // legacy forms slip through with price=0. `.required()` forces the
+      // detection to only fire when details.dynamicData actually exists.
+      otherwise: Joi.when('details', {
+        is: Joi.object({ dynamicData: Joi.object().unknown(true).min(1).required() }).unknown(true).required(),
+        then: Joi.number().min(0).default(0),
+        otherwise: Joi.number().min(1).required().messages({
+          'number.base': 'Please enter a price',
+          'number.min': 'Price must be greater than 0',
+          'any.required': 'Please enter a price',
+        }),
+      }),
+    }),
   status: masterCodeField.default('available'),
   isDraft: Joi.boolean().default(false),
   ownerName: personField.optional(),
@@ -137,6 +181,38 @@ const suggestQuery = Joi.object({
 
 // Export query: same filters as list, but pagination is optional.
 const exportQuery = listQuery.fork(['page', 'pageSize'], (s) => s.optional());
+
+// Second-pass validator for the `details.dynamicData` blob. Runs AFTER the
+// top-level Joi has already accepted the request shape. We keep it as a
+// separate middleware (rather than folding the schema into propertyBody)
+// because the dynamicData rules are large, per-key, and need cross-field
+// checks — much cleaner as a standalone function than inline Joi.
+//
+// Drafts skip the strict shape check so half-filled records can still be
+// parked. Non-drafts get the full validation.
+function validateDynamicDataMiddleware(req, res, next) {
+  try {
+    const body = req.body || {};
+    if (body.isDraft) return next();
+    const dyn = body.details && body.details.dynamicData;
+    if (!dyn) return next();
+    const { value, errors } = validateDynamicData(dyn);
+    if (errors.length > 0) {
+      // Prefix each path so the frontend can route the message back to the
+      // right field in the dynamic form (`details.dynamicData.<field>`).
+      const details = errors.map((e) => ({
+        path: `details.dynamicData.${e.path}`,
+        message: e.message,
+      }));
+      return next(new HttpError(400, 'VALIDATION_ERROR', 'Invalid request', details));
+    }
+    // Write the sanitized value back so the DB stores trimmed / coerced data.
+    req.body.details.dynamicData = value;
+    return next();
+  } catch (err) {
+    return next(err);
+  }
+}
 
 router.get('/', validate(listQuery, 'query'), async (req, res, next) => {
   try {
@@ -201,7 +277,7 @@ router.get('/:id', validate(idParam, 'params'), async (req, res, next) => {
   }
 });
 
-router.post('/', idempotency(), validate(propertyBody), async (req, res, next) => {
+router.post('/', idempotency(), validate(propertyBody), validateDynamicDataMiddleware, async (req, res, next) => {
   try {
     const created = await management.createProperty({
       ...req.body,
@@ -218,7 +294,7 @@ router.post('/', idempotency(), validate(propertyBody), async (req, res, next) =
   }
 });
 
-router.put('/:id', validate(idParam, 'params'), validate(propertyBody), async (req, res, next) => {
+router.put('/:id', validate(idParam, 'params'), validate(propertyBody), validateDynamicDataMiddleware, async (req, res, next) => {
   try {
     res.json(await management.updateProperty(req.params.id, {
       ...req.body,
