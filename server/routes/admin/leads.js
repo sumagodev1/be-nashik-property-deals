@@ -102,7 +102,7 @@ router.patch('/:id/assign', validate(idParam, 'params'), validate(assignBody), a
 
 router.delete('/:id', validate(idParam, 'params'), async (req, res, next) => {
   try {
-    await leadsService.removeLead(req.params.id);
+    await leadsService.removeLead(req.params.id, req);
     res.status(204).end();
   } catch (e) { next(e); }
 });

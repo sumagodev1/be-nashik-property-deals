@@ -4,6 +4,7 @@ const subAdmins = require('../../db/queries/sub_admins');
 const modulesRepo = require('../../db/queries/sub_admin_modules');
 const { isValidModuleKey } = require('../../constants/modules');
 const { trySendMail } = require('../email/transporter');
+const audit = require('../admin/audit');
 
 const BCRYPT_COST = 12;
 
@@ -101,7 +102,7 @@ async function getOne(id) {
   return toDetail(sub, modules);
 }
 
-async function create({ email, password, fullName, isActive, modules, createdByAdminId }) {
+async function create({ email, password, fullName, isActive, modules, createdByAdminId, req = null }) {
   if (await subAdmins.emailTaken(email)) {
     throw new HttpError(409, 'EMAIL_TAKEN', 'A sub admin with this email already exists');
   }
@@ -134,6 +135,20 @@ async function create({ email, password, fullName, isActive, modules, createdByA
     });
   }
   await modulesRepo.replaceForSubAdmin(id, moduleKeys);
+  if (req) {
+    void audit.record(req, {
+      action: 'sub_admin.created',
+      entityType: 'sub_admin',
+      entityId: id,
+      summary: `Created sub admin ${fullName} (${email})`,
+      metadata: {
+        entityLabel: fullName,
+        entitySubLabel: email,
+        modules: moduleKeys,
+        restored: !!(existing && existing.deleted_at),
+      },
+    });
+  }
   // Email the new sub admin so they know the account exists. We deliberately
   // do NOT email the password the admin typed — they must use Forgot Password
   // to set their own. The admin-typed password is a placeholder so the column
@@ -148,7 +163,7 @@ async function create({ email, password, fullName, isActive, modules, createdByA
   return getOne(id);
 }
 
-async function update(id, { email, fullName, isActive, password }) {
+async function update(id, { email, fullName, isActive, password }, req = null) {
   const existing = await subAdmins.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Sub admin not found');
   if (email && email !== existing.email) {
@@ -176,21 +191,78 @@ async function update(id, { email, fullName, isActive, password }) {
     });
     await trySendMail({ to: nextEmail, subject, text, html });
   }
+  if (req) {
+    // Track which of the mutable fields actually changed so the audit
+    // metadata isn't polluted with no-op renames.
+    const changed = {};
+    if (nextEmail !== existing.email) changed.email = { from: existing.email, to: nextEmail };
+    if (nextFullName !== existing.full_name) changed.fullName = { from: existing.full_name, to: nextFullName };
+    if (typeof isActive === 'boolean' && Boolean(isActive) !== Boolean(existing.is_active)) {
+      changed.isActive = { from: Boolean(existing.is_active), to: isActive };
+    }
+    if (password) changed.password = true;
+    // Skip the audit entry entirely if literally nothing changed.
+    if (Object.keys(changed).length > 0) {
+      void audit.record(req, {
+        action: 'sub_admin.updated',
+        entityType: 'sub_admin',
+        entityId: id,
+        summary: `Updated sub admin ${nextFullName}`,
+        metadata: {
+          entityLabel: nextFullName,
+          entitySubLabel: nextEmail,
+          changed,
+        },
+      });
+    }
+  }
   return getOne(id);
 }
 
-async function updateModules(id, moduleKeys) {
+async function updateModules(id, moduleKeys, req = null) {
   const existing = await subAdmins.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Sub admin not found');
   const deduped = dedupeModules(moduleKeys || []);
+  const before = await modulesRepo.listForSubAdmin(id);
   await modulesRepo.replaceForSubAdmin(id, deduped);
+  if (req) {
+    const added = deduped.filter((k) => !before.includes(k));
+    const removed = before.filter((k) => !deduped.includes(k));
+    if (added.length > 0 || removed.length > 0) {
+      void audit.record(req, {
+        action: 'sub_admin.modules_changed',
+        entityType: 'sub_admin',
+        entityId: id,
+        summary: `Module access changed for ${existing.full_name}`,
+        metadata: {
+          entityLabel: existing.full_name,
+          entitySubLabel: existing.email,
+          added,
+          removed,
+          after: deduped,
+        },
+      });
+    }
+  }
   return getOne(id);
 }
 
-async function remove(id) {
+async function remove(id, req = null) {
   const existing = await subAdmins.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Sub admin not found');
   await subAdmins.softDelete(id);
+  if (req) {
+    void audit.record(req, {
+      action: 'sub_admin.deleted',
+      entityType: 'sub_admin',
+      entityId: id,
+      summary: `Deleted sub admin ${existing.full_name} (${existing.email})`,
+      metadata: {
+        entityLabel: existing.full_name,
+        entitySubLabel: existing.email,
+      },
+    });
+  }
 }
 
 function toListItem(row) {

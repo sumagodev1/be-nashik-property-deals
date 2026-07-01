@@ -64,7 +64,7 @@ router.get('/:id', validate(idParam, 'params'), async (req, res, next) => {
 
 router.post('/', validate(createBody), async (req, res, next) => {
   try {
-    const created = await management.create({ ...req.body, createdByAdminId: Number(req.auth.sub) });
+    const created = await management.create({ ...req.body, createdByAdminId: Number(req.auth.sub), req });
     res.status(201).json(created);
   } catch (err) {
     next(err);
@@ -73,7 +73,7 @@ router.post('/', validate(createBody), async (req, res, next) => {
 
 router.put('/:id', validate(idParam, 'params'), validate(updateBody), async (req, res, next) => {
   try {
-    res.json(await management.update(req.params.id, req.body));
+    res.json(await management.update(req.params.id, req.body, req));
   } catch (err) {
     next(err);
   }
@@ -81,7 +81,7 @@ router.put('/:id', validate(idParam, 'params'), validate(updateBody), async (req
 
 router.put('/:id/modules', validate(idParam, 'params'), validate(updateModulesBody), async (req, res, next) => {
   try {
-    res.json(await management.updateModules(req.params.id, req.body.modules));
+    res.json(await management.updateModules(req.params.id, req.body.modules, req));
   } catch (err) {
     next(err);
   }
@@ -89,7 +89,7 @@ router.put('/:id/modules', validate(idParam, 'params'), validate(updateModulesBo
 
 router.delete('/:id', validate(idParam, 'params'), async (req, res, next) => {
   try {
-    await management.remove(req.params.id);
+    await management.remove(req.params.id, req);
     res.status(204).end();
   } catch (err) {
     next(err);

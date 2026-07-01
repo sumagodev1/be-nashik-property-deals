@@ -11,6 +11,7 @@ const { assignUniqueCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
 const { trySendMail } = require('../email/transporter');
 const { renderEmail, sectionTitle, kvRow, kvTable, infoCard, quoteBlock, BRAND } = require('../email/emailTemplate');
+const audit = require('../admin/audit');
 
 async function validateMasterCodes(payload) {
   await masters.assertActiveCode('property_type', payload.propertyType);
@@ -110,12 +111,23 @@ async function updateProperty(id, payload) {
   return getProperty(id);
 }
 
-async function approveProperty(id, adminId) {
+async function approveProperty(id, adminId, req = null) {
   const existing = await wp.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   await wp.approve(id, adminId);
-  // Tell the seller the good news — fire-and-forget so an email hiccup
-  // never blocks the approval itself.
+  if (req) {
+    void audit.record(req, {
+      action: 'property.approved',
+      entityType: 'website_property',
+      entityId: id,
+      summary: `Approved ${existing.property_code} — ${existing.title}`,
+      metadata: {
+        entityLabel: existing.property_code,
+        entitySubLabel: existing.title,
+        sellerId: existing.seller_id,
+      },
+    });
+  }
   void notifySellerOnApproval(existing).catch((err) => {
     // eslint-disable-next-line no-console
     console.warn('[property-approved] seller email failed:', err.message);
@@ -123,10 +135,23 @@ async function approveProperty(id, adminId) {
   return getProperty(id);
 }
 
-async function rejectProperty(id, adminId, reason) {
+async function rejectProperty(id, adminId, reason, req = null) {
   const existing = await wp.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   await wp.reject(id, adminId, reason);
+  if (req) {
+    void audit.record(req, {
+      action: 'property.rejected',
+      entityType: 'website_property',
+      entityId: id,
+      summary: `Rejected ${existing.property_code} — ${existing.title}`,
+      metadata: {
+        entityLabel: existing.property_code,
+        entitySubLabel: existing.title,
+        reason,
+      },
+    });
+  }
   void notifySellerOnRejection(existing, reason).catch((err) => {
     // eslint-disable-next-line no-console
     console.warn('[property-rejected] seller email failed:', err.message);
@@ -227,24 +252,62 @@ async function notifySellerOnRejection(prop, reason) {
   await trySendMail({ to: prop.seller_email, subject, text, html });
 }
 
-async function setActive(id, isActive) {
+async function setActive(id, isActive, req = null) {
   const existing = await wp.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   await wp.setActive(id, isActive);
+  if (req && Boolean(existing.is_active) !== Boolean(isActive)) {
+    void audit.record(req, {
+      action: isActive ? 'property.activated' : 'property.deactivated',
+      entityType: 'website_property',
+      entityId: id,
+      summary: `${isActive ? 'Activated' : 'Deactivated'} ${existing.property_code} — ${existing.title}`,
+      metadata: {
+        entityLabel: existing.property_code,
+        entitySubLabel: existing.title,
+        from: Boolean(existing.is_active),
+        to: Boolean(isActive),
+      },
+    });
+  }
   return getProperty(id);
 }
 
-async function setFeatured(id, isFeatured) {
+async function setFeatured(id, isFeatured, req = null) {
   const existing = await wp.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   await wp.setFeatured(id, isFeatured);
+  if (req && Boolean(existing.is_featured) !== Boolean(isFeatured)) {
+    void audit.record(req, {
+      action: isFeatured ? 'property.featured' : 'property.unfeatured',
+      entityType: 'website_property',
+      entityId: id,
+      summary: `${isFeatured ? 'Featured' : 'Unfeatured'} ${existing.property_code} — ${existing.title}`,
+      metadata: {
+        entityLabel: existing.property_code,
+        entitySubLabel: existing.title,
+      },
+    });
+  }
   return getProperty(id);
 }
 
-async function removeProperty(id) {
+async function removeProperty(id, req = null) {
   const existing = await wp.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   await wp.softDelete(id);
+  if (req) {
+    void audit.record(req, {
+      action: 'property.deleted',
+      entityType: 'website_property',
+      entityId: id,
+      summary: `Deleted ${existing.property_code} — ${existing.title}`,
+      metadata: {
+        entityLabel: existing.property_code,
+        entitySubLabel: existing.title,
+      },
+    });
+  }
 }
 
 async function addImages(id, files) {

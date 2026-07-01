@@ -149,27 +149,27 @@ router.put('/:id', validate(idParam, 'params'), validate(updateBody), async (req
 router.patch('/:id/approve', idempotency(), validate(idParam, 'params'), async (req, res, next) => {
   try {
     const adminId = req.auth.role === 'admin' ? Number(req.auth.sub) : null;
-    res.json(await management.approveProperty(req.params.id, adminId));
+    res.json(await management.approveProperty(req.params.id, adminId, req));
   } catch (e) { next(e); }
 });
 
 router.patch('/:id/reject', idempotency(), validate(idParam, 'params'), validate(rejectBody), async (req, res, next) => {
   try {
     const adminId = req.auth.role === 'admin' ? Number(req.auth.sub) : null;
-    res.json(await management.rejectProperty(req.params.id, adminId, req.body.reason));
+    res.json(await management.rejectProperty(req.params.id, adminId, req.body.reason, req));
   } catch (e) { next(e); }
 });
 
 router.patch('/:id/active', idempotency(), validate(idParam, 'params'), validate(activeBody), async (req, res, next) => {
-  try { res.json(await management.setActive(req.params.id, req.body.isActive)); } catch (e) { next(e); }
+  try { res.json(await management.setActive(req.params.id, req.body.isActive, req)); } catch (e) { next(e); }
 });
 
 router.patch('/:id/featured', idempotency(), validate(idParam, 'params'), validate(featuredBody), async (req, res, next) => {
-  try { res.json(await management.setFeatured(req.params.id, req.body.isFeatured)); } catch (e) { next(e); }
+  try { res.json(await management.setFeatured(req.params.id, req.body.isFeatured, req)); } catch (e) { next(e); }
 });
 
 router.delete('/:id', validate(idParam, 'params'), async (req, res, next) => {
-  try { await management.removeProperty(req.params.id); res.status(204).end(); } catch (e) { next(e); }
+  try { await management.removeProperty(req.params.id, req); res.status(204).end(); } catch (e) { next(e); }
 });
 
 router.post('/:id/images', validate(idParam, 'params'), imageUploadMiddleware, async (req, res, next) => {

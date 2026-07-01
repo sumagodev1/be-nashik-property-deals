@@ -314,10 +314,23 @@ async function updateNotes(id, notes) {
   return getLead(id);
 }
 
-async function removeLead(id) {
+async function removeLead(id, req = null) {
   const row = await leadsRepo.findById(id);
   if (!row) throw new HttpError(404, 'NOT_FOUND', 'Lead not found');
   await leadsRepo.softDelete(id);
+  if (req) {
+    void audit.record(req, {
+      action: 'lead.deleted',
+      entityType: 'lead',
+      entityId: id,
+      summary: `Deleted lead from ${row.buyer_name}`,
+      metadata: {
+        entityLabel: row.buyer_name,
+        entitySubLabel: row.buyer_mobile,
+        propertyCode: row.property_code || null,
+      },
+    });
+  }
 }
 
 // Single source of truth for the Leads report (CSV / XLSX / PDF). Each column
