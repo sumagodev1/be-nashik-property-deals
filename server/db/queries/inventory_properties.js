@@ -87,7 +87,9 @@ async function list({
   );
 
   const [rows] = await pool.query(
-    `SELECT id, property_code, title, property_type, transaction_type, location,
+    `SELECT id, property_code, registration_date, title,
+            property_type, transaction_type, transaction_variant,
+            location, district, taluka, shivar, latitude, longitude, pincode,
             area_value, area_unit, bhk, price, status, status_note, status_changed_at,
             is_draft, owner_name, owner_contact,
             agent_name, agent_contact, created_at, updated_at
@@ -123,17 +125,27 @@ async function create(payload) {
     : null;
   const [result] = await pool.query(
     `INSERT INTO inventory_properties
-     (property_code, title, description, property_type, transaction_type, location,
+     (property_code, registration_date, title, description, property_type,
+      transaction_type, transaction_variant, location, district, taluka, shivar,
+      latitude, longitude, pincode,
       area_value, area_unit, bhk, price, status, is_draft,
       owner_name, owner_contact, agent_name, agent_contact, details, created_by_admin_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.propertyCode,
+      payload.registrationDate || null,
       payload.title,
       payload.description || null,
       payload.propertyType,
       payload.transactionType,
+      payload.transactionVariant || null,
       payload.location,
+      payload.district || null,
+      payload.taluka || null,
+      payload.shivar || null,
+      payload.latitude ?? null,
+      payload.longitude ?? null,
+      payload.pincode || null,
       payload.areaValue ?? null,
       payload.areaUnit || null,
       payload.bhk || null,
@@ -161,16 +173,27 @@ async function update(id, payload) {
     : null;
   await pool.query(
     `UPDATE inventory_properties SET
-       title = ?, description = ?, property_type = ?, transaction_type = ?, location = ?,
+       registration_date = ?, title = ?, description = ?,
+       property_type = ?, transaction_type = ?, transaction_variant = ?,
+       location = ?, district = ?, taluka = ?, shivar = ?,
+       latitude = ?, longitude = ?, pincode = ?,
        area_value = ?, area_unit = ?, bhk = ?, price = ?, status = ?, is_draft = ?,
        owner_name = ?, owner_contact = ?, agent_name = ?, agent_contact = ?, details = ?
      WHERE id = ? AND deleted_at IS NULL`,
     [
+      payload.registrationDate || null,
       payload.title,
       payload.description || null,
       payload.propertyType,
       payload.transactionType,
+      payload.transactionVariant || null,
       payload.location,
+      payload.district || null,
+      payload.taluka || null,
+      payload.shivar || null,
+      payload.latitude ?? null,
+      payload.longitude ?? null,
+      payload.pincode || null,
       payload.areaValue ?? null,
       payload.areaUnit || null,
       payload.bhk || null,

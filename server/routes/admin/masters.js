@@ -25,10 +25,15 @@ const codeField = Joi.string()
 const labelField = Joi.string().trim().min(1).max(255);
 const sortField  = Joi.number().integer().min(0).max(9999);
 const activeField = Joi.boolean();
+// parent_code accepts the same shape as `code` (or empty / null to clear).
+// Only meaningful for hierarchical lookup vocabularies (district → taluka →
+// shivar); ignored by the legacy single-table masters in the service layer.
+const parentCodeField = codeField.optional().allow('', null);
 
 const createBody = Joi.object({
   code: codeField.required(),
   label: labelField.required(),
+  parentCode: parentCodeField,
   sortOrder: sortField.default(0),
   isActive: activeField.default(true),
 });
@@ -36,6 +41,7 @@ const createBody = Joi.object({
 const updateBody = Joi.object({
   code: codeField.optional(),
   label: labelField.optional(),
+  parentCode: parentCodeField,
   sortOrder: sortField.optional(),
   isActive: activeField.optional(),
 }).min(1);

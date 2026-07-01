@@ -39,6 +39,7 @@ const titleField = Joi.string().trim().min(3).max(50).pattern(ALPHANUM_SPACE)
   .messages({ 'string.pattern.base': 'Title can only contain letters, digits and spaces' });
 const descField = Joi.string().trim().max(200).allow('', null);
 const locField = Joi.string().trim().min(1).max(255);
+const propertyTypeField = Joi.string().trim().max(255);
 const phoneField = Joi.string().trim().pattern(/^\d{10}$/).allow('', null)
   .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number' });
 const personField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY).allow('', null)
@@ -48,8 +49,8 @@ const listQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   pageSize: Joi.number().integer().min(1).max(100).default(10),
   search: Joi.string().trim().max(255).allow('').optional(),
-  propertyType: masterCodeField.optional(),
-  transactionType: masterCodeField.optional(),
+  propertyType: Joi.string().trim().max(255).allow('').optional(),
+  transactionType: Joi.string().trim().max(255).allow('').optional(),
   status: masterCodeField.optional(),
   location: Joi.string().trim().max(255).optional(),
   priceMin: Joi.number().min(0).optional(),
@@ -74,13 +75,31 @@ const AREA_MAX = 10_00_000;
 const propertyBody = Joi.object({
   title: titleField.required(),
   description: descField.optional(),
-  propertyType: masterCodeField.when('isDraft', { is: true, then: Joi.optional(), otherwise: Joi.required() }),
-  transactionType: masterCodeField.when('isDraft', { is: true, then: Joi.optional(), otherwise: Joi.required() }),
+  // Registration date as written by the admin on the form (separate from the
+  // system created_at). Optional — defaults to NULL when not supplied.
+  registrationDate: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional().allow('', null),
+  propertyType: propertyTypeField.when('isDraft', { is: true, then: Joi.optional(), otherwise: Joi.required() }),
+  transactionType: Joi.string().trim().max(255).allow('', null).optional(),
+  // Sub-variant of transactionType: Resale vs New Sale, Joint Venture,
+  // Hostel Let In/Out, Paying Guest. Master-validated against transaction_type
+  // master rows (which already carry the full set of variants).
+  transactionVariant: masterCodeField.optional().allow('', null),
   location: Joi.alternatives().conditional('isDraft', {
     is: true,
     then: locField.optional().allow('', null),
     otherwise: locField.required(),
   }),
+  // Hierarchical location. Validated as master codes against district/taluka/
+  // shivar lookups in the service layer.
+  district: masterCodeField.optional().allow('', null),
+  taluka: masterCodeField.optional().allow('', null),
+  shivar: masterCodeField.optional().allow('', null),
+  // Coordinates (promoted from details.lat/lng to columns for list-time
+  // filtering / sort). Bounded loosely to India.
+  latitude: Joi.number().min(6).max(38).optional().allow(null),
+  longitude: Joi.number().min(68).max(98).optional().allow(null),
+  pincode: Joi.string().trim().pattern(/^\d{6}$/).optional().allow('', null)
+    .messages({ 'string.pattern.base': 'Enter a valid 6-digit pincode' }),
   areaValue: Joi.number().min(0).max(AREA_MAX).optional().allow(null),
   areaUnit: Joi.string().valid(...AREA_UNITS).optional().allow('', null),
   bhk: masterCodeField.optional().allow('', null),
@@ -188,7 +207,7 @@ router.post('/', idempotency(), validate(propertyBody), async (req, res, next) =
       ...req.body,
       // Drafts default missing fields to safe placeholders so the row is insertable.
       price: req.body.price ?? 0,
-      propertyType: req.body.propertyType || 'flat',
+      propertyType: req.body.propertyType || '',
       transactionType: req.body.transactionType || 'sale',
       location: req.body.location || '',
       createdByAdminId: req.auth.role === 'admin' ? Number(req.auth.sub) : null,
@@ -204,7 +223,7 @@ router.put('/:id', validate(idParam, 'params'), validate(propertyBody), async (r
     res.json(await management.updateProperty(req.params.id, {
       ...req.body,
       price: req.body.price ?? 0,
-      propertyType: req.body.propertyType || 'flat',
+      propertyType: req.body.propertyType || '',
       transactionType: req.body.transactionType || 'sale',
       location: req.body.location || '',
     }));

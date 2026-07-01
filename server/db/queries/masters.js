@@ -1,8 +1,18 @@
 /**
- * Generic CRUD over the four master_* tables. All four tables share the same
- * shape (id, code, label, sort_order, is_active, timestamps, deleted_at), so
- * one parametrised query module covers them. The table name is provided by
- * the caller; we whitelist it to prevent SQL injection.
+ * Generic CRUD over the master_* tables. The four legacy single-vocabulary
+ * tables (property_types / transaction_types / flat_types / status_types)
+ * and the multi-vocabulary `master_lookups` table all share the same shape
+ * (id, code, label, sort_order, is_active, timestamps, deleted_at).
+ *
+ * `master_lookups` additionally carries a `master_key` discriminator (which
+ * vocabulary this row belongs to) and a `parent_code` (for hierarchical
+ * masters: district → taluka → shivar). Every function below accepts an
+ * optional `discriminator = { masterKey, parentCode }` — when provided, the
+ * SQL is augmented with the corresponding WHERE/INSERT/UPDATE columns. When
+ * omitted, behaviour is unchanged from the legacy single-table call.
+ *
+ * The table name is provided by the caller; we whitelist it to prevent SQL
+ * injection.
  */
 
 const { pool } = require('../pool');
@@ -12,6 +22,7 @@ const ALLOWED_TABLES = new Set([
   'master_transaction_types',
   'master_flat_types',
   'master_status_types',
+  'master_lookups',
 ]);
 
 function assertTable(table) {
@@ -20,10 +31,26 @@ function assertTable(table) {
   }
 }
 
-async function list(table, { search, isActive, page = 1, pageSize = 10 } = {}) {
+// Helper: builds the (where[], params[]) discriminator filter shared by every
+// read query. Passing `discriminator: { masterKey: 'floor_level' }` adds
+// `master_key = ?` to the WHERE clause; passing parentCode adds it too.
+function applyDiscriminator(where, params, discriminator) {
+  if (!discriminator) return;
+  if (discriminator.masterKey) {
+    where.push('master_key = ?');
+    params.push(discriminator.masterKey);
+  }
+  if (discriminator.parentCode !== undefined && discriminator.parentCode !== null) {
+    where.push('parent_code = ?');
+    params.push(discriminator.parentCode);
+  }
+}
+
+async function list(table, { search, isActive, page = 1, pageSize = 10, discriminator } = {}) {
   assertTable(table);
   const where = ['deleted_at IS NULL'];
   const params = [];
+  applyDiscriminator(where, params, discriminator);
   if (search) {
     where.push('(code LIKE ? OR label LIKE ?)');
     const s = `%${search}%`;
@@ -40,7 +67,7 @@ async function list(table, { search, isActive, page = 1, pageSize = 10 } = {}) {
   );
   const offset = (page - 1) * pageSize;
   const [rows] = await pool.query(
-    `SELECT id, code, label, sort_order, is_active, created_at, updated_at
+    `SELECT id, code, label, sort_order, is_active, created_at, updated_at${table === 'master_lookups' ? ', parent_code' : ''}
      FROM ${table}
      ${whereSql}
      ORDER BY sort_order ASC, label ASC, id ASC
@@ -50,16 +77,17 @@ async function list(table, { search, isActive, page = 1, pageSize = 10 } = {}) {
   return { rows, total };
 }
 
-async function listAll(table, { isActive } = {}) {
+async function listAll(table, { isActive, discriminator } = {}) {
   assertTable(table);
   const where = ['deleted_at IS NULL'];
   const params = [];
+  applyDiscriminator(where, params, discriminator);
   if (typeof isActive === 'boolean') {
     where.push('is_active = ?');
     params.push(isActive ? 1 : 0);
   }
   const [rows] = await pool.query(
-    `SELECT id, code, label, sort_order, is_active, created_at, updated_at
+    `SELECT id, code, label, sort_order, is_active, created_at, updated_at${table === 'master_lookups' ? ', parent_code' : ''}
      FROM ${table}
      WHERE ${where.join(' AND ')}
      ORDER BY sort_order ASC, label ASC, id ASC`,
@@ -68,22 +96,28 @@ async function listAll(table, { isActive } = {}) {
   return rows;
 }
 
-async function findById(table, id) {
+async function findById(table, id, { discriminator } = {}) {
   assertTable(table);
+  const where = ['id = ?', 'deleted_at IS NULL'];
+  const params = [id];
+  applyDiscriminator(where, params, discriminator);
   const [rows] = await pool.query(
-    `SELECT id, code, label, sort_order, is_active, created_at, updated_at
-     FROM ${table} WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
-    [id],
+    `SELECT id, code, label, sort_order, is_active, created_at, updated_at${table === 'master_lookups' ? ', parent_code' : ''}
+     FROM ${table} WHERE ${where.join(' AND ')} LIMIT 1`,
+    params,
   );
   return rows[0] || null;
 }
 
-async function findByCode(table, code) {
+async function findByCode(table, code, { discriminator } = {}) {
   assertTable(table);
+  const where = ['code = ?', 'deleted_at IS NULL'];
+  const params = [code];
+  applyDiscriminator(where, params, discriminator);
   const [rows] = await pool.query(
-    `SELECT id, code, label, sort_order, is_active
-     FROM ${table} WHERE code = ? AND deleted_at IS NULL LIMIT 1`,
-    [code],
+    `SELECT id, code, label, sort_order, is_active${table === 'master_lookups' ? ', parent_code' : ''}
+     FROM ${table} WHERE ${where.join(' AND ')} LIMIT 1`,
+    params,
   );
   return rows[0] || null;
 }
@@ -91,11 +125,13 @@ async function findByCode(table, code) {
 // Case-insensitive lookup by label. Returns the row (with is_active) so the
 // caller can give the admin a useful "already exists" error that says
 // whether the conflicting row is active or inactive and what its id is.
-async function findByLabel(table, label, excludeId = null) {
+async function findByLabel(table, label, excludeId = null, { discriminator } = {}) {
   assertTable(table);
+  const where = ['LOWER(label) = ?', 'deleted_at IS NULL'];
   const params = [String(label).toLowerCase()];
-  let sql = `SELECT id, code, label, sort_order, is_active
-             FROM ${table} WHERE LOWER(label) = ? AND deleted_at IS NULL`;
+  applyDiscriminator(where, params, discriminator);
+  let sql = `SELECT id, code, label, sort_order, is_active${table === 'master_lookups' ? ', parent_code' : ''}
+             FROM ${table} WHERE ${where.join(' AND ')}`;
   if (excludeId !== null) {
     sql += ' AND id <> ?';
     params.push(excludeId);
@@ -105,18 +141,24 @@ async function findByLabel(table, label, excludeId = null) {
   return rows[0] || null;
 }
 
-async function activeCodes(table) {
+async function activeCodes(table, { discriminator } = {}) {
   assertTable(table);
+  const where = ['is_active = 1', 'deleted_at IS NULL'];
+  const params = [];
+  applyDiscriminator(where, params, discriminator);
   const [rows] = await pool.query(
-    `SELECT code FROM ${table} WHERE is_active = 1 AND deleted_at IS NULL`,
+    `SELECT code FROM ${table} WHERE ${where.join(' AND ')}`,
+    params,
   );
   return rows.map((r) => r.code);
 }
 
-async function codeTaken(table, code, excludeId = null) {
+async function codeTaken(table, code, excludeId = null, { discriminator } = {}) {
   assertTable(table);
+  const where = ['code = ?', 'deleted_at IS NULL'];
   const params = [code];
-  let sql = `SELECT id FROM ${table} WHERE code = ? AND deleted_at IS NULL`;
+  applyDiscriminator(where, params, discriminator);
+  let sql = `SELECT id FROM ${table} WHERE ${where.join(' AND ')}`;
   if (excludeId !== null) {
     sql += ' AND id <> ?';
     params.push(excludeId);
@@ -126,8 +168,16 @@ async function codeTaken(table, code, excludeId = null) {
   return rows.length > 0;
 }
 
-async function create(table, { code, label, sortOrder, isActive }) {
+async function create(table, { code, label, sortOrder, isActive, masterKey, parentCode }) {
   assertTable(table);
+  if (table === 'master_lookups') {
+    const [r] = await pool.query(
+      `INSERT INTO master_lookups (master_key, code, label, parent_code, sort_order, is_active)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [masterKey, code, label, parentCode ?? null, sortOrder ?? 0, isActive ? 1 : 0],
+    );
+    return r.insertId;
+  }
   const [r] = await pool.query(
     `INSERT INTO ${table} (code, label, sort_order, is_active) VALUES (?, ?, ?, ?)`,
     [code, label, sortOrder ?? 0, isActive ? 1 : 0],
@@ -135,8 +185,28 @@ async function create(table, { code, label, sortOrder, isActive }) {
   return r.insertId;
 }
 
-async function update(table, id, { code, label, sortOrder, isActive }) {
+async function update(table, id, { code, label, sortOrder, isActive, parentCode }, { discriminator } = {}) {
   assertTable(table);
+  const where = ['id = ?', 'deleted_at IS NULL'];
+  const params = [];
+  if (table === 'master_lookups') {
+    params.push(
+      code,
+      label,
+      parentCode ?? null,
+      sortOrder ?? 0,
+      isActive ? 1 : 0,
+      id,
+    );
+    applyDiscriminator(where, params, discriminator);
+    await pool.query(
+      `UPDATE master_lookups
+         SET code = ?, label = ?, parent_code = ?, sort_order = ?, is_active = ?
+       WHERE ${where.join(' AND ')}`,
+      params,
+    );
+    return;
+  }
   await pool.query(
     `UPDATE ${table} SET code = ?, label = ?, sort_order = ?, is_active = ?
      WHERE id = ? AND deleted_at IS NULL`,
@@ -144,19 +214,24 @@ async function update(table, id, { code, label, sortOrder, isActive }) {
   );
 }
 
-async function softDelete(table, id) {
+async function softDelete(table, id, { discriminator } = {}) {
   assertTable(table);
+  const where = ['id = ?', 'deleted_at IS NULL'];
+  const params = [id];
+  applyDiscriminator(where, params, discriminator);
   await pool.query(
     `UPDATE ${table} SET deleted_at = NOW(), is_active = 0
-     WHERE id = ? AND deleted_at IS NULL`,
-    [id],
+     WHERE ${where.join(' AND ')}`,
+    params,
   );
 }
 
-async function labelTaken(table, label, excludeId = null) {
+async function labelTaken(table, label, excludeId = null, { discriminator } = {}) {
   assertTable(table);
+  const where = ['LOWER(label) = ?', 'deleted_at IS NULL'];
   const params = [label.toLowerCase()];
-  let sql = `SELECT id FROM ${table} WHERE LOWER(label) = ? AND deleted_at IS NULL`;
+  applyDiscriminator(where, params, discriminator);
+  let sql = `SELECT id FROM ${table} WHERE ${where.join(' AND ')}`;
   if (excludeId !== null) {
     sql += ' AND id <> ?';
     params.push(excludeId);

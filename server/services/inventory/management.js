@@ -9,11 +9,45 @@ const { buildTablePdf } = require('../files/pdf');
 const { assignUniqueCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
 
+function toPropertyTypeKey(propertyType) {
+  const value = String(propertyType || '').trim().toLowerCase();
+  if (!value) return 'other';
+  if (value.includes('flat') || value.includes('apartment') || value.includes('house')) return 'flat';
+  if (value.includes('bunglow') || value.includes('villa')) return 'bunglow';
+  if (value.includes('plot')) return 'plot';
+  if (value.includes('shop')) return 'shop';
+  if (value.includes('commercial')) return 'commercial';
+  if (value.includes('land')) return 'land';
+  if (value.includes('hostel')) return 'hostel';
+  if (value.includes('paying guest') || value.includes('paying_guest')) return 'paying_guest';
+  if (value.includes('hospital')) return 'hospital';
+  if (value.includes('industrial')) return 'industrial_plot';
+  if (value.includes('sez')) return 'sez';
+  if (value.includes('tdr')) return 'tdr';
+  if (value.includes('pre-leased') || value.includes('pre leased')) return 'pre_leased';
+  if (value.includes('bank auction')) return 'bank_auction';
+  return 'other';
+}
+
 async function validateMasterCodes(payload) {
-  await masters.assertActiveCode('property_type', payload.propertyType);
-  await masters.assertActiveCode('transaction_type', payload.transactionType);
+  if (!payload.propertyType || !String(payload.propertyType).trim()) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Property type is required');
+  }
+  if (payload.transactionType) {
+    await masters.assertActiveCode('transaction_type', payload.transactionType);
+  }
+  // transaction_variant lives in the same transaction_type vocabulary —
+  // e.g. transactionType='sale' may be paired with variant='new_sale' or
+  // variant='resale'. We deliberately validate against the same master.
+  if (payload.transactionVariant) {
+    await masters.assertActiveCode('transaction_type', payload.transactionVariant);
+  }
   await masters.assertActiveCode('flat_type', payload.bhk);
   await masters.assertActiveCode('status_type', payload.status);
+  // Hierarchical location masters — only validated when supplied.
+  await masters.assertActiveCode('district', payload.district);
+  await masters.assertActiveCode('taluka', payload.taluka);
+  await masters.assertActiveCode('shivar', payload.shivar);
 }
 
 const { PUBLIC_URL_PREFIX } = require('../files/publicUrl');
@@ -83,8 +117,9 @@ async function createProperty(payload) {
   // concurrent creates can never collide on the constraint, then assign
   // the final NSK-<TYPE>-YY-XXXXXX code with retry-on-collision.
   const tmpCode = `TMP-${crypto.randomUUID()}`;
+  const propertyKey = toPropertyTypeKey(payload.propertyType);
   const id = await inventory.create({ ...payload, propertyCode: tmpCode });
-  await assignUniqueCode(payload.propertyType, async (code) => {
+  await assignUniqueCode(propertyKey, async (code) => {
     try {
       await inventory.updatePropertyCode(id, code);
       return true;

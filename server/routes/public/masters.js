@@ -24,7 +24,14 @@ router.get('/:key', validate(keyParam, 'params'), async (req, res, next) => {
     const result = await management.listAll(req.params.key, { isActive: true });
     res.json({
       master: result.master,
-      data: result.data.map((row) => ({ code: row.code, label: row.label, sortOrder: row.sortOrder })),
+      data: result.data.map((row) => {
+        const out = { code: row.code, label: row.label, sortOrder: row.sortOrder };
+        // Hierarchical lookups (taluka, shivar) carry parent_code so the
+        // frontend can filter children by selected parent without an extra
+        // round trip.
+        if (row.parentCode !== undefined) out.parentCode = row.parentCode;
+        return out;
+      }),
     });
   } catch (e) { next(e); }
 });
