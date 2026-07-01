@@ -76,6 +76,23 @@ const dualModeShape = Joi.object({
   any: dualSide,
 }).unknown(false);
 
+// Some form configs render `facing` / `condition` / `age` / `bunglowType` as
+// a plain `select` / `radio` / `text`, which sends a bare scalar — but the
+// server has always expected the dualMode object shape. Rather than editing
+// 79 form configs (and reserializing every previously-saved record), accept
+// a scalar too and coerce it into `{ specific: <scalar>, any: '' }`.
+const dualModeOrScalar = Joi.alternatives()
+  .try(
+    dualModeShape,
+    Joi.string().trim().max(500).allow('', null),
+    Joi.number().allow(null),
+  )
+  .custom((v) => {
+    if (v === null || v === undefined || v === '') return { specific: '', any: '' };
+    if (typeof v === 'object' && !Array.isArray(v) && 'specific' in v) return v;
+    return { specific: v, any: '' };
+  });
+
 // unitNumber fields: numeric value + unit label from a known set.
 const unitNumberShape = Joi.object({
   value: Joi.alternatives().try(Joi.number().min(0).max(AREA_MAX), Joi.string().allow('', null)),
@@ -102,6 +119,22 @@ const contactShape = Joi.object({
 // Array-of-master-code multi-select (e.g. defect lists, amenities lists).
 const codeArray = Joi.array().items(masterCodeField).max(200);
 
+// Some form configs render a codeArray key as a plain `select` today
+// (e.g. allottedAreaToOwner on TDR/Flat, landReservation on Land purchase
+// variants), and `landReservation` is even rendered as `dualMode` on other
+// land variants — so the same key can arrive as a scalar, an array, OR a
+// `{ specific, any }` object. Accept all three shapes; coerce scalars to
+// single-element arrays and leave dualMode objects as-is so downstream code
+// can branch on Array.isArray.
+const codeArrayOrScalar = Joi.alternatives()
+  .try(codeArray, dualModeShape, masterCodeField)
+  .custom((v) => {
+    if (Array.isArray(v)) return v;
+    if (v && typeof v === 'object' && ('specific' in v || 'any' in v)) return v;
+    if (v === null || v === undefined || v === '') return [];
+    return [v];
+  });
+
 // The dynamicData Joi schema. `.unknown(true)` deliberately allows fields we
 // haven't explicitly enumerated — the payload is form-config driven and we
 // prefer forward-compat over a strict deny-list. Every known field still
@@ -119,12 +152,14 @@ const dynamicDataSchema = Joi.object({
   addressLine2: mediumText,
 
   // Common dualMode fields (repeated across variants — Bunglow/Flat/Shop etc.)
+  // Use dualModeOrScalar for keys whose form config renders as `select` /
+  // `radio` in some variants — the scalar gets coerced to `{ specific, any }`.
   location: Joi.alternatives().try(dualModeShape, shortText),
-  bunglowType: dualModeShape,
+  bunglowType: dualModeOrScalar,
   size: Joi.alternatives().try(dualModeShape, masterCodeField),
-  facing: dualModeShape,
-  age: dualModeShape,
-  condition: dualModeShape,
+  facing: dualModeOrScalar,
+  age: dualModeOrScalar,
+  condition: dualModeOrScalar,
 
   // Radios that are stored as plain strings
   parkingFacility: shortText,
@@ -250,7 +285,9 @@ const dynamicDataSchema = Joi.object({
   plotDepositBudget: masterCodeField,
   hostelAmountBudget: masterCodeField,
 
-  // Multi-selects
+  // Multi-selects. Use codeArrayOrScalar for keys whose form config renders
+  // as a plain `select` in some variants (e.g. allottedAreaToOwner on TDR) —
+  // the scalar gets coerced to `[code]`.
   defect: codeArray,
   defectWillDo: codeArray,
   defectWillNotDo: codeArray,
@@ -267,8 +304,8 @@ const dynamicDataSchema = Joi.object({
   sezInfrastructuralFacilities: codeArray,
   sezFiscalIncentives: codeArray,
   industrialPermittedIndustry: codeArray,
-  allottedAreaToOwner: codeArray,
-  landReservation: codeArray,
+  allottedAreaToOwner: codeArrayOrScalar,
+  landReservation: codeArrayOrScalar,
 
   // Contacts + reference line
   contacts: Joi.array().items(contactShape).max(3),
