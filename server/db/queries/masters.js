@@ -122,6 +122,61 @@ async function findByCode(table, code, { discriminator } = {}) {
   return rows[0] || null;
 }
 
+// Find a SOFT-DELETED row with the given code — used by `create` to revive
+// a deleted entry instead of colliding with the DB unique key on
+// (master_key, code). The `code` column is not cleared on soft-delete, so
+// re-inserting the same code hits ER_DUP_ENTRY at the MySQL layer even
+// though the app-level `findByCode` reports no conflict.
+async function findDeletedByCode(table, code, { discriminator } = {}) {
+  assertTable(table);
+  const where = ['code = ?', 'deleted_at IS NOT NULL'];
+  const params = [code];
+  applyDiscriminator(where, params, discriminator);
+  const [rows] = await pool.query(
+    `SELECT id, code, label, sort_order, is_active${table === 'master_lookups' ? ', parent_code' : ''}
+     FROM ${table} WHERE ${where.join(' AND ')} LIMIT 1`,
+    params,
+  );
+  return rows[0] || null;
+}
+
+async function findDeletedByLabel(table, label, { discriminator } = {}) {
+  assertTable(table);
+  const where = ['LOWER(label) = ?', 'deleted_at IS NOT NULL'];
+  const params = [String(label).toLowerCase()];
+  applyDiscriminator(where, params, discriminator);
+  const [rows] = await pool.query(
+    `SELECT id, code, label, sort_order, is_active${table === 'master_lookups' ? ', parent_code' : ''}
+     FROM ${table} WHERE ${where.join(' AND ')} LIMIT 1`,
+    params,
+  );
+  return rows[0] || null;
+}
+
+// Revive a soft-deleted row: clear deleted_at and set is_active=1 (plus
+// update the mutable fields with the fresh payload). Used by
+// masters/management.js `create` so re-adding a deleted entry works
+// without the caller having to know a soft-deleted twin ever existed.
+async function revive(table, id, { code, label, sortOrder, isActive, parentCode }) {
+  assertTable(table);
+  if (table === 'master_lookups') {
+    await pool.query(
+      `UPDATE master_lookups
+         SET code = ?, label = ?, parent_code = ?, sort_order = ?,
+             is_active = ?, deleted_at = NULL
+       WHERE id = ?`,
+      [code, label, parentCode ?? null, sortOrder ?? 0, isActive ? 1 : 0, id],
+    );
+    return;
+  }
+  await pool.query(
+    `UPDATE ${table}
+       SET code = ?, label = ?, sort_order = ?, is_active = ?, deleted_at = NULL
+     WHERE id = ?`,
+    [code, label, sortOrder ?? 0, isActive ? 1 : 0, id],
+  );
+}
+
 // Case-insensitive lookup by label. Returns the row (with is_active) so the
 // caller can give the admin a useful "already exists" error that says
 // whether the conflicting row is active or inactive and what its id is.
@@ -248,10 +303,13 @@ module.exports = {
   findById,
   findByCode,
   findByLabel,
+  findDeletedByCode,
+  findDeletedByLabel,
   activeCodes,
   codeTaken,
   labelTaken,
   create,
   update,
+  revive,
   softDelete,
 };

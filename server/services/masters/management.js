@@ -539,6 +539,26 @@ async function create(masterKey, payload) {
       { existingId: existingByLabel.id, existingLabel: existingByLabel.label, isActive: Boolean(existingByLabel.is_active) },
     );
   }
+  // Revive a soft-deleted twin if the admin is re-adding a previously-
+  // deleted entry with the same code or label. The DB unique key on
+  // (master_key, code) still covers deleted rows, so a fresh INSERT
+  // hits ER_DUP_ENTRY. Reviving preserves the id + audit history and
+  // gives the admin the "add worked" outcome they expected.
+  const deletedByCode = await repo.findDeletedByCode(table, code, { discriminator });
+  const deletedByLabel = deletedByCode
+    ? null
+    : await repo.findDeletedByLabel(table, label, { discriminator });
+  const dead = deletedByCode || deletedByLabel;
+  if (dead) {
+    await repo.revive(table, dead.id, {
+      code,
+      label,
+      sortOrder: Number(payload.sortOrder) || 0,
+      isActive: payload.isActive !== false,
+      parentCode,
+    });
+    return getOne(masterKey, dead.id);
+  }
   const id = await repo.create(table, {
     code,
     label,
