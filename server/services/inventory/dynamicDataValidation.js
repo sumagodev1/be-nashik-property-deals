@@ -198,13 +198,16 @@ const dynamicDataSchema = Joi.object({
   // Master-backed selects — the client passes a master code; validate shape.
   bunglowSize: masterCodeField,
   bunglowStatus: masterCodeField,
-  flatType: masterCodeField,
+  // flatType is `select` in some flat variants, `dualMode` in others.
+  flatType: dualModeOrScalar,
   flatSize: masterCodeField,
   flatStatus: masterCodeField,
   flatNature: masterCodeField,
-  plotType: masterCodeField,
+  // plotType / plotShape are `select` in single-mode plot variants and
+  // `dualMode` in dual-mode purchase / rent-in / lease-in variants.
+  plotType: dualModeOrScalar,
   plotStatus: masterCodeField,
-  plotShape: masterCodeField,
+  plotShape: dualModeOrScalar,
   plotCorner: masterCodeField,
   plotAreaUnit: masterCodeField,
   plotRateUnit: masterCodeField,
@@ -212,9 +215,12 @@ const dynamicDataSchema = Joi.object({
   shopStatus: masterCodeField,
   commercialStatus: masterCodeField,
   landStatus: masterCodeField,
-  landZone: masterCodeField,
-  landVariety: masterCodeField,
-  landType: masterCodeField,
+  // Land keys are polymorphic across variants — sometimes `select` (scalar),
+  // sometimes `dualMode` (`{specific, any}`). Use dualModeOrScalar so both
+  // shapes pass and get coerced to the object form for storage.
+  landZone: dualModeOrScalar,
+  landVariety: dualModeOrScalar,
+  landType: dualModeOrScalar,
   landAreaUnit: masterCodeField,
   hostelStatus: masterCodeField,
   hostelCategory: masterCodeField,
@@ -241,13 +247,21 @@ const dynamicDataSchema = Joi.object({
   projectSaleStatus: masterCodeField,
   projectFacing: masterCodeField,
   projectCondition: masterCodeField,
-  leasePeriod: masterCodeField,
+  // leasePeriod is `select` (master code) in most forms but `text`
+  // (free-form like "11 months") in some — accept either.
+  leasePeriod: shortText,
   paymentMode: masterCodeField,
   paymentPeriod: masterCodeField,
-  bankName: masterCodeField,
+  // bankName is `select` (master code) in flat / bungalow / commercial /
+  // shop configs, but `text` (free-form name) in project / bank_auction
+  // configs. Accept either — a master code fits inside shortText's cap and
+  // a free-text bank name is stored as-is.
+  bankName: shortText,
   district: masterCodeField,
   taluka: masterCodeField,
-  shivar: masterCodeField,
+  // shivar is `dualMode` in land dual variants, `text` in single variants —
+  // accept both shapes; coerce to `{specific, any}`.
+  shivar: dualModeOrScalar,
   possessionMonth: masterCodeField,
   possessionYear: masterCodeField,
   tenantPreference: masterCodeField,
