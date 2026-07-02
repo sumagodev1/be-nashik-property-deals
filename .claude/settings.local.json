@@ -7,7 +7,23 @@
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('total:', d.get\\('total'\\), '\\(was returning 1 before fix - silently ignored\\)'\\)\")",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('total:', d.get\\('total'\\), '\\(unknown keys stripped, defaults to sort=latest\\)'\\)\")",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('response:', json.dumps\\(d\\)[:200]\\)\")",
-      "Bash(mysql *)"
+      "Bash(mysql *)",
+      "Read(//d/nashik_property_backend/**)",
+      "Read(//d//**)",
+      "Bash(powershell -Command \"Get-Content *FormsConfig.js | Select-String -Pattern 'options:\\\\s*\\\\[' | Select-Object -First 20\")",
+      "Bash(node *)",
+      "Bash(netstat -ano)",
+      "Bash(findstr LISTENING)",
+      "Bash(findstr :5000)",
+      "Bash(findstr :3000)",
+      "Bash(findstr :4000)",
+      "Bash(findstr :8000)",
+      "Bash(findstr :8080)",
+      "Bash(wmic process *)",
+      "Bash(findstr /R \"CommandLine ExecutablePath\")",
+      "Bash(tasklist *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Get-CimInstance *)"
     ]
   }
 }
