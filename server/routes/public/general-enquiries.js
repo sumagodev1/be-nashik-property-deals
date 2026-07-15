@@ -18,41 +18,40 @@ const limiter = rateLimit({
   message: { error: { code: 'RATE_LIMITED', message: 'Too many requests. Try again later.' } },
 });
 
-const LETTERS_ONLY = /^[A-Za-z\s]+$/;
-const emailField = Joi.string().email({ tlds: { allow: false } }).max(255);
-const mobileField = Joi.string().trim().pattern(/^\d{10}$/)
-  .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number' });
-const nameField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY)
-  .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
+// Public general enquiries. All content fields are format-relaxed and
+// optional. The OTP flow still needs `email` on /start (OTP delivery) and
+// `code` on /verify (the OTP itself).
+const emailField = Joi.string().max(255).allow('', null);
+const mobileField = Joi.string().trim().max(20).allow('', null);
+const nameField = Joi.string().trim().max(255).allow('', null);
 const codeField = Joi.string().pattern(/^\d{6}$/);
-const categoryField = Joi.string().valid(...TRANSACTION_TYPES);
+const categoryField = Joi.string().max(255);
 
 const startBody = Joi.object({
-  name: nameField.required(),
-  mobile: mobileField.required(),
-  // OTP delivery is email per CLAUDE.md, so email is required.
-  email: emailField.required(),
+  name: nameField.optional(),
+  mobile: mobileField.optional(),
+  email: Joi.string().max(255).allow(null).required(),
   captchaToken: Joi.string().allow('', null).optional(),
-});
+}).unknown(true);
 
 const verifyBody = Joi.object({
-  name: nameField.required(),
-  mobile: mobileField.required(),
-  email: emailField.required(),
+  name: nameField.optional(),
+  mobile: mobileField.optional(),
+  email: emailField.optional(),
   code: codeField.required(),
   message: Joi.string().trim().max(2000).allow('', null).optional(),
-  categories: Joi.array().items(categoryField).unique().max(3).optional(),
-});
+  categories: Joi.array().items(categoryField).max(10).optional(),
+}).unknown(true);
 
 // One-step submit for the public Contact Us form. Captcha gates spam; no OTP.
 const submitBody = Joi.object({
-  name: nameField.required(),
-  mobile: mobileField.required(),
-  email: emailField.required(),
+  name: nameField.optional(),
+  mobile: mobileField.optional(),
+  email: emailField.optional(),
   message: Joi.string().trim().max(2000).allow('', null).optional(),
-  categories: Joi.array().items(categoryField).unique().max(3).optional(),
+  categories: Joi.array().items(categoryField).max(10).optional(),
   captchaToken: Joi.string().allow('', null).optional(),
-});
+}).unknown(true);
 
 router.post('/start', limiter, idempotency(), validate(startBody), async (req, res, next) => {
   try {

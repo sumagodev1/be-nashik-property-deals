@@ -123,6 +123,21 @@ const LOOKUP_KEYS = Object.freeze([
   // `reference of forms/Project Registration Form.md`.
   'project_facing', 'project_condition', 'project_defect_built',
   'project_sale_status',
+  // Land Record Management masters — added in migration 047. Sourced from
+  // `reference of forms/LandRecordManagement.md`. Only the Paper Notice
+  // form contributes masters; the Gaothan + Survey Number forms reuse
+  // the global district/taluka/shivar cascade.
+  'paper_notice_paper_name',
+  'paper_notice_area',
+  'paper_notice_pot_kharba',
+  'paper_notice_total_area',
+  'paper_notice_owners_area',
+  'paper_notice_saleable_area',
+  // Business Associates directory — added in migration 051. Populates the
+  // Designation dropdown on the Admin → Business Associates form. The
+  // dropdown UI appends its own "Others" sentinel at the end, so we do not
+  // seed a literal "Others" row here.
+  'business_associate_designation',
 ]);
 
 const MASTER_TABLES = Object.freeze({
@@ -337,6 +352,18 @@ const MASTER_LABELS = Object.freeze({
   project_condition:               'Project / Condition',
   project_defect_built:            'Project / Defect (Built)',
   project_sale_status:             'Project / Sale Status',
+  // Paper Notice — six separate masters per source doc naming convention
+  // (all six area-unit masters carry the same vocabulary but stay separate
+  // so admins can rename any one independently).
+  paper_notice_paper_name:     'Paper Notice / Paper Name',
+  paper_notice_area:           'Paper Notice / Area',
+  paper_notice_pot_kharba:     'Paper Notice / Pot Kharaba',
+  paper_notice_total_area:     'Paper Notice / Total Area',
+  paper_notice_owners_area:    "Paper Notice / Owner's Area",
+  paper_notice_saleable_area:  'Paper Notice / Saleable Area',
+  // Business Associates — used by the Designation dropdown on
+  // Admin → Business Associates.
+  business_associate_designation: 'Global / Business Associate Designation',
 });
 
 // True for keys that live in master_lookups — drives the discriminator
@@ -463,11 +490,68 @@ async function activeCodes(masterKey) {
   return repo.activeCodes(tableFor(masterKey), { discriminator: discriminatorFor(masterKey) });
 }
 
+// Master vocabularies whose rows are AMOUNTS / PERCENTAGES rather than
+// human category names. These are the dropdowns the admin populates on the
+// registration forms with values like "₹ 50,000", "1000 to 15000", "10 Lakh",
+// or "12.5%". The "at least one letter" rule that guards category masters
+// (Facing / Condition / Amenities) makes no sense here — admins legitimately
+// need to save "1000", "₹1000", or "1000-15000" verbatim. See the frontend
+// mirror in src/shared/constants/numericMasterKeys.js — keep both in sync.
+const AMOUNT_MASTER_KEYS = new Set([
+  // Bunglow
+  'bunglow_lease_monthly_budget',
+  'bunglow_lease_yearly_budget',
+  'bunglow_deposit_budget',
+  'bunglow_rent_monthly_budget',
+  'bunglow_rent_deposit_budget',
+  'bunglow_booking_amount_fixed',
+  // Commercial Space
+  'commercial_lease_monthly_budget',
+  'commercial_lease_yearly_budget',
+  'commercial_deposit_budget',
+  'commercial_rent_budget',
+  'commercial_booking_amount_fixed',
+  // Flat
+  'flat_lease_monthly_budget',
+  'flat_lease_yearly_budget',
+  'flat_deposit_budget',
+  'flat_booking_amount_fixed',
+  // Hostel / Paying Guest
+  'hostel_amount_budget',
+  // Land
+  'land_lease_monthly_budget',
+  'land_lease_yearly_budget',
+  'land_deposit_budget',
+  // Plot
+  'plot_lease_monthly_budget',
+  'plot_lease_yearly_budget',
+  'plot_deposit_budget',
+  // Shop
+  'shop_lease_monthly_budget',
+  'shop_lease_yearly_budget',
+  'shop_deposit_budget',
+  'shop_booking_amount_fixed',
+  // Global sale-forms
+  'token_amount',
+  // Percent vocabularies — "10%", "12.5%", "5 to 10%".
+  'booking_amount_percent',
+  'payment_white_percent',
+  'yearly_hike_percent',
+  'plot_emi_booking_percent',
+]);
+
+function isAmountMasterKey(masterKey) {
+  return AMOUNT_MASTER_KEYS.has(masterKey);
+}
+
 // Label rules vary per master. The strict masters accept letters + spaces
 // only and cap at 30 chars (these are human category names — short and
 // alphabetic, no numbers or punctuation). The lenient default still
 // requires at least one letter but allows digits + a handful of punctuation
-// because rows like "2 BHK" or "Showroom / Office" need them.
+// because rows like "2 BHK" or "Showroom / Office" need them. The `amount`
+// rule (used only for AMOUNT_MASTER_KEYS) inverts the letter requirement:
+// it demands at least one DIGIT and permits currency + range punctuation
+// (₹, en/em dash, tilde, comma, decimal, %).
 const LABEL_RULES = {
   property_type:    { maxLen: 30, pattern: 'alpha' },          // letters + spaces only
   transaction_type: { maxLen: 30, pattern: 'alpha' },          // letters + spaces only
@@ -478,6 +562,9 @@ const LABEL_RULES = {
 // "5%" / "20-25 Years" / "Rs. 1,00,000" / "Generator / Battery Backup" all
 // need digits + punctuation. Default applies if no per-key override is set.
 const LOOKUP_LABEL_RULE = { maxLen: 100, pattern: 'lookup' };
+// Amount vocabularies allow the widened charset (₹, en-dash, em-dash, tilde)
+// so admins can type "1000 – 15000", "₹1000", "1000~15000", "₹2.5 Crore".
+const AMOUNT_LABEL_RULE = { maxLen: 100, pattern: 'amount' };
 const PATTERNS = {
   alpha:        /^[A-Za-z ]+$/,
   alphanumeric: /^[A-Za-z0-9 ]+$/,
@@ -485,23 +572,37 @@ const PATTERNS = {
   // Lookup labels see digit/percent/colon/Rs.-style values from registration
   // forms. Expanded set still excludes shell-meta and HTML-meta characters.
   lookup:       /^[A-Za-z0-9 /()&,.:%+\-]+$/,
+  // Amount labels additionally accept the rupee sign and range separators
+  // (en-dash U+2013, em-dash U+2014, tilde). Still no shell/HTML meta chars.
+  amount:       /^[A-Za-z0-9 ₹/()&,.:%+\-–—~]+$/,
 };
 const PATTERN_MESSAGES = {
   alpha:        'may only contain letters and spaces — digits and special characters are not allowed',
   alphanumeric: 'may only contain letters, digits, and spaces — special characters are not allowed',
   lenient:      'contains an unsupported character. Allowed: letters, digits, spaces, and / ( ) & , . -',
   lookup:       'contains an unsupported character. Allowed: letters, digits, spaces, and / ( ) & , . : % + -',
+  amount:       'contains an unsupported character. Allowed: letters, digits, spaces, ₹, and / ( ) & , . : % + - – — ~',
 };
 
 function assertValidLabel(masterKey, label) {
   const v = String(label || '').trim();
   if (!v) throw new HttpError(400, 'VALIDATION_ERROR', `${MASTER_LABELS[masterKey]} name is required`);
 
-  const rule = LABEL_RULES[masterKey] || (isLookupKey(masterKey) ? LOOKUP_LABEL_RULE : { maxLen: 255, pattern: 'lenient' });
+  const isAmount = isAmountMasterKey(masterKey);
+  const rule = isAmount
+    ? AMOUNT_LABEL_RULE
+    : (LABEL_RULES[masterKey] || (isLookupKey(masterKey) ? LOOKUP_LABEL_RULE : { maxLen: 255, pattern: 'lenient' }));
   if (v.length > rule.maxLen) {
     throw new HttpError(400, 'VALIDATION_ERROR', `${MASTER_LABELS[masterKey]} name must be at most ${rule.maxLen} characters`);
   }
-  if (!/[A-Za-z]/.test(v)) {
+  if (isAmount) {
+    // Amount masters: must have at least one DIGIT (rejects "ABC" / "Hello"
+    // / "###"). Letters are still allowed within the value (Lakh, Crore,
+    // Rs, INR) but not sufficient on their own.
+    if (!/\d/.test(v)) {
+      throw new HttpError(400, 'VALIDATION_ERROR', `${MASTER_LABELS[masterKey]} must contain at least one number`);
+    }
+  } else if (!/[A-Za-z]/.test(v)) {
     throw new HttpError(400, 'VALIDATION_ERROR', `${MASTER_LABELS[masterKey]} name must contain at least one letter`);
   }
   const regex = PATTERNS[rule.pattern] || PATTERNS.lenient;

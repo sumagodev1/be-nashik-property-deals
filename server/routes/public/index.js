@@ -6,6 +6,7 @@ const cms = require('./cms');
 const locations = require('./locations');
 const stats = require('./stats');
 const masters = require('./masters');
+const businessAssociates = require('./business-associates');
 
 const router = express.Router();
 
@@ -16,5 +17,6 @@ router.use('/cms', cms);
 router.use('/locations', locations);
 router.use('/stats', stats);
 router.use('/masters', masters);
+router.use('/business-associates', businessAssociates);
 
 module.exports = router;

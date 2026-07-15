@@ -4,10 +4,12 @@
 const MODULES = Object.freeze({
   INVENTORY_MANAGEMENT: 'inventory_management',
   WEBSITE_PROPERTY_MANAGEMENT: 'website_property_management',
+  BUSINESS_ASSOCIATE_MANAGEMENT: 'business_associate_management',
   LEAD_MANAGEMENT: 'lead_management',
   USER_MANAGEMENT: 'user_management',
   CMS_MANAGEMENT: 'cms_management',
   MASTER_MANAGEMENT: 'master_management',
+  LAND_RECORD_MANAGEMENT: 'land_record_management',
 });
 
 const MODULE_KEYS = Object.values(MODULES);

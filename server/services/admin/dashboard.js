@@ -40,4 +40,99 @@ async function charts({ days = 30, granularity = 'daily', dateFrom = null, dateT
   };
 }
 
-module.exports = { kpi, charts };
+/* ──────────────────────────────────────────────────────────────────
+ * Per-surface dashboards.
+ *
+ * Two isolated payloads so the admin panel can render one dashboard per
+ * property surface (Website / Inventory) without any client-side
+ * filtering. Data from the "other" surface is NEVER included.
+ * ────────────────────────────────────────────────────────────────── */
+
+async function websiteKpi() {
+  return dashboardRepo.websiteCounters();
+}
+
+async function websiteCharts({ granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
+  const [
+    listingsOverTime,
+    propertyTypeDistribution,
+    transactionTypeDistribution,
+    topAreas,
+  ] = await Promise.all([
+    dashboardRepo.listingsByBucketSingle('website_properties', { granularity, dateFrom, dateTo }),
+    dashboardRepo.listingsByPropertyTypeSingle('website_properties'),
+    dashboardRepo.listingsByTransactionTypeSingle('website_properties'),
+    dashboardRepo.topAreasWebsite({ limit: 10 }),
+  ]);
+  return {
+    listingsOverTime,
+    propertyTypeDistribution,
+    transactionTypeDistribution,
+    topAreas,
+    granularity,
+    range: { dateFrom, dateTo },
+  };
+}
+
+async function inventoryKpi() {
+  return dashboardRepo.inventoryCounters();
+}
+
+async function inventoryCharts({ granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
+  const [
+    listingsOverTime,
+    propertyTypeDistribution,
+    transactionTypeDistribution,
+    topAreas,
+  ] = await Promise.all([
+    dashboardRepo.listingsByBucketSingle('inventory_properties', { granularity, dateFrom, dateTo }),
+    dashboardRepo.listingsByPropertyTypeSingle('inventory_properties'),
+    dashboardRepo.listingsByTransactionTypeSingle('inventory_properties'),
+    dashboardRepo.topAreasInventory({ limit: 10 }),
+  ]);
+  return {
+    listingsOverTime,
+    propertyTypeDistribution,
+    transactionTypeDistribution,
+    topAreas,
+    granularity,
+    range: { dateFrom, dateTo },
+  };
+}
+
+async function enquiryKpi() {
+  return dashboardRepo.enquiryCounters();
+}
+
+async function enquiryCharts({ granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
+  const [
+    listingsOverTime,
+    propertyTypeDistribution,
+    transactionTypeDistribution,
+    topAreas,
+  ] = await Promise.all([
+    dashboardRepo.listingsByBucketSingle('enquiry_properties', { granularity, dateFrom, dateTo }),
+    dashboardRepo.listingsByPropertyTypeSingle('enquiry_properties'),
+    dashboardRepo.listingsByTransactionTypeSingle('enquiry_properties'),
+    dashboardRepo.topAreasEnquiry({ limit: 10 }),
+  ]);
+  return {
+    listingsOverTime,
+    propertyTypeDistribution,
+    transactionTypeDistribution,
+    topAreas,
+    granularity,
+    range: { dateFrom, dateTo },
+  };
+}
+
+module.exports = {
+  kpi,
+  charts,
+  websiteKpi,
+  websiteCharts,
+  inventoryKpi,
+  inventoryCharts,
+  enquiryKpi,
+  enquiryCharts,
+};

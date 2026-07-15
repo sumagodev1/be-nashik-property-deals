@@ -1,5 +1,12 @@
 const { pool } = require('../pool');
 
+// Structural mirror of db/queries/inventory_properties.js — same shape,
+// same sortable columns, same list filters, same soft-delete convention.
+// The only difference is the target table: enquiry_properties (see
+// migrations/048_enquiry_properties.sql). Kept as a sibling module rather
+// than a factory so a search for "SELECT ... FROM enquiry_properties" lands
+// directly on the code path that runs it.
+
 const SORTABLE_COLUMNS = {
   created_at: 'created_at',
   price: 'price',
@@ -21,27 +28,9 @@ async function list({
   search,
   propertyType,
   transactionType,
-  // Cascading filter additions (2026-07-14). All four are OPTIONAL and
-  // compose with `search` and every other existing filter via AND.
-  //
-  //   district / taluka / shivar   Master CODES (VARCHAR columns store
-  //                                master_lookups.code, NOT display labels).
-  //                                Sent by the frontend cascade dropdowns
-  //                                after the user picks District → Taluka →
-  //                                Village. Exact-match with '='.
-  //
-  //   propertyTypeIn               Comma-separated list of STRIPPED form
-  //                                labels (e.g. "Flat [Resale Rent Out],
-  //                                Flat [New Rent Out]"). Computed on the
-  //                                frontend by walking the chooser tree +
-  //                                resolveMdFormConfig — see
-  //                                InventoryListFilterBar.jsx. Backend
-  //                                translates to WHERE property_type IN (?,
-  //                                ?, …). Required because the chooser
-  //                                tree's Property Type name ("Bungalow",
-  //                                "Paying Guest") doesn't always match a
-  //                                stored label prefix — e.g. Bungalow rows
-  //                                are stored as "Bunglow [...]".
+  // Cascading filter additions (2026-07-14) — kept in sync with the
+  // parallel block in db/queries/inventory_properties.js. See that file
+  // for the full contract; the two list functions are mirrors by design.
   district,
   taluka,
   shivar,
@@ -60,25 +49,11 @@ async function list({
   const params = [];
 
   if (search) {
-    // Global Search across every important field. Covers:
-    //   - identity: property_code, title, description
-    //   - classification: property_type, transaction_type, transaction_variant,
-    //     status, status_note
-    //   - location: free-text location + hierarchical district / taluka /
-    //     shivar (village) master codes + pincode
-    //   - specs (columns): bhk master code, area_unit code
-    //   - contacts: owner + agent names and phone numbers
-    //   - numeric columns: price + area_value CAST to string so digits
-    //     match (e.g. "5000" hits any row where 5000 appears in price/area)
-    //   - dynamic-form fields: EVERY per-form field (facing, shape, layout,
-    //     gut/survey/CTS number, wing, tower, flat number, budget, deposit,
-    //     amenities, etc.) lives in the `details` JSON column — a text
-    //     LIKE against the serialised JSON blob picks all of them up
-    //     without a separate index-per-field.
-    // Trade-off: `details LIKE '%q%'` is a full-column scan. Fine at the
-    // property-record scale we're operating at (thousands, not millions).
-    // If this becomes hot, promote frequently-searched details keys to
-    // dedicated columns or add a FULLTEXT/JSON generated-column index.
+    // Mirrors the Global Search rules on inventory_properties — see the
+    // parallel comment block there for the full field list and rationale.
+    // Kept identical (not factored) because the SQL runs against a
+    // different table; extracting a shared string would add indirection
+    // without saving code.
     where.push(`(
       property_code LIKE ? OR title LIKE ? OR description LIKE ?
       OR location LIKE ?
@@ -102,13 +77,11 @@ async function list({
     where.push('transaction_type = ?');
     params.push(transactionType);
   }
-  // Cascading filter — see the signature comment above. `propertyTypeIn` is
-  // pre-computed by the frontend to the exact set of stripped labels the
-  // DB stores; we split, dedupe, cap, and pass through as an IN() list.
+  // Cascading filter — mirror of db/queries/inventory_properties.js.
   if (typeof propertyTypeIn === 'string' && propertyTypeIn.trim() !== '') {
     const labels = Array.from(new Set(
       propertyTypeIn.split(',').map((s) => s.trim()).filter(Boolean),
-    )).slice(0, 200); // hard cap — matches the largest realistic tree slice
+    )).slice(0, 200);
     if (labels.length > 0) {
       where.push(`property_type IN (${labels.map(() => '?').join(', ')})`);
       params.push(...labels);
@@ -159,16 +132,10 @@ async function list({
   const orderSql = buildOrderBy(sort);
 
   const [[{ total }]] = await pool.query(
-    `SELECT COUNT(*) AS total FROM inventory_properties ${whereSql}`,
+    `SELECT COUNT(*) AS total FROM enquiry_properties ${whereSql}`,
     params,
   );
 
-  // List rows now include the full `description` + `details` JSON blob so
-  // the frontend receives every field the admin submitted. The `details`
-  // column can be a few KB per row for MD-engine forms — at pageSize 100
-  // that's still under a few hundred KB total, well within a reasonable
-  // API response. If this ever grows painful, add an opt-in `?slim=1`
-  // param that falls back to the compact projection.
   const [rows] = await pool.query(
     `SELECT id, property_code, registration_date, title, description,
             property_type, transaction_type, transaction_variant,
@@ -176,7 +143,7 @@ async function list({
             area_value, area_unit, bhk, price, status, status_note, status_changed_at,
             is_draft, owner_name, owner_contact,
             agent_name, agent_contact, details, created_at, updated_at
-     FROM inventory_properties
+     FROM enquiry_properties
      ${whereSql}
      ${orderSql}
      LIMIT ? OFFSET ?`,
@@ -188,7 +155,7 @@ async function list({
 
 async function findById(id) {
   const [rows] = await pool.query(
-    `SELECT * FROM inventory_properties WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+    `SELECT * FROM enquiry_properties WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
     [id],
   );
   return rows[0] || null;
@@ -196,7 +163,7 @@ async function findById(id) {
 
 async function findByIdForConn(conn, id) {
   const [rows] = await conn.query(
-    `SELECT * FROM inventory_properties WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+    `SELECT * FROM enquiry_properties WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
     [id],
   );
   return rows[0] || null;
@@ -207,7 +174,7 @@ async function create(payload) {
     ? JSON.stringify(payload.details)
     : null;
   const [result] = await pool.query(
-    `INSERT INTO inventory_properties
+    `INSERT INTO enquiry_properties
      (property_code, registration_date, title, description, property_type,
       transaction_type, transaction_variant, location, district, taluka, shivar,
       latitude, longitude, pincode,
@@ -247,7 +214,7 @@ async function create(payload) {
 }
 
 async function updatePropertyCode(id, code) {
-  await pool.query('UPDATE inventory_properties SET property_code = ? WHERE id = ?', [code, id]);
+  await pool.query('UPDATE enquiry_properties SET property_code = ? WHERE id = ?', [code, id]);
 }
 
 async function update(id, payload) {
@@ -255,7 +222,7 @@ async function update(id, payload) {
     ? JSON.stringify(payload.details)
     : null;
   await pool.query(
-    `UPDATE inventory_properties SET
+    `UPDATE enquiry_properties SET
        registration_date = ?, title = ?, description = ?,
        property_type = ?, transaction_type = ?, transaction_variant = ?,
        location = ?, district = ?, taluka = ?, shivar = ?,
@@ -295,7 +262,7 @@ async function update(id, payload) {
 
 async function updateStatus(id, status, note, changedBy) {
   await pool.query(
-    `UPDATE inventory_properties
+    `UPDATE enquiry_properties
         SET status            = ?,
             status_note       = ?,
             status_changed_at = NOW(),
@@ -307,7 +274,7 @@ async function updateStatus(id, status, note, changedBy) {
 
 async function softDelete(id) {
   await pool.query(
-    `UPDATE inventory_properties SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL`,
+    `UPDATE enquiry_properties SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL`,
     [id],
   );
 }

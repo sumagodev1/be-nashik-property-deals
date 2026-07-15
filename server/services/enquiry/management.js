@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const { HttpError } = require('../../middleware/errors');
-const inventory = require('../../db/queries/inventory_properties');
+const enquiry = require('../../db/queries/enquiry_properties');
 const propertyFiles = require('../../db/queries/property_files');
 const imageUpload = require('../files/imageUpload');
 const documentUpload = require('../files/documentUpload');
@@ -8,6 +8,16 @@ const excel = require('../files/excel');
 const { buildTablePdf } = require('../files/pdf');
 const { assignUniqueCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
+
+// Structural mirror of services/inventory/management.js — every function has
+// the same signature and same downstream behaviour. Only the data source
+// (enquiry_properties table via db/queries/enquiry_properties) and the file
+// namespace (propertyKind='enquiry' for uploads/downloads) differ.
+//
+// Kept as a parallel module rather than a factory so a search for the
+// enquiry code path lands directly, and so future divergence (e.g. if the
+// Enquiry surface grows fields the Inventory surface does not) can happen
+// here without dragging the sister module along.
 
 function toPropertyTypeKey(propertyType) {
   const value = String(propertyType || '').trim().toLowerCase();
@@ -33,15 +43,11 @@ async function validateMasterCodes(payload) {
   if (payload.transactionType) {
     await masters.assertActiveCode('transaction_type', payload.transactionType);
   }
-  // transaction_variant lives in the same transaction_type vocabulary —
-  // e.g. transactionType='sale' may be paired with variant='new_sale' or
-  // variant='resale'. We deliberately validate against the same master.
   if (payload.transactionVariant) {
     await masters.assertActiveCode('transaction_type', payload.transactionVariant);
   }
   await masters.assertActiveCode('flat_type', payload.bhk);
   await masters.assertActiveCode('status_type', payload.status);
-  // Hierarchical location masters — only validated when supplied.
   await masters.assertActiveCode('district', payload.district);
   await masters.assertActiveCode('taluka', payload.taluka);
   await masters.assertActiveCode('shivar', payload.shivar);
@@ -49,16 +55,14 @@ async function validateMasterCodes(payload) {
 
 const { PUBLIC_URL_PREFIX } = require('../files/publicUrl');
 
-// Export column order — matches what the admin would expect when reviewing
-// inventory offline. ALL columns from the data-entry form so nothing is lost.
-const INVENTORY_HEADERS = [
+const ENQUIRY_HEADERS = [
   'property_code', 'is_draft', 'status', 'title', 'property_type', 'transaction_type',
   'location', 'bhk', 'area_value', 'area_unit', 'price',
   'owner_name', 'owner_contact', 'agent_name', 'agent_contact',
   'created_at', 'updated_at',
 ];
 
-function inventoryRowValues(r) {
+function enquiryRowValues(r) {
   return [
     r.property_code,
     r.is_draft ? 'yes' : 'no',
@@ -88,7 +92,7 @@ function csvField(value) {
 }
 
 async function listProperties(query) {
-  const { rows, total } = await inventory.list(query);
+  const { rows, total } = await enquiry.list(query);
   return {
     data: rows.map(toListItem),
     page: query.page,
@@ -99,26 +103,23 @@ async function listProperties(query) {
 }
 
 async function getProperty(id) {
-  const row = await inventory.findById(id);
+  const row = await enquiry.findById(id);
   if (!row) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   const [images, documents] = await Promise.all([
-    propertyFiles.listForProperty(null, 'inventory', id),
-    documentUpload.listPropertyDocuments('inventory', id),
+    propertyFiles.listForProperty(null, 'enquiry', id),
+    documentUpload.listPropertyDocuments('enquiry', id),
   ]);
   return toDetail(row, images, documents);
 }
 
 async function createProperty(payload) {
   await validateMasterCodes(payload);
-  // property_code is UNIQUE in MySQL. Insert with a UUID placeholder so
-  // concurrent creates can never collide on the constraint, then assign
-  // the final NSK-<TYPE>-YY-XXXXXX code with retry-on-collision.
   const tmpCode = `TMP-${crypto.randomUUID()}`;
   const propertyKey = toPropertyTypeKey(payload.propertyType);
-  const id = await inventory.create({ ...payload, propertyCode: tmpCode });
+  const id = await enquiry.create({ ...payload, propertyCode: tmpCode });
   await assignUniqueCode(propertyKey, async (code) => {
     try {
-      await inventory.updatePropertyCode(id, code);
+      await enquiry.updatePropertyCode(id, code);
       return true;
     } catch (err) {
       if (err && err.code === 'ER_DUP_ENTRY') return false;
@@ -130,58 +131,56 @@ async function createProperty(payload) {
 
 async function updateProperty(id, payload) {
   await validateMasterCodes(payload);
-  const existing = await inventory.findById(id);
+  const existing = await enquiry.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
-  await inventory.update(id, payload);
-  // Code format is independent of draft state — the UI surfaces draft
-  // separately via the is_draft column, so no renaming on toggle.
+  await enquiry.update(id, payload);
   return getProperty(id);
 }
 
 async function updateStatus(id, status, note, changedBy) {
   await masters.assertActiveCode('status_type', status);
-  const existing = await inventory.findById(id);
+  const existing = await enquiry.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
-  await inventory.updateStatus(id, status, note, changedBy);
+  await enquiry.updateStatus(id, status, note, changedBy);
   return getProperty(id);
 }
 
 async function removeProperty(id) {
-  const existing = await inventory.findById(id);
+  const existing = await enquiry.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
-  await inventory.softDelete(id);
+  await enquiry.softDelete(id);
 }
 
 async function addImages(id, files) {
-  const existing = await inventory.findById(id);
+  const existing = await enquiry.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
-  await imageUpload.persistImages({ propertyKind: 'inventory', propertyId: id, files });
+  await imageUpload.persistImages({ propertyKind: 'enquiry', propertyId: id, files });
   return getProperty(id);
 }
 
 async function removeImage(id, fileId) {
-  const existing = await inventory.findById(id);
+  const existing = await enquiry.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
-  await imageUpload.deleteImage({ fileId, propertyKind: 'inventory', propertyId: id });
+  await imageUpload.deleteImage({ fileId, propertyKind: 'enquiry', propertyId: id });
   return getProperty(id);
 }
 
 async function addDocuments(id, files) {
-  const existing = await inventory.findById(id);
+  const existing = await enquiry.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
-  await documentUpload.persistPropertyDocuments({ propertyKind: 'inventory', propertyId: id, files });
+  await documentUpload.persistPropertyDocuments({ propertyKind: 'enquiry', propertyId: id, files });
   return getProperty(id);
 }
 
 async function removeDocument(id, fileId) {
-  const existing = await inventory.findById(id);
+  const existing = await enquiry.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
-  await documentUpload.deletePropertyDocument({ fileId, propertyKind: 'inventory', propertyId: id });
+  await documentUpload.deletePropertyDocument({ fileId, propertyKind: 'enquiry', propertyId: id });
   return getProperty(id);
 }
 
 async function listDocuments(id) {
-  return documentUpload.listPropertyDocuments('inventory', id);
+  return documentUpload.listPropertyDocuments('enquiry', id);
 }
 
 async function findDocument(fileId) {
@@ -193,9 +192,6 @@ async function streamDocument(res, file) {
 }
 
 function toListItem(row) {
-  // Mirrors every column returned by the list SQL projection so callers can
-  // reconstruct the record without a second fetch. `details` is JSON.parsed
-  // so `dynamicData` and any nested MD-form fields are directly accessible.
   return {
     id: row.id,
     propertyCode: row.property_code,
@@ -224,20 +220,12 @@ function toListItem(row) {
     ownerContact: row.owner_contact,
     agentName: row.agent_name,
     agentContact: row.agent_contact,
-    // Every field the admin filled in on the registration form — including
-    // the entire dynamicData blob for MD-engine variants — is included so
-    // the frontend can render or export the record without a per-row detail
-    // fetch. `undefined` when the list SQL didn't select `details`.
     details: row.details !== undefined ? parseDetailsField(row.details) : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-/**
- * Search-as-you-type. Returns up to `limit` rows ordered by recency, with
- * a tight column set suitable for a typeahead dropdown.
- */
 async function suggest({ q, limit = 8, includeDrafts = false }) {
   const { pool } = require('../../db/pool');
   const where = ['deleted_at IS NULL'];
@@ -250,7 +238,7 @@ async function suggest({ q, limit = 8, includeDrafts = false }) {
   }
   const [rows] = await pool.query(
     `SELECT id, property_code, title, location, property_type, transaction_type, price, status, is_draft
-     FROM inventory_properties
+     FROM enquiry_properties
      WHERE ${where.join(' AND ')}
      ORDER BY created_at DESC, id DESC
      LIMIT ?`,
@@ -269,9 +257,6 @@ async function suggest({ q, limit = 8, includeDrafts = false }) {
   }));
 }
 
-// MySQL's JSON column comes back as either a string (older drivers) or a
-// parsed object (newer drivers). Normalise to a plain object so the frontend
-// always sees the same shape.
 function parseDetailsField(raw) {
   if (raw === null || raw === undefined) return {};
   if (typeof raw === 'object') return raw;
@@ -294,8 +279,7 @@ function toDetail(row, images, documents = []) {
     })),
     documents: documents.map((f) => ({
       id: f.id,
-      // Documents are private — caller fetches via /admin/inventory-properties/:id/documents/:fileId
-      downloadPath: `/admin/inventory-properties/${row.id}/documents/${f.id}`,
+      downloadPath: `/admin/enquiry-properties/${row.id}/documents/${f.id}`,
       originalName: f.original_name,
       mimeType: f.mime_type,
       sizeBytes: Number(f.size_bytes),
@@ -304,26 +288,22 @@ function toDetail(row, images, documents = []) {
 }
 
 async function exportCsv(filters) {
-  // Pull all matching rows (no pagination) and build a CSV string.
-  const { rows } = await inventory.list({ ...filters, page: 1, pageSize: 100000 });
-  const lines = [INVENTORY_HEADERS.join(',')];
-  for (const r of rows) lines.push(inventoryRowValues(r).map(csvField).join(','));
+  const { rows } = await enquiry.list({ ...filters, page: 1, pageSize: 100000 });
+  const lines = [ENQUIRY_HEADERS.join(',')];
+  for (const r of rows) lines.push(enquiryRowValues(r).map(csvField).join(','));
   return lines.join('\r\n');
 }
 
 async function exportXlsx(filters) {
-  const { rows } = await inventory.list({ ...filters, page: 1, pageSize: 100000 });
+  const { rows } = await enquiry.list({ ...filters, page: 1, pageSize: 100000 });
   return excel.buildWorkbook({
-    sheetName: 'Inventory',
-    headers: INVENTORY_HEADERS,
-    rows: rows.map(inventoryRowValues),
+    sheetName: 'Enquiry',
+    headers: ENQUIRY_HEADERS,
+    rows: rows.map(enquiryRowValues),
   });
 }
 
-// PDF export — a curated, human-readable subset of columns (the full CSV/Excel
-// dump is too wide to fit a printable page). Column `weight` controls how the
-// available landscape width is shared out.
-const INVENTORY_PDF_COLUMNS = [
+const ENQUIRY_PDF_COLUMNS = [
   { key: 'property_code',   label: 'Property ID',  weight: 2.3, noWrap: true },
   { key: 'title',           label: 'Title',        weight: 2.6 },
   { key: 'property_type',   label: 'Type',         weight: 1.4, noWrap: true },
@@ -348,7 +328,7 @@ function formatDate(d) {
 }
 
 async function exportPdf(filters) {
-  const { rows } = await inventory.list({ ...filters, page: 1, pageSize: 100000 });
+  const { rows } = await enquiry.list({ ...filters, page: 1, pageSize: 100000 });
   const pdfRows = rows.map((r) => ({
     property_code: r.property_code,
     title: r.title,
@@ -362,9 +342,9 @@ async function exportPdf(filters) {
     created_at: formatDate(r.created_at),
   }));
   return buildTablePdf({
-    title: 'Inventory Properties',
-    subtitle: `${rows.length} record${rows.length === 1 ? '' : 's'} · Admin-managed inventory`,
-    columns: INVENTORY_PDF_COLUMNS,
+    title: 'Enquiry Properties',
+    subtitle: `${rows.length} record${rows.length === 1 ? '' : 's'} · Admin-managed enquiry records`,
+    columns: ENQUIRY_PDF_COLUMNS,
     rows: pdfRows,
   });
 }

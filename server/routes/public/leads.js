@@ -17,33 +17,34 @@ const captureLimiter = rateLimit({
   message: { error: { code: 'RATE_LIMITED', message: 'Too many requests. Try again later.' } },
 });
 
-const LETTERS_ONLY = /^[A-Za-z\s]+$/;
-const emailField = Joi.string().email({ tlds: { allow: false } }).max(255);
-const mobileField = Joi.string().trim().pattern(/^\d{10}$/)
-  .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number' });
-const nameField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY)
-  .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
+// Public enquiry / lead capture. Property-data fields (name, mobile, email,
+// message) are format-relaxed — no min length, no pattern check. Only the
+// system contract stays required: which property, which action, and the
+// OTP code on /verify. `email` still needs to be present on /start so the
+// OTP has somewhere to be delivered.
+const emailField = Joi.string().max(255).allow('', null);
+const mobileField = Joi.string().trim().max(20).allow('', null);
+const nameField = Joi.string().trim().max(255).allow('', null);
 const codeField = Joi.string().pattern(/^\d{6}$/);
 
 const startBody = Joi.object({
   propertyId: Joi.number().integer().positive().required(),
   actionType: Joi.string().valid('contact_seller', 'view_location').required(),
-  name: nameField.required(),
-  mobile: mobileField.required(),
-  // OTP delivery is email per CLAUDE.md, so email is required.
-  email: emailField.required(),
+  name: nameField.optional(),
+  mobile: mobileField.optional(),
+  email: Joi.string().max(255).allow(null).required(),
   captchaToken: Joi.string().allow('', null).optional(),
-});
+}).unknown(true);
 
 const verifyBody = Joi.object({
   propertyId: Joi.number().integer().positive().required(),
   actionType: Joi.string().valid('contact_seller', 'view_location').required(),
-  name: nameField.required(),
-  mobile: mobileField.required(),
-  email: emailField.required(),
+  name: nameField.optional(),
+  mobile: mobileField.optional(),
+  email: emailField.optional(),
   code: codeField.required(),
   message: Joi.string().trim().max(2000).allow('', null).optional(),
-});
+}).unknown(true);
 
 router.post('/start', captureLimiter, idempotency(), validate(startBody), async (req, res, next) => {
   try {

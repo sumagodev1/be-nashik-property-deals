@@ -3,6 +3,7 @@ const Joi = require('joi');
 const rateLimit = require('express-rate-limit');
 
 const { validate } = require('../../middleware/validate');
+const locationsRepo = require('../../db/queries/locations');
 
 const router = express.Router();
 
@@ -206,5 +207,227 @@ router.get('/search', searchLimiter, validate(searchQuery, 'query'), async (req,
     next(err);
   }
 });
+
+// ─── Maharashtra district → taluka → village cascade ────────────────────────
+//
+// These endpoints back the LocationCascade component used in every property
+// / inventory / enquiry form. All three tiers read from `master_lookups`
+// under the pre-existing `district` / `taluka` / `shivar` keys (see the
+// dedicated queries module for the SQL). Nothing here reads the CSV — the
+// CSV is imported once via scripts/import-locations.js.
+//
+// Path shape: /public/locations/{districts,talukas,villages}. IDs and
+// government codes are both returned so a form can persist either one
+// (existing code stores the govt code in inventory_properties.district
+// etc; new forms should prefer the id column when we add it).
+
+const districtRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many location lookups.' } },
+});
+
+router.get('/districts', districtRateLimiter, async (_req, res, next) => {
+  try {
+    const rows = await locationsRepo.listDistricts();
+    res.json({
+      data: rows.map((r) => ({
+        id:         r.id,
+        code:       r.code,
+        label:      r.label,
+        stateCode:  r.state_code,
+        stateName:  r.state_name,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+const talukasQuery = Joi.object({
+  districtCode: Joi.string().trim().max(20).optional(),
+  districtId:   Joi.number().integer().min(1).optional(),
+}).or('districtCode', 'districtId');
+
+router.get('/talukas',
+  districtRateLimiter,
+  validate(talukasQuery, 'query'),
+  async (req, res, next) => {
+    try {
+      let districtCode = req.query.districtCode;
+      // If only an id was provided, resolve the district's code first
+      // (single indexed lookup) so the cascade query stays a single
+      // index-range scan.
+      if (!districtCode && req.query.districtId) {
+        const { pool } = require('../../db/pool');
+        const [rows] = await pool.query(
+          `SELECT code FROM master_lookups
+            WHERE id = ? AND master_key = ? AND deleted_at IS NULL LIMIT 1`,
+          [req.query.districtId, locationsRepo.KEYS.DISTRICT],
+        );
+        if (!rows[0]) return res.json({ data: [] });
+        districtCode = rows[0].code;
+      }
+      const rows = await locationsRepo.listTalukasByDistrict(districtCode);
+      res.json({
+        data: rows.map((r) => ({
+          id:           r.id,
+          code:         r.code,
+          label:        r.label,
+          districtCode: r.parent_code,
+        })),
+      });
+    } catch (err) { next(err); }
+  },
+);
+
+// Villages-by-taluka: NO pagination. A single taluka is bounded (Maharashtra
+// tops out under ~500 villages even for the largest urban talukas), so we
+// return every village for the taluka in one shot. Search is still server-
+// side (label prefix match) but does not truncate. Legacy `page` / `pageSize`
+// query params from older clients are accepted and ignored to avoid a
+// breaking change.
+const villagesQuery = Joi.object({
+  talukaCode: Joi.string().trim().max(20).optional(),
+  talukaId:   Joi.number().integer().min(1).optional(),
+  q:          Joi.string().trim().max(100).allow('').default(''),
+  page:       Joi.any().optional(),      // ignored — kept for back-compat
+  pageSize:   Joi.any().optional(),      // ignored — kept for back-compat
+}).or('talukaCode', 'talukaId');
+
+router.get('/villages',
+  districtRateLimiter,
+  validate(villagesQuery, 'query'),
+  async (req, res, next) => {
+    try {
+      let talukaCode = req.query.talukaCode;
+      if (!talukaCode && req.query.talukaId) {
+        const { pool } = require('../../db/pool');
+        const [rows] = await pool.query(
+          `SELECT code FROM master_lookups
+            WHERE id = ? AND master_key = ? AND deleted_at IS NULL LIMIT 1`,
+          [req.query.talukaId, locationsRepo.KEYS.TALUKA],
+        );
+        if (!rows[0]) return res.json({ data: [], total: 0 });
+        talukaCode = rows[0].code;
+      }
+      const { rows, total } = await locationsRepo.listVillagesByTaluka(
+        talukaCode,
+        { search: req.query.q },
+      );
+      res.json({
+        data: rows.map((r) => ({
+          id:         r.id,
+          code:       r.code,
+          label:      r.label,
+          talukaCode: r.parent_code,
+          pincode:    r.pincode,
+        })),
+        total,
+      });
+    } catch (err) { next(err); }
+  },
+);
+
+const pincodeParams = Joi.object({
+  pincode: Joi.string().pattern(/^\d{6}$/).required(),
+});
+
+router.get('/by-pincode/:pincode',
+  districtRateLimiter,
+  validate(pincodeParams, 'params'),
+  async (req, res, next) => {
+    try {
+      const rows = await locationsRepo.findVillagesByPincode(req.params.pincode);
+      res.json({
+        data: rows.map((r) => ({
+          villageId:     r.id,
+          villageCode:   r.code,
+          villageLabel:  r.label,
+          talukaCode:    r.taluka_code,
+          talukaLabel:   r.taluka_label,
+          districtCode:  r.district_code,
+          districtLabel: r.district_label,
+          pincode:       r.pincode,
+        })),
+      });
+    } catch (err) { next(err); }
+  },
+);
+
+const labelsQuery = Joi.object({
+  key:   Joi.string().valid('district', 'taluka', 'shivar').required(),
+  codes: Joi.string().allow('').default(''),
+});
+
+router.get('/labels',
+  districtRateLimiter,
+  validate(labelsQuery, 'query'),
+  async (req, res, next) => {
+    try {
+      const codes = req.query.codes
+        ? req.query.codes.split(',').map((c) => c.trim()).filter(Boolean)
+        : [];
+      const rows = await locationsRepo.labelsForCodes(req.query.key, codes);
+      const map = {};
+      for (const r of rows) map[r.code] = r.label;
+      res.json({ data: map });
+    } catch (err) { next(err); }
+  },
+);
+
+const villageContextParams = Joi.object({
+  code: Joi.string().trim().max(20).required(),
+});
+
+router.get('/villages/:code/context',
+  districtRateLimiter,
+  validate(villageContextParams, 'params'),
+  async (req, res, next) => {
+    try {
+      const row = await locationsRepo.resolveVillageContext(req.params.code);
+      if (!row) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Village not found' } });
+      res.json({
+        village: {
+          id: row.village_id, code: row.village_code, label: row.village_label, pincode: row.pincode,
+        },
+        taluka: {
+          id: row.taluka_id, code: row.taluka_code, label: row.taluka_label,
+        },
+        district: {
+          id: row.district_id, code: row.district_code, label: row.district_label,
+          stateCode: row.state_code, stateName: row.state_name,
+        },
+      });
+    } catch (err) { next(err); }
+  },
+);
+
+// Taluka → parent district resolver. Same shape as the village-context
+// endpoint but sans the village leaf. Backs the LocationCascade Edit-mode
+// backfill for the rare "record has talukaCode but no districtCode" case.
+const talukaContextParams = Joi.object({
+  code: Joi.string().trim().max(20).required(),
+});
+
+router.get('/talukas/:code/context',
+  districtRateLimiter,
+  validate(talukaContextParams, 'params'),
+  async (req, res, next) => {
+    try {
+      const row = await locationsRepo.resolveTalukaContext(req.params.code);
+      if (!row) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Taluka not found' } });
+      res.json({
+        taluka: {
+          id: row.taluka_id, code: row.taluka_code, label: row.taluka_label,
+        },
+        district: {
+          id: row.district_id, code: row.district_code, label: row.district_label,
+          stateCode: row.state_code, stateName: row.state_name,
+        },
+      });
+    } catch (err) { next(err); }
+  },
+);
 
 module.exports = router;

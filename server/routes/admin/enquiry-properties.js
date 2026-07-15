@@ -5,21 +5,27 @@ const { validate } = require('../../middleware/validate');
 const { requireAuth, requireModule } = require('../../middleware/auth');
 const { imageUploadMiddleware, documentUploadMiddleware } = require('../../middleware/imageMulter');
 const idempotency = require('../../middleware/idempotency');
-const management = require('../../services/inventory/management');
+const management = require('../../services/enquiry/management');
+// dynamicData validation is table-agnostic — reused from the inventory
+// service to keep the shape rules (contact/phone/email/dualMode/etc.)
+// authored in one place. Enquiry rows use the same DynamicPropertyForm
+// engine on the frontend, so the payload shape is identical.
 const { validateDynamicData } = require('../../services/inventory/dynamicDataValidation');
 const {
   AREA_UNITS,
 } = require('../../constants/property');
 
-// Master codes are validated semantically in the service layer against the
-// current master_* tables (which the admin can edit). The shape check below
-// just ensures the value looks like a master code so we fail fast on garbage.
 const masterCodeField = Joi.string().trim().lowercase().pattern(/^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$/);
 const { MODULES } = require('../../constants/modules');
 const { HttpError } = require('../../middleware/errors');
 
 const router = express.Router();
 
+// Access control reuses INVENTORY_MANAGEMENT — a Sub Admin who can manage
+// Inventory records is authorised to manage Enquiry records as well. This
+// avoids silently locking existing Sub Admins out of the new surface on
+// deploy. If finer-grained separation is needed later, introduce
+// ENQUIRY_MANAGEMENT here and grant it to existing roles in a follow-up.
 router.use(requireAuth, requireModule(MODULES.INVENTORY_MANAGEMENT));
 
 const idParam = Joi.object({ id: Joi.number().integer().positive().required() });
@@ -28,11 +34,9 @@ const subIdParam = Joi.object({
   fileId: Joi.number().integer().positive().required(),
 });
 
-// All property fields are optional at the API layer — the DB accepts partial
-// payloads. Callers can send any subset of these keys; missing/empty values
-// are treated as "not provided" and never rejected. Only structural sanity
-// caps remain (max lengths) to prevent abuse — no min lengths, no format
-// patterns, no `.required()` for property fields.
+// Every property/enquiry field is optional at the API layer. Only structural
+// caps (max lengths, non-negative bounds) remain — no min lengths, no format
+// patterns, no `.required()` on property fields.
 const titleField = Joi.string().trim().max(255).allow('', null);
 const descField = Joi.string().trim().max(2000).allow('', null);
 const locField = Joi.string().trim().max(255).allow('', null);
@@ -46,21 +50,12 @@ const listQuery = Joi.object({
   search: Joi.string().trim().max(255).allow('').optional(),
   propertyType: Joi.string().trim().max(255).allow('').optional(),
   transactionType: Joi.string().trim().max(255).allow('').optional(),
-  // Cascading location filters (2026-07-14). All three are stored as
-  // master_lookups.code — validated by masterCodeField shape and matched
-  // with '=' in db/queries/inventory_properties.js#list().
+  // Cascading filter additions (2026-07-14) — mirror of the inventory
+  // route. See routes/admin/inventory-properties.js listQuery for the
+  // full contract; these two schemas are structural mirrors by design.
   district: masterCodeField.allow('').optional(),
   taluka: masterCodeField.allow('').optional(),
   shivar: masterCodeField.allow('').optional(),
-  // Comma-separated list of stripped form labels (see the frontend
-  // InventoryListFilterBar.jsx for how this is derived from the chooser
-  // tree). Backend splits, dedupes, caps at 200, and turns it into a
-  // parameterised property_type IN () clause.
-  //   - Individual labels can be long ("Bunglow Registration Form
-  //     [Resale Lease In]" stripped → "Bunglow [Resale Lease In]" ~= 30
-  //     chars). A cap of 8192 chars comfortably fits the ~89-form tree
-  //     even if the user selects the entire top-level Property Type
-  //     (all txns × all varieties).
   propertyTypeIn: Joi.string().max(8192).allow('').optional(),
   status: masterCodeField.optional(),
   location: Joi.string().trim().max(255).optional(),
@@ -74,16 +69,10 @@ const listQuery = Joi.object({
     .default('created_at:desc'),
 });
 
-// Sanity ceilings — catch typos like an extra zero on price/area without
-// being so tight that they reject a real ultra-prime Nashik property.
-// 1000 crore (1e10) covers any conceivable real-estate price; 10 lakh sq.ft
-// covers any realistic land parcel.
 const PRICE_MAX = 1_000_00_00_000;
 const AREA_MAX = 10_00_000;
 
-// Every property field is optional. The API accepts partial payloads and
-// stores whatever is provided. System-only concerns (max lengths, numeric
-// bounds to catch obvious typos) are the only remaining constraints.
+// Every property field is optional. Accepts partial payloads.
 const propertyBody = Joi.object({
   title: titleField,
   description: descField,
@@ -108,19 +97,11 @@ const propertyBody = Joi.object({
   ownerContact: phoneField.optional(),
   agentName: personField.optional(),
   agentContact: phoneField.optional(),
-  // Open-ended bag of category-specific fields (flat floor / plot zoning /
-  // hostel timing / stamp duty breakdown / etc. + lat/lng map pin). The form
-  // shape is defined on the client; the server just stores it as JSON.
-  // Capped at 200 keys to prevent abuse — well above what any real
-  // registration form would need.
   details: Joi.object().unknown(true).max(200).optional().allow(null),
 }).unknown(true);
 
 const statusBody = Joi.object({
   status: masterCodeField.required(),
-  // Free-text "why" the admin recorded when flipping the status. Optional so a
-  // quick status flip doesn't force typing; capped at 500 chars (well over a
-  // sentence or two of context).
   note: Joi.string().trim().max(500).allow('', null).optional(),
 });
 
@@ -130,17 +111,8 @@ const suggestQuery = Joi.object({
   includeDrafts: Joi.boolean().default(false),
 });
 
-// Export query: same filters as list, but pagination is optional.
 const exportQuery = listQuery.fork(['page', 'pageSize'], (s) => s.optional());
 
-// Second-pass validator for the `details.dynamicData` blob. Runs AFTER the
-// top-level Joi has already accepted the request shape. We keep it as a
-// separate middleware (rather than folding the schema into propertyBody)
-// because the dynamicData rules are large, per-key, and need cross-field
-// checks — much cleaner as a standalone function than inline Joi.
-//
-// Drafts skip the strict shape check so half-filled records can still be
-// parked. Non-drafts get the full validation.
 function validateDynamicDataMiddleware(req, res, next) {
   try {
     const body = req.body || {};
@@ -149,15 +121,12 @@ function validateDynamicDataMiddleware(req, res, next) {
     if (!dyn) return next();
     const { value, errors } = validateDynamicData(dyn);
     if (errors.length > 0) {
-      // Prefix each path so the frontend can route the message back to the
-      // right field in the dynamic form (`details.dynamicData.<field>`).
       const details = errors.map((e) => ({
         path: `details.dynamicData.${e.path}`,
         message: e.message,
       }));
       return next(new HttpError(400, 'VALIDATION_ERROR', 'Invalid request', details));
     }
-    // Write the sanitized value back so the DB stores trimmed / coerced data.
     req.body.details.dynamicData = value;
     return next();
   } catch (err) {
@@ -181,15 +150,12 @@ router.get('/suggest', validate(suggestQuery, 'query'), async (req, res, next) =
   }
 });
 
-// IMPORTANT: export routes MUST be defined BEFORE /:id, otherwise Express
-// treats `export.csv` and `export.xlsx` as :id values and the param validator
-// rejects them.
 router.get('/export.csv', validate(exportQuery, 'query'), async (req, res, next) => {
   try {
     const csv = await management.exportCsv(req.query);
     const stamp = new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="inventory-${stamp}.csv"`);
+    res.setHeader('Content-Disposition', `attachment; filename="enquiry-${stamp}.csv"`);
     res.send(csv);
   } catch (err) {
     next(err);
@@ -201,7 +167,7 @@ router.get('/export.xlsx', validate(exportQuery, 'query'), async (req, res, next
     const buffer = await management.exportXlsx(req.query);
     const stamp = new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="inventory-${stamp}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="enquiry-${stamp}.xlsx"`);
     res.send(buffer);
   } catch (err) {
     next(err);
@@ -213,7 +179,7 @@ router.get('/export.pdf', validate(exportQuery, 'query'), async (req, res, next)
     const buffer = await management.exportPdf(req.query);
     const stamp = new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="inventory-${stamp}.pdf"`);
+    res.setHeader('Content-Disposition', `attachment; filename="enquiry-${stamp}.pdf"`);
     res.send(buffer);
   } catch (err) {
     next(err);
@@ -232,7 +198,6 @@ router.post('/', idempotency(), validate(propertyBody), validateDynamicDataMiddl
   try {
     const created = await management.createProperty({
       ...req.body,
-      // Drafts default missing fields to safe placeholders so the row is insertable.
       price: req.body.price ?? 0,
       propertyType: req.body.propertyType || '',
       transactionType: req.body.transactionType || 'sale',
@@ -315,11 +280,10 @@ router.delete('/:id/documents/:fileId', validate(subIdParam, 'params'), async (r
   }
 });
 
-// Stream a private document. Auth + module gate already enforced by router.use.
 router.get('/:id/documents/:fileId', validate(subIdParam, 'params'), async (req, res, next) => {
   try {
     const file = await management.findDocument(req.params.fileId);
-    if (!file || file.property_kind !== 'inventory' || Number(file.property_id) !== Number(req.params.id) || file.file_kind !== 'document') {
+    if (!file || file.property_kind !== 'enquiry' || Number(file.property_id) !== Number(req.params.id) || file.file_kind !== 'document') {
       throw new HttpError(404, 'NOT_FOUND', 'Document not found');
     }
     return management.streamDocument(res, file);

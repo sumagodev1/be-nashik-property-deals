@@ -38,4 +38,33 @@ router.get('/charts', validate(chartsQuery, 'query'), async (req, res, next) => 
   try { res.json(await service.charts(req.query)); } catch (e) { next(e); }
 });
 
+/* ──────────────────────────────────────────────────────────────────
+ * Per-surface endpoints — the split dashboards call ONLY the endpoint
+ * for their surface. Payloads never mix data from the other table.
+ * ────────────────────────────────────────────────────────────────── */
+
+router.get('/website/kpi', async (req, res, next) => {
+  try { res.json(await service.websiteKpi()); } catch (e) { next(e); }
+});
+
+router.get('/website/charts', validate(chartsQuery, 'query'), async (req, res, next) => {
+  try { res.json(await service.websiteCharts(req.query)); } catch (e) { next(e); }
+});
+
+router.get('/inventory/kpi', async (req, res, next) => {
+  try { res.json(await service.inventoryKpi()); } catch (e) { next(e); }
+});
+
+router.get('/inventory/charts', validate(chartsQuery, 'query'), async (req, res, next) => {
+  try { res.json(await service.inventoryCharts(req.query)); } catch (e) { next(e); }
+});
+
+router.get('/enquiry/kpi', async (req, res, next) => {
+  try { res.json(await service.enquiryKpi()); } catch (e) { next(e); }
+});
+
+router.get('/enquiry/charts', validate(chartsQuery, 'query'), async (req, res, next) => {
+  try { res.json(await service.enquiryCharts(req.query)); } catch (e) { next(e); }
+});
+
 module.exports = router;

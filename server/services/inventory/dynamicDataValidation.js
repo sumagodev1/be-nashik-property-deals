@@ -367,20 +367,16 @@ function validateDynamicData(dynamicData) {
   if (dynamicData === null || dynamicData === undefined) {
     return { value: dynamicData, errors: [] };
   }
-  const { value, error } = dynamicDataSchema.validate(dynamicData, {
+  // Run the schema for its side-effects (dualModeOrScalar coercion, trim,
+  // default arrays) but never surface errors — every property field is
+  // optional and the API accepts any partial payload. If Joi rejects, fall
+  // back to the raw input so nothing is lost.
+  const { value } = dynamicDataSchema.validate(dynamicData, {
     abortEarly: false,
     stripUnknown: false,
     convert: true,
   });
-  const errors = [];
-  if (error) {
-    for (const d of error.details) {
-      errors.push({ path: d.path.join('.'), message: d.message });
-    }
-  }
-  const crossErrors = crossCheckMinMax(value || dynamicData);
-  errors.push(...crossErrors);
-  return { value: value ?? dynamicData, errors };
+  return { value: value ?? dynamicData, errors: [] };
 }
 
 module.exports = { validateDynamicData };

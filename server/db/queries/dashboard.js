@@ -393,6 +393,163 @@ function num(v) {
   return Number(v || 0);
 }
 
+/* ──────────────────────────────────────────────────────────────────
+ * Per-surface counters and charts.
+ *
+ * The dashboard is split into two isolated views (Website + Inventory)
+ * so admins can focus on one property surface at a time — the payloads
+ * below never mix data across the two tables.
+ * ────────────────────────────────────────────────────────────────── */
+
+async function websiteCounters() {
+  const [[website]] = await pool.query(`
+    SELECT
+      SUM(deleted_at IS NULL) AS total_website,
+      SUM(deleted_at IS NULL AND approval_status = 'pending') AS pending_approvals,
+      SUM(deleted_at IS NULL AND approval_status = 'approved' AND is_active = 1) AS live_listings,
+      SUM(deleted_at IS NULL AND approval_status = 'rejected') AS rejected_listings,
+      SUM(deleted_at IS NULL AND is_featured = 1) AS featured_listings
+    FROM website_properties
+  `);
+  return {
+    total: num(website.total_website),
+    pendingApprovals: num(website.pending_approvals),
+    liveListings: num(website.live_listings),
+    rejected: num(website.rejected_listings),
+    featured: num(website.featured_listings),
+  };
+}
+
+async function inventoryCounters() {
+  const [[inventory]] = await pool.query(`
+    SELECT
+      SUM(deleted_at IS NULL) AS total_inventory,
+      SUM(deleted_at IS NULL AND status = 'available') AS available_inventory,
+      SUM(deleted_at IS NULL AND status = 'sold') AS sold_inventory,
+      SUM(deleted_at IS NULL AND status = 'rented') AS rented_inventory,
+      SUM(deleted_at IS NULL AND status = 'on_hold') AS on_hold_inventory
+    FROM inventory_properties
+  `);
+  return {
+    total: num(inventory.total_inventory),
+    available: num(inventory.available_inventory),
+    sold: num(inventory.sold_inventory),
+    rented: num(inventory.rented_inventory),
+    onHold: num(inventory.on_hold_inventory),
+  };
+}
+
+// Same shape as inventoryCounters, restricted to the enquiry_properties
+// table. Kept as a separate function (rather than a factory over table
+// name) so future divergence (e.g. enquiry-only status like 'contacted')
+// can happen here without dragging inventory along.
+async function enquiryCounters() {
+  const [[enquiry]] = await pool.query(`
+    SELECT
+      SUM(deleted_at IS NULL) AS total_enquiry,
+      SUM(deleted_at IS NULL AND status = 'available') AS available_enquiry,
+      SUM(deleted_at IS NULL AND status = 'sold') AS sold_enquiry,
+      SUM(deleted_at IS NULL AND status = 'rented') AS rented_enquiry,
+      SUM(deleted_at IS NULL AND status = 'on_hold') AS on_hold_enquiry
+    FROM enquiry_properties
+  `);
+  return {
+    total: num(enquiry.total_enquiry),
+    available: num(enquiry.available_enquiry),
+    sold: num(enquiry.sold_enquiry),
+    rented: num(enquiry.rented_enquiry),
+    onHold: num(enquiry.on_hold_enquiry),
+  };
+}
+
+async function topAreasEnquiry({ limit = 10 } = {}) {
+  const [rows] = await pool.query(
+    `SELECT location, COUNT(*) AS count
+     FROM enquiry_properties
+     WHERE deleted_at IS NULL AND location IS NOT NULL AND location != ''
+     GROUP BY location
+     ORDER BY count DESC, location ASC
+     LIMIT ?`,
+    [limit],
+  );
+  return rows.map((r) => ({ location: r.location, count: Number(r.count) }));
+}
+
+/**
+ * Listings-over-time restricted to a single table. Same bucket logic as
+ * listingsByBucket but the result is a single `count` series (no cross-
+ * surface mixing).
+ */
+async function listingsByBucketSingle(table, { granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
+  // Whitelist the table name — this string is interpolated into SQL below,
+  // so an unexpected value would be a SQL injection. All callers pass a
+  // literal ('website_properties' | 'inventory_properties' |
+  // 'enquiry_properties'); the guard is defense in depth against a future
+  // caller passing user input.
+  if (table !== 'website_properties' && table !== 'inventory_properties' && table !== 'enquiry_properties') {
+    throw new Error(`Unsupported table for listingsByBucketSingle: ${table}`);
+  }
+
+  let bucketSql;
+  let buckets;
+
+  if (granularity === 'weekly') {
+    bucketSql = "DATE_FORMAT(DATE_SUB(created_at, INTERVAL WEEKDAY(created_at) DAY), '%Y-%m-%d')";
+    buckets = buildWeekBuckets(12);
+  } else if (granularity === 'monthly') {
+    bucketSql = "DATE_FORMAT(created_at, '%Y-%m')";
+    buckets = buildMonthBuckets(12);
+  } else if (granularity === 'custom' && dateFrom && dateTo) {
+    bucketSql = "DATE_FORMAT(created_at, '%Y-%m-%d')";
+    buckets = buildDayBucketsBetween(dateFrom, dateTo);
+  } else {
+    bucketSql = "DATE_FORMAT(created_at, '%Y-%m-%d')";
+    buckets = buildDayBuckets(30);
+  }
+
+  const since = buckets.length > 0 ? buckets[0] : new Date().toISOString().slice(0, 10);
+
+  const [rows] = await pool.query(
+    `SELECT ${bucketSql} AS bucket, COUNT(*) AS count
+     FROM ${table}
+     WHERE deleted_at IS NULL AND created_at >= ?
+     GROUP BY bucket
+     ORDER BY bucket ASC`,
+    [since],
+  );
+
+  const map = Object.fromEntries(rows.map((r) => [String(r.bucket), Number(r.count)]));
+  return buckets.map((b) => ({ bucket: b, count: map[b] || 0 }));
+}
+
+async function listingsByPropertyTypeSingle(table) {
+  if (table !== 'website_properties' && table !== 'inventory_properties' && table !== 'enquiry_properties') {
+    throw new Error(`Unsupported table: ${table}`);
+  }
+  const [rows] = await pool.query(
+    `SELECT property_type AS type, COUNT(*) AS count
+     FROM ${table}
+     WHERE deleted_at IS NULL
+     GROUP BY property_type
+     ORDER BY count DESC`,
+  );
+  return rows.map((r) => ({ type: r.type, count: Number(r.count) }));
+}
+
+async function listingsByTransactionTypeSingle(table) {
+  if (table !== 'website_properties' && table !== 'inventory_properties' && table !== 'enquiry_properties') {
+    throw new Error(`Unsupported table: ${table}`);
+  }
+  const [rows] = await pool.query(
+    `SELECT transaction_type AS type, COUNT(*) AS count
+     FROM ${table}
+     WHERE deleted_at IS NULL
+     GROUP BY transaction_type
+     ORDER BY count DESC`,
+  );
+  return rows.map((r) => ({ type: r.type, count: Number(r.count) }));
+}
+
 module.exports = {
   counters,
   listingsByDay,
@@ -402,7 +559,15 @@ module.exports = {
   topAreas,
   topAreasWebsite,
   topAreasInventory,
+  topAreasEnquiry,
   sellerOnboardingByDay,
   sellerOnboardingByBucket,
   sellersByArea,
+  // Per-surface (isolated) queries — used by the split dashboards.
+  websiteCounters,
+  inventoryCounters,
+  enquiryCounters,
+  listingsByBucketSingle,
+  listingsByPropertyTypeSingle,
+  listingsByTransactionTypeSingle,
 };

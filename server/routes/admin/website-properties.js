@@ -22,12 +22,11 @@ const subIdParam = Joi.object({
   fileId: Joi.number().integer().positive().required(),
 });
 
-// Names: letters + spaces only. Titles: letters + digits + spaces (3 BHK ok).
-const ALPHANUM_SPACE = /^[A-Za-z0-9\s]+$/;
-const titleField = Joi.string().trim().min(3).max(50).pattern(ALPHANUM_SPACE)
-  .messages({ 'string.pattern.base': 'Title can only contain letters, digits and spaces' });
-const locField = Joi.string().trim().min(1).max(255);
-const descField = Joi.string().trim().max(200).allow('', null);
+// Every property field is optional at the API layer. Only max-length caps
+// remain — no min lengths, no format patterns, no `.required()`.
+const titleField = Joi.string().trim().max(255).allow('', null);
+const locField = Joi.string().trim().max(255).allow('', null);
+const descField = Joi.string().trim().max(2000).allow('', null);
 
 const listQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
@@ -48,36 +47,38 @@ const listQuery = Joi.object({
     .default('created_at:desc'),
 });
 
+// Every property field is optional. Only `sellerId` remains required on
+// create because the row's FK to sellers is not optional at the DB layer.
 const createBody = Joi.object({
   sellerId: Joi.number().integer().positive().required(),
-  title: titleField.required(),
-  description: descField.optional(),
-  propertyType: masterCodeField.required(),
-  transactionType: masterCodeField.required(),
-  location: locField.required(),
-  latitude: Joi.number().min(-90).max(90).optional().allow(null),
-  longitude: Joi.number().min(-180).max(180).optional().allow(null),
-  areaValue: Joi.number().min(0).optional().allow(null),
-  areaUnit: Joi.string().valid(...AREA_UNITS).optional().allow('', null),
+  title: titleField,
+  description: descField,
+  propertyType: masterCodeField.optional().allow('', null),
+  transactionType: masterCodeField.optional().allow('', null),
+  location: locField,
+  latitude: Joi.number().min(-90).max(90).optional().allow(null, ''),
+  longitude: Joi.number().min(-180).max(180).optional().allow(null, ''),
+  areaValue: Joi.number().min(0).optional().allow(null, ''),
+  areaUnit: Joi.string().max(50).optional().allow('', null),
   bhk: masterCodeField.optional().allow('', null),
-  price: Joi.number().min(0).required(),
+  price: Joi.number().min(0).optional().allow(null, ''),
   approvalStatus: Joi.string().valid(...APPROVAL_STATUSES).default('pending'),
   isActive: Joi.boolean().default(true),
-});
+}).unknown(true);
 
 const updateBody = Joi.object({
-  title: titleField.required(),
-  description: descField.optional(),
-  propertyType: masterCodeField.required(),
-  transactionType: masterCodeField.required(),
-  location: locField.required(),
-  latitude: Joi.number().min(-90).max(90).optional().allow(null),
-  longitude: Joi.number().min(-180).max(180).optional().allow(null),
-  areaValue: Joi.number().min(0).optional().allow(null),
-  areaUnit: Joi.string().valid(...AREA_UNITS).optional().allow('', null),
+  title: titleField,
+  description: descField,
+  propertyType: masterCodeField.optional().allow('', null),
+  transactionType: masterCodeField.optional().allow('', null),
+  location: locField,
+  latitude: Joi.number().min(-90).max(90).optional().allow(null, ''),
+  longitude: Joi.number().min(-180).max(180).optional().allow(null, ''),
+  areaValue: Joi.number().min(0).optional().allow(null, ''),
+  areaUnit: Joi.string().max(50).optional().allow('', null),
   bhk: masterCodeField.optional().allow('', null),
-  price: Joi.number().min(0).required(),
-});
+  price: Joi.number().min(0).optional().allow(null, ''),
+}).unknown(true);
 
 const rejectBody = Joi.object({
   reason: Joi.string().trim().min(1).max(1000).required(),
