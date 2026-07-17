@@ -57,17 +57,20 @@ async function websiteCharts({ granularity = 'daily', dateFrom = null, dateTo = 
     listingsOverTime,
     propertyTypeDistribution,
     transactionTypeDistribution,
+    propertyVarietyDistribution,
     topAreas,
   ] = await Promise.all([
     dashboardRepo.listingsByBucketSingle('website_properties', { granularity, dateFrom, dateTo }),
     dashboardRepo.listingsByPropertyTypeSingle('website_properties'),
     dashboardRepo.listingsByTransactionTypeSingle('website_properties'),
+    dashboardRepo.listingsByPropertyVarietySingle('website_properties'),
     dashboardRepo.topAreasWebsite({ limit: 10 }),
   ]);
   return {
     listingsOverTime,
     propertyTypeDistribution,
     transactionTypeDistribution,
+    propertyVarietyDistribution,
     topAreas,
     granularity,
     range: { dateFrom, dateTo },
@@ -83,17 +86,20 @@ async function inventoryCharts({ granularity = 'daily', dateFrom = null, dateTo 
     listingsOverTime,
     propertyTypeDistribution,
     transactionTypeDistribution,
+    propertyVarietyDistribution,
     topAreas,
   ] = await Promise.all([
     dashboardRepo.listingsByBucketSingle('inventory_properties', { granularity, dateFrom, dateTo }),
     dashboardRepo.listingsByPropertyTypeSingle('inventory_properties'),
     dashboardRepo.listingsByTransactionTypeSingle('inventory_properties'),
+    dashboardRepo.listingsByPropertyVarietySingle('inventory_properties'),
     dashboardRepo.topAreasInventory({ limit: 10 }),
   ]);
   return {
     listingsOverTime,
     propertyTypeDistribution,
     transactionTypeDistribution,
+    propertyVarietyDistribution,
     topAreas,
     granularity,
     range: { dateFrom, dateTo },
@@ -109,17 +115,20 @@ async function enquiryCharts({ granularity = 'daily', dateFrom = null, dateTo = 
     listingsOverTime,
     propertyTypeDistribution,
     transactionTypeDistribution,
+    propertyVarietyDistribution,
     topAreas,
   ] = await Promise.all([
     dashboardRepo.listingsByBucketSingle('enquiry_properties', { granularity, dateFrom, dateTo }),
     dashboardRepo.listingsByPropertyTypeSingle('enquiry_properties'),
     dashboardRepo.listingsByTransactionTypeSingle('enquiry_properties'),
+    dashboardRepo.listingsByPropertyVarietySingle('enquiry_properties'),
     dashboardRepo.topAreasEnquiry({ limit: 10 }),
   ]);
   return {
     listingsOverTime,
     propertyTypeDistribution,
     transactionTypeDistribution,
+    propertyVarietyDistribution,
     topAreas,
     granularity,
     range: { dateFrom, dateTo },

@@ -43,6 +43,18 @@ const querySchema = Joi.object({
   // Kept for backward compat with the pre-existing frontend stub. Not
   // otherwise consumed — see comment above.
   field: Joi.string().valid('phone', 'name').optional(),
+  // Global Owner Search (T-2026-032, additive). When set to 'source',
+  // the response's `data` becomes an object keyed by source
+  // (inventory / enquiry / business_associates), each carrying its own
+  // top-`limit` array. When absent, the original de-duped flat-list
+  // shape is returned - duplicate-detection callers remain untouched.
+  groupBy: Joi.string().valid('source').optional(),
+  // Exclude a specific record from the results — used by the edit-mode
+  // duplicate check so a property doesn't get flagged as a duplicate of
+  // itself. `excludeSource` names the record type; `excludeId` the row id
+  // in that source table. Both must be present to take effect.
+  excludeSource: Joi.string().valid('inventory', 'enquiry', 'business_associate', 'ba').optional(),
+  excludeId: Joi.number().integer().positive().optional(),
 });
 
 function parseSources(raw) {
@@ -65,7 +77,18 @@ router.get('/', validate(querySchema, 'query'), async (req, res, next) => {
       return next(new HttpError(403, 'FORBIDDEN', 'Owner search requires an admin session.'));
     }
     const sources = parseSources(req.query.sources);
-    const result = await service.search(req.query.q, sources, req.query.limit);
+    // Normalise excludeSource to the canonical service-side value ('ba'
+    // shorthand maps to 'business_associate' so downstream comparisons
+    // stay simple).
+    const excludeSourceRaw = req.query.excludeSource;
+    const excludeSource = excludeSourceRaw === 'ba' ? 'business_associate' : excludeSourceRaw;
+    const exclude = (excludeSource && req.query.excludeId)
+      ? { source: excludeSource, id: Number(req.query.excludeId) }
+      : null;
+    const result = await service.search(req.query.q, sources, req.query.limit, {
+      groupBy: req.query.groupBy,
+      exclude,
+    });
     res.json(result);
   } catch (e) { next(e); }
 });

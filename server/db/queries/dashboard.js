@@ -550,6 +550,62 @@ async function listingsByTransactionTypeSingle(table) {
   return rows.map((r) => ({ type: r.type, count: Number(r.count) }));
 }
 
+/**
+ * By-Property-Variety distribution.
+ *
+ * Variety is not a dedicated column on any of the three surfaces today.
+ * inventory_properties + enquiry_properties expose it via
+ * `transaction_variant` (see migration 027 comment: "Resale vs New Sale,
+ * Joint Venture, Hostel Let"). website_properties has neither the column
+ * nor a variety concept — free-text listings — so we extract from the
+ * `details` JSON where a variety key may have been saved by a form.
+ *
+ * The frontend maps the returned codes through the property_variety master
+ * so admins can rename or hide values without a backend change.
+ */
+async function listingsByPropertyVarietySingle(table) {
+  if (table !== 'website_properties' && table !== 'inventory_properties' && table !== 'enquiry_properties') {
+    throw new Error(`Unsupported table: ${table}`);
+  }
+  let sql;
+  if (table === 'website_properties') {
+    // website_properties has no transaction_variant column. Try `details` JSON
+    // — several form flows have persisted variety under one of these keys.
+    // Coalesce falls through to the first non-null / non-'null'-string.
+    sql = `SELECT COALESCE(
+             NULLIF(JSON_UNQUOTE(JSON_EXTRACT(details, '$.property_variety')), 'null'),
+             NULLIF(JSON_UNQUOTE(JSON_EXTRACT(details, '$.propertyVariety')),  'null'),
+             NULLIF(JSON_UNQUOTE(JSON_EXTRACT(details, '$.variety')),          'null'),
+             NULLIF(JSON_UNQUOTE(JSON_EXTRACT(details, '$.variant')),          'null'),
+             ''
+           ) AS type, COUNT(*) AS count
+           FROM website_properties
+           WHERE deleted_at IS NULL
+           GROUP BY type
+           HAVING type <> ''
+           ORDER BY count DESC`;
+  } else {
+    // inventory_properties + enquiry_properties: transaction_variant is the
+    // canonical field. Fall through to details JSON for legacy rows that
+    // saved variety directly there.
+    sql = `SELECT COALESCE(
+             NULLIF(transaction_variant, ''),
+             NULLIF(JSON_UNQUOTE(JSON_EXTRACT(details, '$.property_variety')), 'null'),
+             NULLIF(JSON_UNQUOTE(JSON_EXTRACT(details, '$.propertyVariety')),  'null'),
+             NULLIF(JSON_UNQUOTE(JSON_EXTRACT(details, '$.variety')),          'null'),
+             NULLIF(JSON_UNQUOTE(JSON_EXTRACT(details, '$.variant')),          'null'),
+             ''
+           ) AS type, COUNT(*) AS count
+           FROM ${table}
+           WHERE deleted_at IS NULL
+           GROUP BY type
+           HAVING type <> ''
+           ORDER BY count DESC`;
+  }
+  const [rows] = await pool.query(sql);
+  return rows.map((r) => ({ type: r.type, count: Number(r.count) }));
+}
+
 module.exports = {
   counters,
   listingsByDay,
@@ -570,4 +626,5 @@ module.exports = {
   listingsByBucketSingle,
   listingsByPropertyTypeSingle,
   listingsByTransactionTypeSingle,
+  listingsByPropertyVarietySingle,
 };

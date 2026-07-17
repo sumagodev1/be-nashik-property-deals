@@ -22,10 +22,15 @@ async function list({
   search,
   propertyType,
   transactionType,
+  propertyVariety,
   approvalStatus,
   isActive,
   isFeatured,
   location,
+  district,
+  taluka,
+  shivar,
+  ownerSearch,
   priceMin,
   priceMax,
   dateFrom,
@@ -45,10 +50,32 @@ async function list({
   }
   if (propertyType) { where.push('wp.property_type = ?'); params.push(propertyType); }
   if (transactionType) { where.push('wp.transaction_type = ?'); params.push(transactionType); }
+  // property_variety lives inside the details JSON blob (the public
+  // AddPropertyPage writes payload.details.property_variety at submit time);
+  // no dedicated column exists on website_properties. Filter with a JSON
+  // path lookup so the migration surface stays minimal.
+  if (propertyVariety) {
+    where.push("JSON_UNQUOTE(JSON_EXTRACT(wp.details, '$.property_variety')) = ?");
+    params.push(propertyVariety);
+  }
   if (approvalStatus) { where.push('wp.approval_status = ?'); params.push(approvalStatus); }
   if (typeof isActive === 'boolean') { where.push('wp.is_active = ?'); params.push(isActive ? 1 : 0); }
   if (typeof isFeatured === 'boolean') { where.push('wp.is_featured = ?'); params.push(isFeatured ? 1 : 0); }
   if (location) { where.push('wp.location LIKE ?'); params.push(`%${location}%`); }
+  if (district) { where.push('wp.district = ?'); params.push(district); }
+  if (taluka) { where.push('wp.taluka = ?'); params.push(taluka); }
+  if (shivar) { where.push('wp.shivar = ?'); params.push(shivar); }
+  // Owner Search — matches ONLY owner / contact fields on the joined
+  // sellers row. Never touches wp.title / wp.description / wp.location /
+  // wp.property_type / etc. Separate from `search` above, which is the
+  // broader property-level search.
+  if (ownerSearch) {
+    where.push(
+      '(s.full_name LIKE ? OR s.mobile_number LIKE ? OR s.alternate_contact LIKE ? OR s.email LIKE ? OR s.agency_name LIKE ?)',
+    );
+    const o = `%${ownerSearch}%`;
+    params.push(o, o, o, o, o);
+  }
   if (priceMin !== undefined) { where.push('wp.price >= ?'); params.push(priceMin); }
   if (priceMax !== undefined) { where.push('wp.price <= ?'); params.push(priceMax); }
   if (dateFrom) { where.push('wp.created_at >= ?'); params.push(dateFrom); }
@@ -65,7 +92,8 @@ async function list({
   const [rows] = await pool.query(
     `SELECT
        wp.id, wp.property_code, wp.title, wp.property_type, wp.transaction_type, wp.location,
-       wp.area_value, wp.area_unit, wp.bhk, wp.price,
+       wp.district, wp.taluka, wp.shivar, wp.pincode,
+       wp.area_value, wp.area_unit, wp.bhk, wp.price, wp.details,
        wp.approval_status, wp.is_active, wp.is_featured,
        wp.approved_at, wp.rejection_reason, wp.created_at, wp.updated_at,
        wp.seller_id, s.full_name AS seller_name, s.user_type AS seller_type, s.email AS seller_email, s.mobile_number AS seller_mobile,
@@ -104,9 +132,10 @@ async function create(payload) {
   const [result] = await pool.query(
     `INSERT INTO website_properties
      (property_code, seller_id, title, description, property_type, transaction_type, location,
+      district, taluka, shivar, pincode,
       latitude, longitude, area_value, area_unit, bhk, price,
       approval_status, is_active, details)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.propertyCode,
       payload.sellerId,
@@ -115,6 +144,10 @@ async function create(payload) {
       payload.propertyType,
       payload.transactionType,
       payload.location,
+      payload.district || null,
+      payload.taluka || null,
+      payload.shivar || null,
+      payload.pincode || null,
       payload.latitude ?? null,
       payload.longitude ?? null,
       payload.areaValue ?? null,
@@ -137,9 +170,17 @@ async function update(id, payload) {
   const detailsJson = payload.details && Object.keys(payload.details).length
     ? JSON.stringify(payload.details)
     : null;
+  // Location cascade columns use COALESCE(?, existing) so callers that omit
+  // them (e.g. the admin edit form, which doesn't render the cascade) don't
+  // silently wipe the seller-provided values. Passing an explicit '' or a
+  // fresh code still overwrites.
   await pool.query(
     `UPDATE website_properties SET
        title = ?, description = ?, property_type = ?, transaction_type = ?, location = ?,
+       district = COALESCE(?, district),
+       taluka   = COALESCE(?, taluka),
+       shivar   = COALESCE(?, shivar),
+       pincode  = COALESCE(?, pincode),
        latitude = ?, longitude = ?, area_value = ?, area_unit = ?, bhk = ?, price = ?,
        details = ?
      WHERE id = ? AND deleted_at IS NULL`,
@@ -149,6 +190,10 @@ async function update(id, payload) {
       payload.propertyType,
       payload.transactionType,
       payload.location,
+      payload.district === undefined ? null : (payload.district || null),
+      payload.taluka === undefined ? null : (payload.taluka || null),
+      payload.shivar === undefined ? null : (payload.shivar || null),
+      payload.pincode === undefined ? null : (payload.pincode || null),
       payload.latitude ?? null,
       payload.longitude ?? null,
       payload.areaValue ?? null,

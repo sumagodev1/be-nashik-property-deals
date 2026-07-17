@@ -46,6 +46,12 @@ const listQuery = Joi.object({
   search: Joi.string().trim().max(255).allow('').optional(),
   propertyType: Joi.string().trim().max(255).allow('').optional(),
   transactionType: Joi.string().trim().max(255).allow('').optional(),
+  // Owner Search filter (T-2026-032, additive). Narrows the list to rows
+  // whose owner-only fields match - owner_name / owner_contact /
+  // details.contacts[*] (matched via a JSON LIKE against the details
+  // blob). Never matches property_type/title/description/etc. Disjoint
+  // from the existing global `search` param.
+  ownerSearch: Joi.string().trim().max(255).allow('').optional(),
   // Cascading location filters (2026-07-14). All three are stored as
   // master_lookups.code — validated by masterCodeField shape and matched
   // with '=' in db/queries/inventory_properties.js#list().
@@ -104,6 +110,14 @@ const propertyBody = Joi.object({
   price: Joi.number().min(0).max(PRICE_MAX).optional().allow(null, ''),
   status: masterCodeField.default('available'),
   isDraft: Joi.boolean().default(false),
+  // T-2026-040: Owner-duplicate confirmation bypass flag. Frontend sets
+  // this to true after the operator confirms the "Duplicate Owner Found"
+  // dialog so any (optional) backend duplicate check can be skipped on the
+  // retry submit. Currently no backend duplicate check exists on this
+  // route, but the flag is accepted here so any future check can honour
+  // the confirmation without a schema change. The service layer uses a
+  // column-listed INSERT so this key is naturally stripped before the DB.
+  skipDuplicateOwnerValidation: Joi.boolean().optional(),
   ownerName: personField.optional(),
   ownerContact: phoneField.optional(),
   agentName: personField.optional(),

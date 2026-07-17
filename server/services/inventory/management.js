@@ -1,7 +1,11 @@
 const crypto = require('crypto');
+const fsp = require('fs/promises');
+const path = require('path');
 const { HttpError } = require('../../middleware/errors');
+const { pool } = require('../../db/pool');
 const inventory = require('../../db/queries/inventory_properties');
 const propertyFiles = require('../../db/queries/property_files');
+const storageUsage = require('../../db/queries/storage_usage');
 const imageUpload = require('../files/imageUpload');
 const documentUpload = require('../files/documentUpload');
 const excel = require('../files/excel');
@@ -149,7 +153,39 @@ async function updateStatus(id, status, note, changedBy) {
 async function removeProperty(id) {
   const existing = await inventory.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
-  await inventory.softDelete(id);
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    // Delete all property_files rows (images + documents + amenity thumbnails)
+    // and adjust the storage quota counter atomically with the soft-delete so
+    // no orphan file rows survive a successful delete.
+    const removed = await propertyFiles.deleteAllForProperty(conn, 'inventory', id);
+    const totalBytes = removed.reduce((acc, r) => acc + Number(r.size_bytes), 0);
+    if (totalBytes > 0) await storageUsage.subtractBytes(conn, totalBytes);
+
+    await inventory.softDeleteForConn(conn, id);
+    await conn.commit();
+
+    // Physical file removal happens after commit — a failure here leaves
+    // unreferenced files on disk but the DB is consistent (no orphan rows).
+    const appRoot = path.resolve(__dirname, '..', '..', '..');
+    const publicDir = process.env.UPLOAD_PUBLIC_DIR || 'uploads/public';
+    const privateDir = process.env.UPLOAD_PRIVATE_DIR || 'uploads/private';
+    // stored_name already encodes '${propertyKind}/filename', so join with base dir only (not base + propertyKind).
+    await Promise.all(
+      removed.map((r) => {
+        const dir = r.file_kind === 'document' ? privateDir : publicDir;
+        return fsp.unlink(path.join(appRoot, dir, r.stored_name)).catch(() => {});
+      }),
+    );
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 async function addImages(id, files) {
@@ -244,9 +280,24 @@ async function suggest({ q, limit = 8, includeDrafts = false }) {
   const params = [];
   if (!includeDrafts) where.push('is_draft = 0');
   if (q && q.trim()) {
-    where.push('(property_code LIKE ? OR title LIKE ? OR location LIKE ? OR owner_name LIKE ? OR agent_name LIKE ?)');
+    // Autocomplete surface — mirrors the list-search field set exactly so
+    // a JSON-blob dynamic-form match (facing, parking, layout, amenities,
+    // hospital/hotel/hostel/PG/TDR/… specifics) shows up in the dropdown,
+    // not only after the debounced list refetch. Same OR-list + params
+    // order + owner/contact exclusion as db/queries/inventory_properties.js
+    // ::list (JSON_REMOVE strips contacts / keyPersons / Source of Lead).
+    where.push(`(
+      property_code LIKE ? OR title LIKE ? OR description LIKE ?
+      OR location LIKE ?
+      OR property_type LIKE ? OR transaction_type LIKE ? OR transaction_variant LIKE ?
+      OR status LIKE ? OR status_note LIKE ?
+      OR district LIKE ? OR taluka LIKE ? OR shivar LIKE ? OR pincode LIKE ?
+      OR bhk LIKE ? OR area_unit LIKE ?
+      OR CAST(price AS CHAR) LIKE ? OR CAST(area_value AS CHAR) LIKE ?
+      OR CAST(JSON_REMOVE(details, '$.dynamicData.contacts', '$.dynamicData.keyPersons', '$.dynamicData.referenceSourceOfLead') AS CHAR) LIKE ?
+    )`);
     const s = `%${q.trim()}%`;
-    params.push(s, s, s, s, s);
+    for (let i = 0; i < 18; i++) params.push(s);
   }
   const [rows] = await pool.query(
     `SELECT id, property_code, title, location, property_type, transaction_type, price, status, is_draft

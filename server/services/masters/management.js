@@ -138,6 +138,19 @@ const LOOKUP_KEYS = Object.freeze([
   // dropdown UI appends its own "Others" sentinel at the end, so we do not
   // seed a literal "Others" row here.
   'business_associate_designation',
+  // Global / Property Variety — added in migration 054. Drives the
+  // "By Property Variety" dashboard card + future variety filters. Values
+  // are pure category names (Resale, New, Under Construction, etc.), so the
+  // default LOOKUP_LABEL_RULE applies (letters/digits/spaces + / ( ) & , . : % + -).
+  'property_variety',
+  // Website-scoped masters — added in migration 055. Deliberately
+  // INDEPENDENT from the Global masters above so the public Seller
+  // Registration + Add-Property flow can evolve its vocabulary without
+  // affecting Admin Inventory/Enquiry (and vice versa). Same CRUD /
+  // validator / dropdown surface — only the master_key differs.
+  'website_property_type',
+  'website_transaction_type',
+  'website_property_variety',
 ]);
 
 const MASTER_TABLES = Object.freeze({
@@ -153,7 +166,7 @@ const MASTER_LABELS = Object.freeze({
   // contact/lead fields rendered by the shared inventory shell).
   property_type:    'Global / Property Type',
   transaction_type: 'Global / Transaction Type',
-  status_type:      'Global / Status',
+  status_type:      'Global / Property Status',
   contact_relation: 'Global / Contact Relation',
   contact_type:     'Global / Contact Type',
   lead_source:      'Global / Lead Source',
@@ -364,6 +377,13 @@ const MASTER_LABELS = Object.freeze({
   // Business Associates — used by the Designation dropdown on
   // Admin → Business Associates.
   business_associate_designation: 'Global / Business Associate Designation',
+  // Property Variety — Global; drives dashboard analytics + variety filters.
+  property_variety: 'Global / Property Variety',
+  // Website-scoped masters — power the public Seller Registration + Add-
+  // Property flow. Independent from the Global equivalents above.
+  website_property_type:     'Website / Property Type',
+  website_transaction_type:  'Website / Transaction Type',
+  website_property_variety:  'Website / Property Variety',
 });
 
 // True for keys that live in master_lookups — drives the discriminator
@@ -379,9 +399,12 @@ function discriminatorFor(masterKey) {
 }
 
 // Fixed-vocabulary masters: the admin can toggle active/inactive on existing
-// rows but cannot add, rename or delete them. The seeded list is the contract
-// downstream filters and reports rely on.
-const FIXED_MASTERS = new Set(['status_type']);
+// rows but cannot add, rename or delete them. Currently empty — property
+// status was removed in migration 056 so admins can extend the vocabulary
+// (e.g. add "Reserved") from the master admin without a code change. Keep
+// the constant + guard in place because future masters may need to be
+// locked down again.
+const FIXED_MASTERS = new Set();
 function assertNotFixed(masterKey, action) {
   if (FIXED_MASTERS.has(masterKey)) {
     throw new HttpError(
@@ -556,7 +579,7 @@ const LABEL_RULES = {
   property_type:    { maxLen: 30, pattern: 'alpha' },          // letters + spaces only
   transaction_type: { maxLen: 30, pattern: 'alpha' },          // letters + spaces only
   flat_type:        { maxLen: 30, pattern: 'alphanumeric' },   // letters + digits + spaces only
-  status_type:      { maxLen: 64, pattern: 'lenient' },        // fixed master; rule unused
+  status_type:      { maxLen: 64, pattern: 'lenient' },        // now editable — see migration 056
 };
 // Lookup-table keys all share the same lenient label rule — values like
 // "5%" / "20-25 Years" / "Rs. 1,00,000" / "Generator / Battery Backup" all

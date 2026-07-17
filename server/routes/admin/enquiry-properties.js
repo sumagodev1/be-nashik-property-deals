@@ -50,6 +50,10 @@ const listQuery = Joi.object({
   search: Joi.string().trim().max(255).allow('').optional(),
   propertyType: Joi.string().trim().max(255).allow('').optional(),
   transactionType: Joi.string().trim().max(255).allow('').optional(),
+  // Owner Search filter (T-2026-032, additive). Mirror of the inventory
+  // route field. Owner-only LIKE — see routes/admin/inventory-properties.js
+  // for the full contract.
+  ownerSearch: Joi.string().trim().max(255).allow('').optional(),
   // Cascading filter additions (2026-07-14) — mirror of the inventory
   // route. See routes/admin/inventory-properties.js listQuery for the
   // full contract; these two schemas are structural mirrors by design.
@@ -93,6 +97,14 @@ const propertyBody = Joi.object({
   price: Joi.number().min(0).max(PRICE_MAX).optional().allow(null, ''),
   status: masterCodeField.default('available'),
   isDraft: Joi.boolean().default(false),
+  // T-2026-040: Owner-duplicate confirmation bypass flag. Frontend sets
+  // this to true after the operator confirms the "Duplicate Owner Found"
+  // dialog so any (optional) backend duplicate check can be skipped on the
+  // retry submit. Currently no backend duplicate check exists on this
+  // route, but the flag is accepted here so any future check can honour
+  // the confirmation without a schema change. The service layer uses a
+  // column-listed INSERT so this key is naturally stripped before the DB.
+  skipDuplicateOwnerValidation: Joi.boolean().optional(),
   ownerName: personField.optional(),
   ownerContact: phoneField.optional(),
   agentName: personField.optional(),

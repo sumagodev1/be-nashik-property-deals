@@ -43,14 +43,17 @@ async function list({
   dateTo,
   sort,
   isDraft,
+  // Owner Search filter - see WHERE branch below.
+  ownerSearch,
 }) {
   const offset = (page - 1) * pageSize;
   const where = ['deleted_at IS NULL'];
   const params = [];
 
   if (search) {
-    // Mirrors the Global Search rules on inventory_properties — see the
-    // parallel comment block there for the full field list and rationale.
+    // Mirrors the Global PROPERTY Search rules on inventory_properties —
+    // see the parallel comment block there for the full field list, the
+    // owner/contact exclusion rationale, and the JSON_REMOVE strategy.
     // Kept identical (not factored) because the SQL runs against a
     // different table; extracting a shared string would add indirection
     // without saving code.
@@ -61,13 +64,11 @@ async function list({
       OR status LIKE ? OR status_note LIKE ?
       OR district LIKE ? OR taluka LIKE ? OR shivar LIKE ? OR pincode LIKE ?
       OR bhk LIKE ? OR area_unit LIKE ?
-      OR owner_name LIKE ? OR agent_name LIKE ?
-      OR owner_contact LIKE ? OR agent_contact LIKE ?
       OR CAST(price AS CHAR) LIKE ? OR CAST(area_value AS CHAR) LIKE ?
-      OR details LIKE ?
+      OR CAST(JSON_REMOVE(details, '$.dynamicData.contacts', '$.dynamicData.keyPersons', '$.dynamicData.referenceSourceOfLead') AS CHAR) LIKE ?
     )`);
     const s = `%${search}%`;
-    for (let i = 0; i < 22; i++) params.push(s);
+    for (let i = 0; i < 18; i++) params.push(s);
   }
   if (propertyType) {
     where.push('property_type = ?');
@@ -76,6 +77,24 @@ async function list({
   if (transactionType) {
     where.push('transaction_type = ?');
     params.push(transactionType);
+  }
+  // Owner Search (T-2026-032, additive). Owner-only LIKE - mirror of
+  // db/queries/inventory_properties.js. See there for the full contract
+  // and the JSON_SEARCH path restriction. Composes with `search` via AND.
+  if (typeof ownerSearch === 'string' && ownerSearch.trim() !== '') {
+    const like = `%${ownerSearch.trim()}%`;
+    where.push(`(
+      owner_name LIKE ? OR owner_contact LIKE ?
+      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.contacts[*].name') IS NOT NULL
+      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.contacts[*].phones[*]') IS NOT NULL
+      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.contacts[*].mobiles[*]') IS NOT NULL
+      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.contacts[*].emails[*]') IS NOT NULL
+      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].name') IS NOT NULL
+      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].phones[*]') IS NOT NULL
+      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].mobiles[*]') IS NOT NULL
+      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].emails[*]') IS NOT NULL
+    )`);
+    params.push(like, like, like, like, like, like, like, like, like, like);
   }
   // Cascading filter — mirror of db/queries/inventory_properties.js.
   if (typeof propertyTypeIn === 'string' && propertyTypeIn.trim() !== '') {
@@ -279,6 +298,13 @@ async function softDelete(id) {
   );
 }
 
+async function softDeleteForConn(conn, id) {
+  await conn.query(
+    `UPDATE enquiry_properties SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL`,
+    [id],
+  );
+}
+
 module.exports = {
   list,
   findById,
@@ -288,4 +314,5 @@ module.exports = {
   update,
   updateStatus,
   softDelete,
+  softDeleteForConn,
 };

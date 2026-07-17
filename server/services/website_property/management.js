@@ -386,7 +386,12 @@ function toListItem(row) {
     title: row.title,
     propertyType: row.property_type,
     transactionType: row.transaction_type,
+    propertyVariety: extractPropertyVariety(row.details),
     location: row.location,
+    district: row.district,
+    taluka: row.taluka,
+    shivar: row.shivar,
+    pincode: row.pincode,
     areaValue: row.area_value !== null ? Number(row.area_value) : null,
     areaUnit: row.area_unit,
     bhk: row.bhk,
@@ -407,6 +412,12 @@ function toListItem(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function extractPropertyVariety(raw) {
+  if (raw === null || raw === undefined) return null;
+  const obj = typeof raw === 'object' ? raw : (() => { try { return JSON.parse(raw); } catch { return null; } })();
+  return obj && obj.property_variety ? String(obj.property_variety) : null;
 }
 
 function toDetail(row, images, documents = []) {

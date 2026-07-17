@@ -43,6 +43,7 @@ async function listOwn(sellerId, { page, pageSize, sort }) {
 
   const [rows] = await pool.query(
     `SELECT id, property_code, title, property_type, transaction_type, location,
+            district, taluka, shivar, pincode,
             area_value, area_unit, bhk, price, approval_status, is_active, is_featured,
             approved_at, rejection_reason, created_at, updated_at
      FROM website_properties
@@ -175,6 +176,10 @@ function toListItem(row) {
     propertyType: row.property_type,
     transactionType: row.transaction_type,
     location: row.location,
+    district: row.district,
+    taluka: row.taluka,
+    shivar: row.shivar,
+    pincode: row.pincode,
     areaValue: row.area_value !== null ? Number(row.area_value) : null,
     areaUnit: row.area_unit,
     bhk: row.bhk,

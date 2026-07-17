@@ -200,9 +200,25 @@ function dedupeKey(cand) {
   return `r:${cand.source}:${cand.recordId}`;
 }
 
-async function search(q, sources = ['inventory', 'enquiry', 'ba'], limit = 15) {
+async function search(q, sources = ['inventory', 'enquiry', 'ba'], limit = 15, opts = {}) {
   const query = String(q || '').trim();
-  if (query.length < 2) return { data: [], meta: { total: 0, q: query } };
+  const groupBy = opts && opts.groupBy === 'source' ? 'source' : null;
+  // Edit-mode exclusion — the caller is editing (source, id) and doesn't
+  // want that record flagged as a duplicate of itself. Applied AFTER the
+  // per-source fetch: drop any candidate whose (source, recordId) matches,
+  // and prune the same tuple from every remaining candidate's usages[].
+  const exclude = opts && opts.exclude && opts.exclude.source && Number(opts.exclude.id) > 0
+    ? { source: String(opts.exclude.source), id: Number(opts.exclude.id) }
+    : null;
+  if (query.length < 2) {
+    if (groupBy === 'source') {
+      return {
+        data: { inventory: [], enquiry: [], business_associates: [] },
+        meta: { total: 0, q: query },
+      };
+    }
+    return { data: [], meta: { total: 0, q: query } };
+  }
 
   const wantInv = sources.includes('inventory');
   const wantEnq = sources.includes('enquiry');
@@ -225,8 +241,15 @@ async function search(q, sources = ['inventory', 'enquiry', 'ba'], limit = 15) {
     allCandidates.push(baseCandidateFromBa(row));
   }
 
-  // Filter each candidate against the query (see comment above).
-  const relevant = allCandidates.filter((c) => candidateMatches(c, query));
+  // Filter each candidate against the query (see comment above). Also drop
+  // any candidate that belongs to the record the caller is currently
+  // editing (edit-mode self-match suppression).
+  const relevant = allCandidates.filter((c) => {
+    if (exclude && c.source === exclude.source && Number(c.recordId) === exclude.id) {
+      return false;
+    }
+    return candidateMatches(c, query);
+  });
 
   // Group by de-dupe key. Each group becomes one suggestion — the first
   // candidate is the primary, subsequent ones become entries in `usages[]`.
@@ -296,6 +319,30 @@ async function search(q, sources = ['inventory', 'enquiry', 'ba'], limit = 15) {
       usages: dedupedUsages,
     };
   });
+
+  // Global Owner Search grouped output (T-2026-032, additive). When
+  // groupBy === 'source', bucket the flat suggestion list by source and
+  // return an object keyed by source name. Each bucket is independently
+  // capped at `limit` so a broad hit on one source doesn't drown the
+  // others. The dedupe grouping above still runs first, so a person who
+  // appears in Inventory AND as a BA collapses into ONE suggestion whose
+  // primary.source decides the bucket (`usages[]` continues to enumerate
+  // every occurrence).
+  if (groupBy === 'source') {
+    const cap = Math.max(1, Math.min(limit, 50));
+    const inv = [];
+    const enq = [];
+    const ba  = [];
+    for (const s of suggestions) {
+      if (s.source === 'inventory' && inv.length < cap) inv.push(s);
+      else if (s.source === 'enquiry' && enq.length < cap) enq.push(s);
+      else if (s.source === 'business_associate' && ba.length < cap) ba.push(s);
+    }
+    return {
+      data: { inventory: inv, enquiry: enq, business_associates: ba },
+      meta: { total: inv.length + enq.length + ba.length, q: query },
+    };
+  }
 
   const trimmed = suggestions.slice(0, Math.max(1, Math.min(limit, 50)));
 

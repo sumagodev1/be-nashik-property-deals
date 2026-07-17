@@ -64,7 +64,7 @@ async function deleteById(conn, id) {
 
 async function deleteAllForProperty(conn, propertyKind, propertyId) {
   const [rows] = await conn.query(
-    `SELECT id, stored_name, size_bytes FROM property_files
+    `SELECT id, stored_name, size_bytes, file_kind FROM property_files
      WHERE property_kind = ? AND property_id = ?`,
     [propertyKind, propertyId],
   );

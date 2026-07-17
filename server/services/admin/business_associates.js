@@ -49,7 +49,7 @@ function toDto(row) {
 
 function normalize(p) {
   return {
-    salutation: trimStr(p.salutation),
+    salutation: p.salutation ? String(p.salutation).toLowerCase() : null,
     firstName: trimStr(p.firstName),
     middleName: trimStr(p.middleName),
     surname: trimStr(p.surname),
@@ -108,4 +108,127 @@ async function remove(id) {
   await repo.softDelete(id);
 }
 
-module.exports = { list, getOne, create, update, remove, toDto };
+
+
+// ── Bulk upload helpers (additive) ──────────────────────────────────────
+//
+// bulkCheckDuplicates + bulkCreate live here so the route file stays thin.
+// The route file already validates payload shape via Joi; bulkCreate does
+// one additional server-side re-validation per row (required fields,
+// mobile format, email format) so a hand-crafted client that skips the
+// browser check still can't slip malformed rows past. Each row is inserted
+// in its own transaction — a failure on row N does NOT roll back rows 0..N-1.
+
+const PHONE_10 = /^\d{10}$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function normContact(v) {
+  return typeof v === 'string' ? v.trim() : (v == null ? '' : String(v).trim());
+}
+
+async function bulkCheckDuplicates(items) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+
+  const mobiles   = [];
+  const phones    = [];
+  const whatsapps = [];
+  const emails    = [];
+  items.forEach((it) => {
+    const m = normContact(it.mobile1);
+    const p = normContact(it.phone1);
+    const w = normContact(it.whatsapp);
+    const e = normContact(it.email1);
+    if (m) mobiles.push(m);
+    if (p) phones.push(p);
+    if (w) whatsapps.push(w);
+    if (e) emails.push(e.toLowerCase());
+  });
+
+  const existing = await repo.findByContactFields({
+    mobiles, phones, whatsapps, emails,
+  });
+
+  const mobileMap   = new Map();
+  const phoneMap    = new Map();
+  const whatsappMap = new Map();
+  const emailMap    = new Map();
+  existing.forEach((row) => {
+    ['mobile1', 'mobile2', 'mobile3'].forEach((col) => {
+      const v = normContact(row[col]);
+      if (v && !mobileMap.has(v)) mobileMap.set(v, row.id);
+    });
+    ['phone1', 'phone2'].forEach((col) => {
+      const v = normContact(row[col]);
+      if (v && !phoneMap.has(v)) phoneMap.set(v, row.id);
+    });
+    const w = normContact(row.whatsapp);
+    if (w && !whatsappMap.has(w)) whatsappMap.set(w, row.id);
+    ['email1', 'email2'].forEach((col) => {
+      const v = normContact(row[col]).toLowerCase();
+      if (v && !emailMap.has(v)) emailMap.set(v, row.id);
+    });
+  });
+
+  return items.map((it, index) => {
+    const m = normContact(it.mobile1);
+    const p = normContact(it.phone1);
+    const w = normContact(it.whatsapp);
+    const e = normContact(it.email1).toLowerCase();
+    if (m && mobileMap.has(m))   return { index, isDuplicate: true, matchedField: 'mobile',   matchedId: mobileMap.get(m) };
+    if (p && phoneMap.has(p))    return { index, isDuplicate: true, matchedField: 'phone',    matchedId: phoneMap.get(p) };
+    if (w && whatsappMap.has(w)) return { index, isDuplicate: true, matchedField: 'whatsapp', matchedId: whatsappMap.get(w) };
+    if (e && emailMap.has(e))    return { index, isDuplicate: true, matchedField: 'email',    matchedId: emailMap.get(e) };
+    return { index, isDuplicate: false };
+  });
+}
+
+function validateOne(payload) {
+  const firstName = normContact(payload.firstName);
+  const mobile1   = normContact(payload.mobile1);
+  const phone1    = normContact(payload.phone1);
+  const whatsapp  = normContact(payload.whatsapp);
+  const email1    = normContact(payload.email1);
+  if (!firstName)  return 'First name is required.';
+  if (!mobile1)    return 'Mobile Number is required.';
+  if (!PHONE_10.test(mobile1))            return 'Mobile Number must be exactly 10 digits.';
+  if (phone1   && !PHONE_10.test(phone1))   return 'Phone Number must be exactly 10 digits.';
+  if (whatsapp && !PHONE_10.test(whatsapp)) return 'WhatsApp Number must be exactly 10 digits.';
+  if (email1   && !EMAIL_RE.test(email1))   return 'Email is not a valid address.';
+  return null;
+}
+
+async function bulkCreate(items, { skipDuplicates = false, adminId = null } = {}) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+
+  const contactOnly = items.map((it) => ({
+    mobile1: it.mobile1, phone1: it.phone1, whatsapp: it.whatsapp, email1: it.email1,
+  }));
+  const dupResult = await bulkCheckDuplicates(contactOnly);
+  const dupSet = new Set(dupResult.filter((d) => d.isDuplicate).map((d) => d.index));
+
+  const results = [];
+  for (let i = 0; i < items.length; i += 1) {
+    const payload = items[i];
+    const invalidReason = validateOne(payload);
+    if (invalidReason) {
+      results.push({ index: i, status: 'invalid', error: invalidReason });
+      continue;
+    }
+    if (dupSet.has(i)) {
+      if (skipDuplicates) {
+        results.push({ index: i, status: 'duplicate', error: 'Already exists in database' });
+        continue;
+      }
+    }
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const row = await repo.create(normalize(payload), adminId);
+      results.push({ index: i, status: 'created', id: row.id });
+    } catch (e) {
+      results.push({ index: i, status: 'error', error: e.message || 'Insert failed' });
+    }
+  }
+  return results;
+}
+
+module.exports = { list, getOne, create, update, remove, toDto, bulkCheckDuplicates, bulkCreate };
