@@ -235,8 +235,20 @@ function toListItem(row) {
     title: row.title,
     description: row.description ?? null,
     propertyType: row.property_type,
+    // T-2026-055: {id, name} pair columns echoed verbatim so the FE
+    // renders the stored master identity captured from the pre-form
+    // chooser at creation time. NEVER derived from title/form-code/
+    // heading/name/route. Legacy rows created before T-2026-055 have
+    // nulls here; the FE falls back to the masters lookup so historical
+    // records keep rendering correctly.
+    propertyTypeId: row.property_type_id ?? null,
+    propertyTypeName: row.property_type_name ?? null,
     transactionType: row.transaction_type,
+    transactionTypeId: row.transaction_type_id ?? null,
+    transactionTypeName: row.transaction_type_name ?? null,
     transactionVariant: row.transaction_variant ?? null,
+    propertyVarietyId: row.property_variety_id ?? null,
+    propertyVarietyName: row.property_variety_name ?? null,
     location: row.location,
     district: row.district ?? null,
     taluka: row.taluka ?? null,

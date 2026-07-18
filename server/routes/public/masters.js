@@ -1,8 +1,12 @@
 /**
  * Public, read-only endpoint that returns the active rows of a master so the
  * website (e.g. the seller's add-property form) can populate its dropdowns
- * without requiring auth. We only expose `code` + `label` to keep the API
- * surface minimal.
+ * without requiring auth. We expose `id` + `code` + `label` + `sortOrder`
+ * (+ optional `parentCode` for hierarchical vocabularies).
+ *
+ * T-2026-055: `id` is emitted so the pre-form chooser can capture the
+ * master row primary key alongside the label and thread both into the
+ * property write path (property_type_id + property_type_name columns).
  */
 
 const express = require('express');
@@ -25,7 +29,7 @@ router.get('/:key', validate(keyParam, 'params'), async (req, res, next) => {
     res.json({
       master: result.master,
       data: result.data.map((row) => {
-        const out = { code: row.code, label: row.label, sortOrder: row.sortOrder };
+        const out = { id: row.id, code: row.code, label: row.label, sortOrder: row.sortOrder };
         // Hierarchical lookups (taluka, shivar) carry parent_code so the
         // frontend can filter children by selected parent without an extra
         // round trip.

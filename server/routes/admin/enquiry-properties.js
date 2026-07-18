@@ -84,6 +84,16 @@ const propertyBody = Joi.object({
   propertyType: propertyTypeField,
   transactionType: Joi.string().trim().max(255).allow('', null).optional(),
   transactionVariant: masterCodeField.optional().allow('', null),
+  // T-2026-055: Property Type / Transaction Type / Property Variety
+  // {id, name} pair fields captured verbatim from the pre-form chooser
+  // (PropertyTypeChooser.jsx). Additive/optional. See
+  // migration 062 for column definitions.
+  propertyTypeId:       Joi.number().integer().min(1).optional().allow(null, ''),
+  propertyTypeName:     Joi.string().trim().max(255).allow('', null).optional(),
+  transactionTypeId:    Joi.number().integer().min(1).optional().allow(null, ''),
+  transactionTypeName:  Joi.string().trim().max(255).allow('', null).optional(),
+  propertyVarietyId:    Joi.number().integer().min(1).optional().allow(null, ''),
+  propertyVarietyName:  Joi.string().trim().max(255).allow('', null).optional(),
   location: locField,
   district: masterCodeField.optional().allow('', null),
   taluka: masterCodeField.optional().allow('', null),

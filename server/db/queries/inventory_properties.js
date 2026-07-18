@@ -206,7 +206,9 @@ async function list({
   // param that falls back to the compact projection.
   const [rows] = await pool.query(
     `SELECT id, property_code, registration_date, title, description,
-            property_type, transaction_type, transaction_variant,
+            property_type, property_type_id, property_type_name,
+            transaction_type, transaction_type_id, transaction_type_name,
+            transaction_variant, property_variety_id, property_variety_name,
             location, district, taluka, shivar, latitude, longitude, formatted_address, pincode,
             area_value, area_unit, bhk, price, status, status_note, status_changed_at,
             is_draft, owner_name, owner_contact,
@@ -243,20 +245,28 @@ async function create(payload) {
     : null;
   const [result] = await pool.query(
     `INSERT INTO inventory_properties
-     (property_code, registration_date, title, description, property_type,
-      transaction_type, transaction_variant, location, district, taluka, shivar,
+     (property_code, registration_date, title, description, property_type, property_type_id, property_type_name,
+      transaction_type, transaction_type_id, transaction_type_name, transaction_variant, property_variety_id, property_variety_name,
+      location, district, taluka, shivar,
       latitude, longitude, formatted_address, pincode,
       area_value, area_unit, bhk, price, status, is_draft,
       owner_name, owner_contact, agent_name, agent_contact, details, created_by_admin_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.propertyCode,
       payload.registrationDate || null,
       payload.title,
       payload.description || null,
       payload.propertyType,
+      // T-2026-055: {id, name} pair columns
+      payload.propertyTypeId || null,
+      payload.propertyTypeName || null,
       payload.transactionType,
+      payload.transactionTypeId || null,
+      payload.transactionTypeName || null,
       payload.transactionVariant || null,
+      payload.propertyVarietyId || null,
+      payload.propertyVarietyName || null,
       payload.location,
       payload.district || null,
       payload.taluka || null,
@@ -293,7 +303,9 @@ async function update(id, payload) {
   await pool.query(
     `UPDATE inventory_properties SET
        registration_date = ?, title = ?, description = ?,
-       property_type = ?, transaction_type = ?, transaction_variant = ?,
+       property_type = ?, property_type_id = ?, property_type_name = ?,
+       transaction_type = ?, transaction_type_id = ?, transaction_type_name = ?,
+       transaction_variant = ?, property_variety_id = ?, property_variety_name = ?,
        location = ?, district = ?, taluka = ?, shivar = ?,
        latitude = ?, longitude = ?, formatted_address = ?, pincode = ?,
        area_value = ?, area_unit = ?, bhk = ?, price = ?, status = ?, is_draft = ?,
@@ -304,8 +316,15 @@ async function update(id, payload) {
       payload.title,
       payload.description || null,
       payload.propertyType,
+      // T-2026-055: {id, name} pair columns
+      payload.propertyTypeId || null,
+      payload.propertyTypeName || null,
       payload.transactionType,
+      payload.transactionTypeId || null,
+      payload.transactionTypeName || null,
       payload.transactionVariant || null,
+      payload.propertyVarietyId || null,
+      payload.propertyVarietyName || null,
       payload.location,
       payload.district || null,
       payload.taluka || null,

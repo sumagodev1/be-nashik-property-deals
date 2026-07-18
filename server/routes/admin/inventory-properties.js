@@ -97,6 +97,19 @@ const propertyBody = Joi.object({
   propertyType: propertyTypeField,
   transactionType: Joi.string().trim().max(255).allow('', null).optional(),
   transactionVariant: masterCodeField.optional().allow('', null),
+  // T-2026-055: Property Type / Transaction Type / Property Variety
+  // {id, name} pair fields captured verbatim from the pre-form chooser
+  // (PropertyTypeChooser.jsx). Additive/optional so the API contract
+  // stays fully backward-compatible with pre-055 callers that only
+  // sent the canonical code trio. Stored on dedicated columns; read
+  // back verbatim on list/detail/edit/view/website. NEVER derived
+  // from title/form-code/heading/name/route.
+  propertyTypeId:       Joi.number().integer().min(1).optional().allow(null, ''),
+  propertyTypeName:     Joi.string().trim().max(255).allow('', null).optional(),
+  transactionTypeId:    Joi.number().integer().min(1).optional().allow(null, ''),
+  transactionTypeName:  Joi.string().trim().max(255).allow('', null).optional(),
+  propertyVarietyId:    Joi.number().integer().min(1).optional().allow(null, ''),
+  propertyVarietyName:  Joi.string().trim().max(255).allow('', null).optional(),
   location: locField,
   district: masterCodeField.optional().allow('', null),
   taluka: masterCodeField.optional().allow('', null),

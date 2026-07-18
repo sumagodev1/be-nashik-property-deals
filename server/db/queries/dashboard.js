@@ -420,45 +420,89 @@ async function websiteCounters() {
   };
 }
 
+// T-2026-053: dynamic per-status counters driven by the status_type
+// master. Every ACTIVE row in master_status_types produces a byStatus[]
+// entry (LEFT JOIN so statuses with zero rows still appear). Legacy
+// scalar keys (available/sold/rented/onHold) are preserved for
+// backward-compatibility with any existing consumer that still keys on
+// them; new consumers should read byStatus[] instead.
 async function inventoryCounters() {
-  const [[inventory]] = await pool.query(`
-    SELECT
-      SUM(deleted_at IS NULL) AS total_inventory,
-      SUM(deleted_at IS NULL AND status = 'available') AS available_inventory,
-      SUM(deleted_at IS NULL AND status = 'sold') AS sold_inventory,
-      SUM(deleted_at IS NULL AND status = 'rented') AS rented_inventory,
-      SUM(deleted_at IS NULL AND status = 'on_hold') AS on_hold_inventory
-    FROM inventory_properties
-  `);
-  return {
-    total: num(inventory.total_inventory),
-    available: num(inventory.available_inventory),
-    sold: num(inventory.sold_inventory),
-    rented: num(inventory.rented_inventory),
-    onHold: num(inventory.on_hold_inventory),
-  };
+  return dynamicStatusCounters('inventory_properties');
 }
 
-// Same shape as inventoryCounters, restricted to the enquiry_properties
-// table. Kept as a separate function (rather than a factory over table
-// name) so future divergence (e.g. enquiry-only status like 'contacted')
-// can happen here without dragging inventory along.
+// T-2026-053: dynamic per-status counters mirroring inventoryCounters.
+// Same shape as inventoryCounters — one function per table so future
+// enquiry-only status columns (e.g. 'contacted') can diverge here
+// without dragging inventory along.
 async function enquiryCounters() {
-  const [[enquiry]] = await pool.query(`
-    SELECT
-      SUM(deleted_at IS NULL) AS total_enquiry,
-      SUM(deleted_at IS NULL AND status = 'available') AS available_enquiry,
-      SUM(deleted_at IS NULL AND status = 'sold') AS sold_enquiry,
-      SUM(deleted_at IS NULL AND status = 'rented') AS rented_enquiry,
-      SUM(deleted_at IS NULL AND status = 'on_hold') AS on_hold_enquiry
-    FROM enquiry_properties
-  `);
+  return dynamicStatusCounters('enquiry_properties');
+}
+
+// Shared helper: return a KPI payload driven entirely by the active
+// rows of master_status_types. Callers pass the property table name
+// (whitelisted below — the value is interpolated into SQL, so it must
+// never come from user input).
+//
+// Returned shape:
+//   {
+//     total,                              // COUNT of live rows in the table
+//     byStatus: [                         // one entry per ACTIVE master row,
+//       { code, label, count, sortOrder } // in master sort_order asc, incl.
+//     ],                                  // rows with zero occurrences.
+//     available, sold, rented, onHold,    // legacy scalar shim so existing
+//     status: { available: n, ... }       // consumers (frontend cards keyed
+//   }                                     // on kpi.available etc.) keep
+//                                         // rendering unchanged.
+async function dynamicStatusCounters(table) {
+  if (table !== 'inventory_properties' && table !== 'enquiry_properties') {
+    throw new Error(`Unsupported table for dynamicStatusCounters: ${table}`);
+  }
+
+  // Total count first — a single scalar query, deterministic under load.
+  const [[totRow]] = await pool.query(
+    `SELECT COUNT(*) AS total FROM ${table} WHERE deleted_at IS NULL`,
+  );
+
+  // Per-status counts: LEFT JOIN master_status_types on code=status so
+  // active statuses with zero occurrences still surface. is_active=1 and
+  // deleted_at IS NULL on the master side ensures deactivated / soft-
+  // deleted statuses drop out of the KPI strip while remaining
+  // renderable in historical rows (label fallback is on the frontend).
+  const [rows] = await pool.query(
+    `SELECT m.code, m.label, m.sort_order AS sortOrder,
+            COALESCE(t.cnt, 0) AS count
+       FROM master_status_types m
+       LEFT JOIN (
+         SELECT status, COUNT(*) AS cnt
+           FROM ${table}
+          WHERE deleted_at IS NULL AND status IS NOT NULL AND status != ''
+          GROUP BY status
+       ) t ON t.status = m.code
+      WHERE m.is_active = 1 AND m.deleted_at IS NULL
+      ORDER BY m.sort_order ASC, m.code ASC`,
+  );
+
+  const byStatus = rows.map((r) => ({
+    code: r.code,
+    label: r.label,
+    count: Number(r.count || 0),
+    sortOrder: Number(r.sortOrder || 0),
+  }));
+
+  // Legacy scalar shim — keyed by the well-known status codes that
+  // pre-T-2026-053 frontends read. Any code not present in the master
+  // resolves to 0. New codes (e.g. 'sold_by_me') simply don't populate
+  // legacy keys; they only appear via byStatus[].
+  const byCode = Object.fromEntries(byStatus.map((s) => [s.code, s.count]));
   return {
-    total: num(enquiry.total_enquiry),
-    available: num(enquiry.available_enquiry),
-    sold: num(enquiry.sold_enquiry),
-    rented: num(enquiry.rented_enquiry),
-    onHold: num(enquiry.on_hold_enquiry),
+    total: num(totRow.total),
+    byStatus,
+    available: byCode.available || 0,
+    sold: byCode.sold || 0,
+    rented: byCode.rented || 0,
+    onHold: byCode.on_hold || 0,
+    // Also expose a map for callers that prefer object access.
+    status: byCode,
   };
 }
 
@@ -627,4 +671,5 @@ module.exports = {
   listingsByPropertyTypeSingle,
   listingsByTransactionTypeSingle,
   listingsByPropertyVarietySingle,
+  dynamicStatusCounters,
 };
