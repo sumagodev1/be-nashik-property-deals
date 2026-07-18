@@ -13,6 +13,10 @@
 const { HttpError } = require('../../middleware/errors');
 const repo = require('../../db/queries/masters');
 const { pool } = require('../../db/pool');
+// T-2026-045: uniform audit trail for master CRUD (create / update /
+// activate / deactivate / delete). Emitted after the mutation is persisted
+// so an audit-log failure never rolls back the user-visible change.
+const audit = require('../admin/audit');
 
 // Inventory / form lookup vocabularies that live inside the generic
 // `master_lookups` table (one row per option, scoped by master_key). The key
@@ -96,6 +100,9 @@ const LOOKUP_KEYS = Object.freeze([
   'plot_rate_unit', 'plot_amenities', 'plot_emi_count',
   'plot_emi_booking_percent', 'plot_lease_monthly_budget',
   'plot_lease_yearly_budget', 'plot_deposit_budget',
+  // T-2026-047: Plot Category (Residential) — new master vocabulary
+  // that replaces the legacy inline radio. Cascaded on plotType.
+  'plot_category_residential',
   // SEZ MD-driven masters — added in migration 037. Sourced from
   // `reference of forms/SEZ Registration Form.md`. (`sez_type` is legacy.)
   'sez_infrastructural_facilities', 'sez_fiscal_incentives',
@@ -327,6 +334,7 @@ const MASTER_LABELS = Object.freeze({
   plot_lease_monthly_budget:       'Plot / Lease Budget (Monthly)',
   plot_lease_yearly_budget:        'Plot / Lease Budget (Yearly)',
   plot_deposit_budget:             'Plot / Deposit Budget',
+  plot_category_residential:       'Plot / Category (Residential)',
   plot_shape:                      'Global / Plot / Land / Shape',
   // SEZ / X
   sez_infrastructural_facilities:  'SEZ / Infrastructural Facilities',
@@ -424,24 +432,30 @@ function assertNotFixed(masterKey, action) {
 // inside `remove()` directly (see master_lookups.parent_code logic).
 const USAGE_REFS = Object.freeze({
   property_type: [
-    { table: 'inventory_properties', column: 'property_type' },
-    { table: 'website_properties',   column: 'property_type' },
+    { table: 'inventory_properties', column: 'property_type', friendlyLabel: 'Inventory Properties' },
+    { table: 'website_properties',   column: 'property_type', friendlyLabel: 'Website Properties' },
   ],
   transaction_type: [
-    { table: 'inventory_properties', column: 'transaction_type' },
-    { table: 'website_properties',   column: 'transaction_type' },
+    { table: 'inventory_properties', column: 'transaction_type', friendlyLabel: 'Inventory Properties' },
+    { table: 'website_properties',   column: 'transaction_type', friendlyLabel: 'Website Properties' },
   ],
   flat_type: [
-    { table: 'inventory_properties', column: 'bhk' },
-    { table: 'website_properties',   column: 'bhk' },
+    { table: 'inventory_properties', column: 'bhk', friendlyLabel: 'Inventory Properties' },
+    { table: 'website_properties',   column: 'bhk', friendlyLabel: 'Website Properties' },
   ],
+  // T-2026-045: Property Status usage now spans BOTH Inventory and Enquiry
+  // properties (enquiry_properties.status was widened by migration 056).
+  // Website has NO domain-status column (only approval_status) so it is
+  // intentionally omitted here - the delete-safety modal on the frontend
+  // must not falsely claim website records reference this status.
   status_type: [
-    { table: 'inventory_properties', column: 'status' },
+    { table: 'inventory_properties', column: 'status', friendlyLabel: 'Inventory Properties' },
+    { table: 'enquiry_properties',   column: 'status', friendlyLabel: 'Enquiry Properties' },
   ],
   // Promoted-to-column lookups: tracked because they have a fast index.
-  district: [{ table: 'inventory_properties', column: 'district' }],
-  taluka:   [{ table: 'inventory_properties', column: 'taluka' }],
-  shivar:   [{ table: 'inventory_properties', column: 'shivar' }],
+  district: [{ table: 'inventory_properties', column: 'district', friendlyLabel: 'Inventory Properties' }],
+  taluka:   [{ table: 'inventory_properties', column: 'taluka', friendlyLabel: 'Inventory Properties' }],
+  shivar:   [{ table: 'inventory_properties', column: 'shivar', friendlyLabel: 'Inventory Properties' }],
 });
 
 function tableFor(masterKey) {
@@ -468,6 +482,12 @@ function toDto(row) {
   if (Object.prototype.hasOwnProperty.call(row, 'parent_code')) {
     dto.parentCode = row.parent_code || null;
   }
+  // T-2026-045: description is currently only surfaced by master_status_types
+  // rows. When present in the row shape, expose it on the DTO so the admin
+  // MasterListPage + MasterEntryModal can render + edit the field.
+  if (Object.prototype.hasOwnProperty.call(row, 'description')) {
+    dto.description = row.description || '';
+  }
   return dto;
 }
 
@@ -484,7 +504,11 @@ async function list(masterKey, filters = {}) {
   const discriminator = discriminatorFor(masterKey);
   const page = Math.max(1, Number(filters.page) || 1);
   const pageSize = Math.min(100, Math.max(1, Number(filters.pageSize) || 10));
-  const { rows, total } = await repo.list(table, { ...filters, page, pageSize, discriminator });
+  // T-2026-045: `sort` is a public whitelist key (name|createdAt|status) with
+  // optional ':asc'|':desc' suffix; repo.buildOrderBy safely maps to columns.
+  const { rows, total } = await repo.list(table, {
+    ...filters, page, pageSize, discriminator, sort: filters.sort,
+  });
   return {
     master: masterMeta(masterKey),
     data: rows.map(toDto),
@@ -635,7 +659,30 @@ function assertValidLabel(masterKey, label) {
   return v;
 }
 
-async function create(masterKey, payload) {
+// T-2026-045: description is optional and only persisted for masters whose
+// backing table has a description column (currently just status_type). All
+// other keys silently drop the field.
+function normalizeDescriptionForKey(masterKey, description) {
+  if (description === undefined || description === null) return null;
+  const t = MASTER_TABLES[masterKey];
+  if (!repo.hasDescription(t)) return null;
+  const s = String(description).trim();
+  return s ? s.slice(0, 255) : null;
+}
+
+// T-2026-045: uniform audit helper. `req` is optional (backwards-compat for
+// internal callers that don't need audit). Silently swallow logging errors
+// so an audit outage never fails a successful mutation.
+async function safeAudit(req, entry) {
+  if (!req) return;
+  try { await audit.record(req, entry); }
+  catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[masters:audit] failed to record entry', entry.action, err && err.message);
+  }
+}
+
+async function create(masterKey, payload, req) {
   assertNotFixed(masterKey, 'creating new entries');
   const table = tableFor(masterKey);
   const discriminator = discriminatorFor(masterKey);
@@ -644,6 +691,7 @@ async function create(masterKey, payload) {
   const parentCode = isLookupKey(masterKey)
     ? (payload.parentCode ? String(payload.parentCode).trim().toLowerCase() : null)
     : null;
+  const description = normalizeDescriptionForKey(masterKey, payload.description);
 
   // Helpful duplicate errors — include the existing row's id + status so
   // the admin knows *where to find it* (often on a later pagination page
@@ -685,8 +733,18 @@ async function create(masterKey, payload) {
       sortOrder: Number(payload.sortOrder) || 0,
       isActive: payload.isActive !== false,
       parentCode,
+      description,
     });
-    return getOne(masterKey, dead.id);
+    const revived = await getOne(masterKey, dead.id);
+    // T-2026-045: reviving a soft-deleted row is user-facing 'create'.
+    await safeAudit(req, {
+      action: 'MASTER_CREATED',
+      entityType: `master:${masterKey}`,
+      entityId: revived.id,
+      summary: `Created ${MASTER_LABELS[masterKey]}: "${revived.label}"`,
+      metadata: { after: revived, revivedFromSoftDelete: true },
+    });
+    return revived;
   }
   const id = await repo.create(table, {
     code,
@@ -695,11 +753,20 @@ async function create(masterKey, payload) {
     isActive: payload.isActive !== false,
     masterKey: isLookupKey(masterKey) ? masterKey : undefined,
     parentCode,
+    description,
   });
-  return getOne(masterKey, id);
+  const created = await getOne(masterKey, id);
+  await safeAudit(req, {
+    action: 'MASTER_CREATED',
+    entityType: `master:${masterKey}`,
+    entityId: created.id,
+    summary: `Created ${MASTER_LABELS[masterKey]}: "${created.label}"`,
+    metadata: { after: created },
+  });
+  return created;
 }
 
-async function update(masterKey, id, payload) {
+async function update(masterKey, id, payload, req) {
   const table = tableFor(masterKey);
   const discriminator = discriminatorFor(masterKey);
   const existing = await repo.findById(table, id, { discriminator });
@@ -709,6 +776,9 @@ async function update(masterKey, id, payload) {
   if (FIXED_MASTERS.has(masterKey)) {
     payload = { isActive: payload.isActive, sortOrder: payload.sortOrder };
   }
+  // Snapshot pre-mutation DTO for the audit metadata + activate/deactivate
+  // detection. Uses toDto so shape matches what the API returns for `after`.
+  const beforeDto = toDto(existing);
   // Label is only validated if it's actually being changed.
   const label = payload.label !== undefined
     ? assertValidLabel(masterKey, payload.label)
@@ -725,35 +795,92 @@ async function update(masterKey, id, payload) {
         ? (payload.parentCode ? String(payload.parentCode).trim().toLowerCase() : null)
         : (existing.parent_code || null))
     : null;
+  // T-2026-045: description only applied when the table has the column and
+  // the caller included the field. When key is absent, preserve existing.
+  const description = payload.description !== undefined
+    ? normalizeDescriptionForKey(masterKey, payload.description)
+    : (existing.description || null);
   await repo.update(table, id, {
     code,
     label,
     sortOrder: payload.sortOrder !== undefined ? Number(payload.sortOrder) : existing.sort_order,
     isActive: payload.isActive !== undefined ? Boolean(payload.isActive) : Boolean(existing.is_active),
     parentCode,
+    description,
   }, { discriminator });
-  return getOne(masterKey, id);
+  const after = await getOne(masterKey, id);
+  // T-2026-045: emit MASTER_UPDATED whenever anything else changed;
+  // additionally emit ACTIVATED/DEACTIVATED when is_active flipped so the
+  // audit log surfaces the toggle explicitly (matches spec item #9).
+  const activeFlipped = beforeDto.isActive !== after.isActive;
+  const otherFieldsChanged = (
+    beforeDto.code !== after.code ||
+    beforeDto.label !== after.label ||
+    (beforeDto.description || '') !== (after.description || '') ||
+    Number(beforeDto.sortOrder) !== Number(after.sortOrder) ||
+    (beforeDto.parentCode || null) !== (after.parentCode || null)
+  );
+  if (otherFieldsChanged) {
+    await safeAudit(req, {
+      action: 'MASTER_UPDATED',
+      entityType: `master:${masterKey}`,
+      entityId: after.id,
+      summary: (beforeDto.label !== after.label)
+        ? `Updated ${MASTER_LABELS[masterKey]}: "${beforeDto.label}" -> "${after.label}"`
+        : `Updated ${MASTER_LABELS[masterKey]}: "${after.label}"`,
+      metadata: { before: beforeDto, after },
+    });
+  }
+  if (activeFlipped) {
+    await safeAudit(req, {
+      action: after.isActive ? 'MASTER_ACTIVATED' : 'MASTER_DEACTIVATED',
+      entityType: `master:${masterKey}`,
+      entityId: after.id,
+      summary: after.isActive
+        ? `Activated ${MASTER_LABELS[masterKey]}: "${after.label}"`
+        : `Deactivated ${MASTER_LABELS[masterKey]}: "${after.label}"`,
+      metadata: { before: beforeDto, after },
+    });
+  }
+  return after;
 }
 
-async function remove(masterKey, id) {
+async function remove(masterKey, id, req) {
   assertNotFixed(masterKey, 'deleting entries');
   const table = tableFor(masterKey);
   const discriminator = discriminatorFor(masterKey);
   const existing = await repo.findById(table, id, { discriminator });
   if (!existing) throw new HttpError(404, 'NOT_FOUND', `${MASTER_LABELS[masterKey]} not found`);
+  const beforeDto = toDto(existing);
 
   // Best-effort safety: if any non-deleted property row still references this
   // code, refuse the delete and ask the admin to reassign. Deactivating
   // (is_active = 0) is offered as an alternative since it doesn't break old
   // rows but hides the option from new-property dropdowns.
+  //
+  // T-2026-045: build a per-table breakdown so the frontend delete-blocked
+  // modal can render one row per referring table (e.g. "Inventory
+  // Properties : 12 / Enquiry Properties : 4"). The breakdown lives in the
+  // HttpError details.usage array so the frontend can render it without
+  // parsing the message string.
   const refs = USAGE_REFS[masterKey] || [];
+  const usage = [];
   let inUse = 0;
   for (const ref of refs) {
     const [[{ n }]] = await pool.query(
       `SELECT COUNT(*) AS n FROM ${ref.table} WHERE ${ref.column} = ? AND deleted_at IS NULL`,
       [existing.code],
     );
-    inUse += Number(n);
+    const count = Number(n);
+    if (count > 0) {
+      usage.push({
+        table: ref.table,
+        column: ref.column,
+        label: ref.friendlyLabel || ref.table,
+        count,
+      });
+    }
+    inUse += count;
   }
   // Hierarchical masters: refuse delete if a child master row references the
   // code as its parent_code. e.g. cannot delete district "nashik" while any
@@ -768,17 +895,29 @@ async function remove(masterKey, id) {
         409,
         'IN_USE',
         `Cannot delete — ${n} child master row${n === 1 ? '' : 's'} reference${n === 1 ? 's' : ''} this ${MASTER_LABELS[masterKey].toLowerCase()} as its parent. Deactivate it instead.`,
+        { usage: [{ table: 'master_lookups', column: 'parent_code', label: 'Child master rows', count: Number(n) }] },
       );
     }
   }
   if (inUse > 0) {
+    // Compose a human-readable per-table breakdown alongside the total.
+    // Frontend also reads err.details.usage[] to render the modal as a list.
+    const breakdown = usage.map((u) => `${u.label} : ${u.count}`).join(', ');
     throw new HttpError(
       409,
       'IN_USE',
-      `Cannot delete — ${inUse} property record${inUse === 1 ? ' references' : 's reference'} this ${MASTER_LABELS[masterKey].toLowerCase()}. Deactivate it instead.`,
+      `Cannot delete — this ${MASTER_LABELS[masterKey].toLowerCase()} is being used in: ${breakdown}. Deactivate it instead so it stops appearing in new-property dropdowns while existing records keep working.`,
+      { usage, total: inUse },
     );
   }
   await repo.softDelete(table, id, { discriminator });
+  await safeAudit(req, {
+    action: 'MASTER_DELETED',
+    entityType: `master:${masterKey}`,
+    entityId: beforeDto.id,
+    summary: `Deleted ${MASTER_LABELS[masterKey]}: "${beforeDto.label}"`,
+    metadata: { before: beforeDto },
+  });
 }
 
 // Used by inventory/website-property/seller-property services to validate

@@ -207,7 +207,7 @@ async function list({
   const [rows] = await pool.query(
     `SELECT id, property_code, registration_date, title, description,
             property_type, transaction_type, transaction_variant,
-            location, district, taluka, shivar, latitude, longitude, pincode,
+            location, district, taluka, shivar, latitude, longitude, formatted_address, pincode,
             area_value, area_unit, bhk, price, status, status_note, status_changed_at,
             is_draft, owner_name, owner_contact,
             agent_name, agent_contact, details, created_at, updated_at
@@ -245,10 +245,10 @@ async function create(payload) {
     `INSERT INTO inventory_properties
      (property_code, registration_date, title, description, property_type,
       transaction_type, transaction_variant, location, district, taluka, shivar,
-      latitude, longitude, pincode,
+      latitude, longitude, formatted_address, pincode,
       area_value, area_unit, bhk, price, status, is_draft,
       owner_name, owner_contact, agent_name, agent_contact, details, created_by_admin_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.propertyCode,
       payload.registrationDate || null,
@@ -263,6 +263,7 @@ async function create(payload) {
       payload.shivar || null,
       payload.latitude ?? null,
       payload.longitude ?? null,
+      payload.formattedAddress || null,
       payload.pincode || null,
       payload.areaValue ?? null,
       payload.areaUnit || null,
@@ -294,7 +295,7 @@ async function update(id, payload) {
        registration_date = ?, title = ?, description = ?,
        property_type = ?, transaction_type = ?, transaction_variant = ?,
        location = ?, district = ?, taluka = ?, shivar = ?,
-       latitude = ?, longitude = ?, pincode = ?,
+       latitude = ?, longitude = ?, formatted_address = ?, pincode = ?,
        area_value = ?, area_unit = ?, bhk = ?, price = ?, status = ?, is_draft = ?,
        owner_name = ?, owner_contact = ?, agent_name = ?, agent_contact = ?, details = ?
      WHERE id = ? AND deleted_at IS NULL`,
@@ -311,6 +312,7 @@ async function update(id, payload) {
       payload.shivar || null,
       payload.latitude ?? null,
       payload.longitude ?? null,
+      payload.formattedAddress || null,
       payload.pincode || null,
       payload.areaValue ?? null,
       payload.areaUnit || null,

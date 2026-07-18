@@ -247,6 +247,8 @@ function toListItem(row) {
     shivar: row.shivar ?? null,
     latitude: row.latitude !== null && row.latitude !== undefined ? Number(row.latitude) : null,
     longitude: row.longitude !== null && row.longitude !== undefined ? Number(row.longitude) : null,
+    // T-2026-048: reverse-geocoded human-readable address paired with lat/lng.
+    formattedAddress: row.formatted_address ?? null,
     pincode: row.pincode ?? null,
     areaValue: row.area_value !== null ? Number(row.area_value) : null,
     areaUnit: row.area_unit,

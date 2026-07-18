@@ -1,7 +1,9 @@
 const multer = require('multer');
 const { HttpError } = require('./errors');
 
-const MAX_FILE_BYTES = Number(process.env.UPLOAD_MAX_FILE_BYTES) || 1024 * 1024;
+// T-2026-048: default raised to 5 MB (aligns with imageUpload / documentUpload).
+// Env override still applies.
+const MAX_FILE_BYTES = Number(process.env.UPLOAD_MAX_FILE_BYTES) || 5 * 1024 * 1024;
 const MAX_FILES_PER_REQUEST = 10;
 
 const upload = multer({

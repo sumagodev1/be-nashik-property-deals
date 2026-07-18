@@ -46,15 +46,44 @@ function applyDiscriminator(where, params, discriminator) {
   }
 }
 
-async function list(table, { search, isActive, page = 1, pageSize = 10, discriminator } = {}) {
+// T-2026-045: description column exists ONLY on master_status_types today.
+// Central helper so every SELECT/INSERT/UPDATE stays consistent. Extend the
+// Set below to widen support to more tables in future.
+const TABLES_WITH_DESCRIPTION = new Set(["master_status_types"]);
+function hasDescription(table) { return TABLES_WITH_DESCRIPTION.has(table); }
+function descCol(table) { return hasDescription(table) ? ", description" : ""; }
+
+// Whitelist for the list() sort param (T-2026-045).
+const SORT_COLUMNS = {
+  name:      "label",
+  createdAt: "created_at",
+  status:    "is_active",
+};
+function buildOrderBy(sort) {
+  if (!sort) return "ORDER BY sort_order ASC, label ASC, id ASC";
+  const parts = String(sort).split(":");
+  const col = SORT_COLUMNS[parts[0]];
+  if (!col) return "ORDER BY sort_order ASC, label ASC, id ASC";
+  const dir = (parts[1] || "asc").toLowerCase() === "desc" ? "DESC" : "ASC";
+  return "ORDER BY " + col + " " + dir + ", id ASC";
+}
+
+async function list(table, { search, isActive, page = 1, pageSize = 10, discriminator, sort } = {}) {
   assertTable(table);
   const where = ['deleted_at IS NULL'];
   const params = [];
   applyDiscriminator(where, params, discriminator);
   if (search) {
-    where.push('(code LIKE ? OR label LIKE ?)');
-    const s = `%${search}%`;
-    params.push(s, s);
+    // T-2026-045: also match description when the column exists (status_type).
+    if (hasDescription(table)) {
+      where.push('(code LIKE ? OR label LIKE ? OR description LIKE ?)');
+      const s = `%${search}%`;
+      params.push(s, s, s);
+    } else {
+      where.push('(code LIKE ? OR label LIKE ?)');
+      const s = `%${search}%`;
+      params.push(s, s);
+    }
   }
   if (typeof isActive === 'boolean') {
     where.push('is_active = ?');
@@ -66,11 +95,12 @@ async function list(table, { search, isActive, page = 1, pageSize = 10, discrimi
     params,
   );
   const offset = (page - 1) * pageSize;
+  const orderBy = buildOrderBy(sort);
   const [rows] = await pool.query(
-    `SELECT id, code, label, sort_order, is_active, created_at, updated_at${table === 'master_lookups' ? ', parent_code' : ''}
+    `SELECT id, code, label${descCol(table)}, sort_order, is_active, created_at, updated_at${table === 'master_lookups' ? ', parent_code' : ''}
      FROM ${table}
      ${whereSql}
-     ORDER BY sort_order ASC, label ASC, id ASC
+     ${orderBy}
      LIMIT ? OFFSET ?`,
     [...params, pageSize, offset],
   );
@@ -87,7 +117,7 @@ async function listAll(table, { isActive, discriminator } = {}) {
     params.push(isActive ? 1 : 0);
   }
   const [rows] = await pool.query(
-    `SELECT id, code, label, sort_order, is_active, created_at, updated_at${table === 'master_lookups' ? ', parent_code' : ''}
+    `SELECT id, code, label${descCol(table)}, sort_order, is_active, created_at, updated_at${table === 'master_lookups' ? ', parent_code' : ''}
      FROM ${table}
      WHERE ${where.join(' AND ')}
      ORDER BY sort_order ASC, label ASC, id ASC`,
@@ -102,7 +132,7 @@ async function findById(table, id, { discriminator } = {}) {
   const params = [id];
   applyDiscriminator(where, params, discriminator);
   const [rows] = await pool.query(
-    `SELECT id, code, label, sort_order, is_active, created_at, updated_at${table === 'master_lookups' ? ', parent_code' : ''}
+    `SELECT id, code, label${descCol(table)}, sort_order, is_active, created_at, updated_at${table === 'master_lookups' ? ', parent_code' : ''}
      FROM ${table} WHERE ${where.join(' AND ')} LIMIT 1`,
     params,
   );
@@ -157,7 +187,7 @@ async function findDeletedByLabel(table, label, { discriminator } = {}) {
 // update the mutable fields with the fresh payload). Used by
 // masters/management.js `create` so re-adding a deleted entry works
 // without the caller having to know a soft-deleted twin ever existed.
-async function revive(table, id, { code, label, sortOrder, isActive, parentCode }) {
+async function revive(table, id, { code, label, sortOrder, isActive, parentCode, description }) {
   assertTable(table);
   if (table === 'master_lookups') {
     await pool.query(
@@ -166,6 +196,15 @@ async function revive(table, id, { code, label, sortOrder, isActive, parentCode 
              is_active = ?, deleted_at = NULL
        WHERE id = ?`,
       [code, label, parentCode ?? null, sortOrder ?? 0, isActive ? 1 : 0, id],
+    );
+    return;
+  }
+  if (hasDescription(table)) {
+    await pool.query(
+      `UPDATE ${table}
+         SET code = ?, label = ?, description = ?, sort_order = ?, is_active = ?, deleted_at = NULL
+       WHERE id = ?`,
+      [code, label, normalizeDescription(description), sortOrder ?? 0, isActive ? 1 : 0, id],
     );
     return;
   }
@@ -223,13 +262,20 @@ async function codeTaken(table, code, excludeId = null, { discriminator } = {}) 
   return rows.length > 0;
 }
 
-async function create(table, { code, label, sortOrder, isActive, masterKey, parentCode }) {
+async function create(table, { code, label, sortOrder, isActive, masterKey, parentCode, description }) {
   assertTable(table);
   if (table === 'master_lookups') {
     const [r] = await pool.query(
       `INSERT INTO master_lookups (master_key, code, label, parent_code, sort_order, is_active)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [masterKey, code, label, parentCode ?? null, sortOrder ?? 0, isActive ? 1 : 0],
+    );
+    return r.insertId;
+  }
+  if (hasDescription(table)) {
+    const [r] = await pool.query(
+      `INSERT INTO ${table} (code, label, description, sort_order, is_active) VALUES (?, ?, ?, ?, ?)`,
+      [code, label, normalizeDescription(description), sortOrder ?? 0, isActive ? 1 : 0],
     );
     return r.insertId;
   }
@@ -240,7 +286,15 @@ async function create(table, { code, label, sortOrder, isActive, masterKey, pare
   return r.insertId;
 }
 
-async function update(table, id, { code, label, sortOrder, isActive, parentCode }, { discriminator } = {}) {
+// T-2026-045: trim/coerce description to NULL when empty/whitespace, cap at 255.
+function normalizeDescription(v) {
+  if (v === undefined || v === null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  return s.slice(0, 255);
+}
+
+async function update(table, id, { code, label, sortOrder, isActive, parentCode, description }, { discriminator } = {}) {
   assertTable(table);
   const where = ['id = ?', 'deleted_at IS NULL'];
   const params = [];
@@ -259,6 +313,14 @@ async function update(table, id, { code, label, sortOrder, isActive, parentCode 
          SET code = ?, label = ?, parent_code = ?, sort_order = ?, is_active = ?
        WHERE ${where.join(' AND ')}`,
       params,
+    );
+    return;
+  }
+  if (hasDescription(table)) {
+    await pool.query(
+      `UPDATE ${table} SET code = ?, label = ?, description = ?, sort_order = ?, is_active = ?
+       WHERE id = ? AND deleted_at IS NULL`,
+      [code, label, normalizeDescription(description), sortOrder ?? 0, isActive ? 1 : 0, id],
     );
     return;
   }
@@ -298,6 +360,8 @@ async function labelTaken(table, label, excludeId = null, { discriminator } = {}
 
 module.exports = {
   ALLOWED_TABLES,
+  TABLES_WITH_DESCRIPTION,
+  hasDescription,
   list,
   listAll,
   findById,

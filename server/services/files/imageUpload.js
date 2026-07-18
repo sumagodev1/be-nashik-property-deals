@@ -9,11 +9,23 @@ const storageUsage = require('../../db/queries/storage_usage');
 const { HttpError } = require('../../middleware/errors');
 const { detectImageMime, ALLOWED_IMAGE_MIMES } = require('../../constants/property');
 
-const MAX_FILE_BYTES = Number(process.env.UPLOAD_MAX_FILE_BYTES) || 1024 * 1024;
+// T-2026-048: per-file cap raised to 5 MB (spec). Env override still
+// applies so ops can dial it down without a code change.
+const MAX_FILE_BYTES = Number(process.env.UPLOAD_MAX_FILE_BYTES) || 5 * 1024 * 1024;
 const TOTAL_QUOTA_BYTES = Number(process.env.UPLOAD_TOTAL_QUOTA_BYTES) || 500 * 1024 * 1024;
 const PUBLIC_DIR = process.env.UPLOAD_PUBLIC_DIR || 'uploads/public';
 
-const MIME_TO_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
+// Per-property image cap (spec: max 5). Enforced additively — persistImages
+// counts existing rows and rejects the batch if the total would exceed it.
+const MAX_IMAGES_PER_PROPERTY = Number(process.env.UPLOAD_MAX_IMAGES_PER_PROPERTY) || 5;
+
+const MIME_TO_EXT = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+};
 
 function appRoot() {
   return path.resolve(__dirname, '..', '..', '..');
@@ -50,9 +62,23 @@ async function persistImages({ propertyKind, propertyId, files, fileKind = 'imag
     }
     const detected = detectImageMime(f.buffer);
     if (!detected || !ALLOWED_IMAGE_MIMES.includes(detected)) {
-      throw new HttpError(400, 'UNSUPPORTED_FORMAT', `"${f.originalname}" is not a supported image (jpg, png, webp)`);
+      throw new HttpError(400, 'UNSUPPORTED_FORMAT', `"${f.originalname}" is not a supported image (jpg, png, webp, heic)`);
     }
     validated.push({ ...f, detectedMime: detected });
+  }
+
+  // T-2026-048: enforce per-property image cap. Only applies to file_kind='image'
+  // — amenity thumbnails and other kinds share the table but stay uncapped by
+  // this rule.
+  if (fileKind === 'image') {
+    const existing = await propertyFiles.listForProperty(null, propertyKind, propertyId);
+    if (existing.length + validated.length > MAX_IMAGES_PER_PROPERTY) {
+      throw new HttpError(
+        400,
+        'TOO_MANY_IMAGES',
+        `Uploading ${validated.length} image(s) would exceed the ${MAX_IMAGES_PER_PROPERTY}-image cap per property (currently ${existing.length}).`,
+      );
+    }
   }
 
   const totalDelta = validated.reduce((acc, f) => acc + f.size, 0);

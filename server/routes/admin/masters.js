@@ -30,12 +30,18 @@ const activeField = Joi.boolean();
 // shivar); ignored by the legacy single-table masters in the service layer.
 const parentCodeField = codeField.optional().allow('', null);
 
+// T-2026-045: description is optional; only persisted for masters whose
+// backing table has the column (currently just status_type). Sending it on
+// other masters is silently dropped in the service layer.
+const descriptionField = Joi.string().trim().max(255).allow('', null).optional();
+
 const createBody = Joi.object({
   code: codeField.required(),
   label: labelField.required(),
   parentCode: parentCodeField,
   sortOrder: sortField.default(0),
   isActive: activeField.default(true),
+  description: descriptionField,
 });
 
 const updateBody = Joi.object({
@@ -44,13 +50,22 @@ const updateBody = Joi.object({
   parentCode: parentCodeField,
   sortOrder: sortField.optional(),
   isActive: activeField.optional(),
+  description: descriptionField,
 }).min(1);
+
+// T-2026-045: sort is `<key>` or `<key>:<dir>` where key is one of
+// name | createdAt | status and dir is asc | desc (default asc). The
+// repo whitelists both parts so unknown values fall back to the default
+// sort_order+label ordering.
+const sortListQueryPattern = /^(name|createdAt|status)(:(asc|desc))?$/i;
+const sortField_listQuery = Joi.string().trim().pattern(sortListQueryPattern).optional();
 
 const listQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   pageSize: Joi.number().integer().min(1).max(100).default(10),
   search: Joi.string().trim().max(255).allow('').optional(),
   isActive: Joi.boolean().optional(),
+  sort: sortField_listQuery,
 });
 
 // GET /api/admin/masters  → list of master keys + labels (for the side nav).
@@ -88,7 +103,9 @@ router.post(
   validate(createBody),
   async (req, res, next) => {
     try {
-      const created = await management.create(req.params.key, req.body);
+      // T-2026-045: pass `req` so the service can attribute the audit-log
+      // entry to the acting admin (+ IP).
+      const created = await management.create(req.params.key, req.body, req);
       res.status(201).json(created);
     } catch (e) { next(e); }
   },
@@ -102,7 +119,7 @@ router.put(
   }), 'params'),
   validate(updateBody),
   async (req, res, next) => {
-    try { res.json(await management.update(req.params.key, req.params.id, req.body)); }
+    try { res.json(await management.update(req.params.key, req.params.id, req.body, req)); }
     catch (e) { next(e); }
   },
 );
@@ -115,7 +132,7 @@ router.delete(
   }), 'params'),
   async (req, res, next) => {
     try {
-      await management.remove(req.params.key, req.params.id);
+      await management.remove(req.params.key, req.params.id, req);
       res.status(204).end();
     } catch (e) { next(e); }
   },

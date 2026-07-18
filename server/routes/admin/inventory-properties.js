@@ -103,6 +103,8 @@ const propertyBody = Joi.object({
   shivar: masterCodeField.optional().allow('', null),
   latitude: Joi.number().min(-90).max(90).optional().allow(null, ''),
   longitude: Joi.number().min(-180).max(180).optional().allow(null, ''),
+  // T-2026-048: reverse-geocoded human-readable address paired with lat/lng.
+  formattedAddress: Joi.string().trim().max(300).allow('', null).optional(),
   pincode: Joi.string().trim().max(20).allow('', null).optional(),
   areaValue: Joi.number().min(0).max(AREA_MAX).optional().allow(null, ''),
   areaUnit: Joi.string().max(50).optional().allow('', null),

@@ -19,43 +19,41 @@ const { pool } = require('../../db/pool');
 const propertyFiles = require('../../db/queries/property_files');
 const storageUsage = require('../../db/queries/storage_usage');
 const { HttpError } = require('../../middleware/errors');
-const { detectImageMime } = require('../../constants/property');
+const {
+  ALLOWED_DOC_MIMES_EXTENDED,
+  DOC_MIME_TO_EXT,
+  detectDocumentMime,
+} = require('../../constants/property');
 
-const MAX_FILE_BYTES = Number(process.env.UPLOAD_MAX_FILE_BYTES) || 1024 * 1024;
+// T-2026-048: per-file cap raised to 5 MB (spec). Env override still applies.
+const MAX_FILE_BYTES = Number(process.env.UPLOAD_MAX_FILE_BYTES) || 5 * 1024 * 1024;
 const TOTAL_QUOTA_BYTES = Number(process.env.UPLOAD_TOTAL_QUOTA_BYTES) || 500 * 1024 * 1024;
 const PRIVATE_DIR = process.env.UPLOAD_PRIVATE_DIR || 'uploads/private';
 
-const ALLOWED_DOC_MIMES = Object.freeze([
-  'application/pdf',
-  'image/jpeg',
-  'image/png',
-]);
+// Per-property document cap (spec: max 5). Applied additively.
+const MAX_DOCS_PER_PROPERTY = Number(process.env.UPLOAD_MAX_DOCS_PER_PROPERTY) || 5;
 
-const MIME_TO_EXT = {
-  'application/pdf': 'pdf',
-  'image/jpeg': 'jpg',
-  'image/png': 'png',
-};
+// T-2026-048: expanded allowlist and MIME→ext map come from
+// constants/property.js so the same tables are reachable by the frontend
+// (via a public constants endpoint) and by tests.
+const ALLOWED_DOC_MIMES = ALLOWED_DOC_MIMES_EXTENDED;
+const MIME_TO_EXT = DOC_MIME_TO_EXT;
 
 function appRoot() { return path.resolve(__dirname, '..', '..', '..'); }
 function ensureDirSync(dir) { fs.mkdirSync(dir, { recursive: true }); }
 function privateSubdir(kind) { return path.join(appRoot(), PRIVATE_DIR, kind); }
 
-function detectMime(buffer) {
-  // PDF magic bytes: 25 50 44 46 (%PDF)
-  if (buffer.length >= 4 && buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) {
-    return 'application/pdf';
-  }
-  return detectImageMime(buffer);
-}
-
 function validateFile({ originalname, buffer, size }) {
   if (size > MAX_FILE_BYTES) {
     throw new HttpError(400, 'FILE_TOO_LARGE', `"${originalname}" exceeds the ${MAX_FILE_BYTES}-byte per-file limit`);
   }
-  const detected = detectMime(buffer);
+  const detected = detectDocumentMime(buffer, originalname);
   if (!detected || !ALLOWED_DOC_MIMES.includes(detected)) {
-    throw new HttpError(400, 'UNSUPPORTED_FORMAT', `"${originalname}" is not a supported document (PDF, JPG, or PNG)`);
+    throw new HttpError(
+      400,
+      'UNSUPPORTED_FORMAT',
+      `"${originalname}" is not a supported document (PDF, DOC, DOCX, XLS, XLSX, CSV, PPT, PPTX, TXT, ZIP, RAR, JPG, PNG)`,
+    );
   }
   return detected;
 }
@@ -68,6 +66,17 @@ async function persistPropertyDocuments({ propertyKind, propertyId, files }) {
   if (!files || files.length === 0) return [];
 
   const validated = files.map((f) => ({ ...f, detectedMime: validateFile(f) }));
+
+  // T-2026-048: enforce per-property document cap.
+  const existing = await listPropertyDocuments(propertyKind, propertyId);
+  if (existing.length + validated.length > MAX_DOCS_PER_PROPERTY) {
+    throw new HttpError(
+      400,
+      'TOO_MANY_DOCUMENTS',
+      `Uploading ${validated.length} document(s) would exceed the ${MAX_DOCS_PER_PROPERTY}-document cap per property (currently ${existing.length}).`,
+    );
+  }
+
   const totalDelta = validated.reduce((acc, f) => acc + f.size, 0);
   const dir = privateSubdir(propertyKind);
   ensureDirSync(dir);
