@@ -263,8 +263,12 @@ router.post('/', idempotency(), validate(propertyBody), validateDynamicDataMiddl
       ...req.body,
       // Drafts default missing fields to safe placeholders so the row is insertable.
       price: req.body.price ?? 0,
-      propertyType: req.body.propertyType || '',
-      transactionType: req.body.transactionType || 'sale',
+      // T-2026-067: no `|| 'sale'` default on transactionType and no
+      // `|| ''` PT injection. Both fields are user-selected via the
+      // chooser; a request that omits them must fail loudly rather
+      // than silently defaulting to values the user never picked.
+      propertyType: req.body.propertyType,
+      transactionType: req.body.transactionType,
       location: req.body.location || '',
       createdByAdminId: req.auth.role === 'admin' ? Number(req.auth.sub) : null,
     });
@@ -279,8 +283,12 @@ router.put('/:id', validate(idParam, 'params'), validate(propertyBody), validate
     res.json(await management.updateProperty(req.params.id, {
       ...req.body,
       price: req.body.price ?? 0,
-      propertyType: req.body.propertyType || '',
-      transactionType: req.body.transactionType || 'sale',
+      // T-2026-067: no `|| 'sale'` default on transactionType and no
+      // `|| ''` PT injection. Both fields are user-selected via the
+      // chooser; a request that omits them must fail loudly rather
+      // than silently defaulting to values the user never picked.
+      propertyType: req.body.propertyType,
+      transactionType: req.body.transactionType,
       location: req.body.location || '',
     }));
   } catch (err) {

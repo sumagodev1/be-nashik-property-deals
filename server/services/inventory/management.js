@@ -12,43 +12,58 @@ const excel = require('../files/excel');
 const { buildTablePdf } = require('../files/pdf');
 const { assignUniqueCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
-
-function toPropertyTypeKey(propertyType) {
-  const value = String(propertyType || '').trim().toLowerCase();
-  if (!value) return 'other';
-  if (value.includes('flat') || value.includes('apartment') || value.includes('house')) return 'flat';
-  if (value.includes('bunglow') || value.includes('villa')) return 'bunglow';
-  if (value.includes('plot')) return 'plot';
-  if (value.includes('shop')) return 'shop';
-  if (value.includes('commercial')) return 'commercial';
-  if (value.includes('land')) return 'land';
-  if (value.includes('hostel')) return 'hostel';
-  if (value.includes('paying guest') || value.includes('paying_guest')) return 'paying_guest';
-  if (value.includes('hospital')) return 'hospital';
-  if (value.includes('industrial')) return 'industrial_plot';
-  if (value.includes('sez')) return 'sez';
-  if (value.includes('tdr')) return 'tdr';
-  if (value.includes('pre-leased') || value.includes('pre leased')) return 'pre_leased';
-  if (value.includes('bank auction')) return 'bank_auction';
-  return 'other';
-}
+// Centralised Property Type / Transaction Type / Property Variety
+// validator. Every service that persists a property MUST use this so the
+// three fields cannot be miswired to the wrong master (see the module
+// header for the incident this prevents).
+const { validatePropertyClassification } = require('../masters/propertyMasters');
+// Fix D (T-2026-057): dependency-driven cross-master validation. The
+// FE chooser guarantees only (PT, TT, PV) triples registered in the
+// tree are submitted; this backend guard logs a warning if the two
+// catalogs drift (permissive — the record still saves so pre-catalog
+// records and legacy edits keep working).
+const formCodeCatalog = require('../../constants/formCodeCatalog');
+// Fix E (T-2026-058): DB-authoritative dependency validator. Uses
+// master_property_forms (migration 063) as the source of truth and
+// falls back to the JS catalog above when the DB table hasn't been
+// seeded yet. Same call shape — the save path swaps in-place.
+const propertyFormCatalog = require('../masters/propertyFormCatalog');
 
 async function validateMasterCodes(payload) {
-  if (payload.transactionType) {
-    await masters.assertActiveCode('transaction_type', payload.transactionType);
-  }
-  // transaction_variant lives in the same transaction_type vocabulary —
-  // e.g. transactionType='sale' may be paired with variant='new_sale' or
-  // variant='resale'. We deliberately validate against the same master.
-  if (payload.transactionVariant) {
-    await masters.assertActiveCode('transaction_type', payload.transactionVariant);
-  }
+  // Property Type + Transaction Type + Property Variety (carried on
+  // payload.transactionVariant) — pinned to their own masters by the
+  // centralised helper. Do not inline these three checks here.
+  await validatePropertyClassification(payload);
   await masters.assertActiveCode('flat_type', payload.bhk);
   await masters.assertActiveCode('status_type', payload.status);
   // Hierarchical location masters — only validated when supplied.
   await masters.assertActiveCode('district', payload.district);
   await masters.assertActiveCode('taluka', payload.taluka);
   await masters.assertActiveCode('shivar', payload.shivar);
+
+  // Fix E (T-2026-058): cross-master dependency check backed by the
+  // DB (`master_property_forms`). Falls back to the JS catalog when
+  // the table is empty (still-migrating install). Log-only so legacy
+  // edits and pre-catalog records keep saving; strict mode can be
+  // enabled later if desired. Non-fatal on any error — a broken DB
+  // connection here must not block a property save that would
+  // otherwise succeed.
+  try {
+    await propertyFormCatalog.validateCombination({
+      mode: 'inventory',
+      propertyType: payload.propertyTypeName || payload.propertyType,
+      transactionType: payload.transactionType,
+      propertyVariety: payload.propertyVarietyName || payload.transactionVariant,
+      label: 'inventory.save',
+    });
+  } catch (_e) {
+    formCodeCatalog.validateCombination({
+      propertyType: payload.propertyTypeName || payload.propertyType,
+      transactionType: payload.transactionType,
+      propertyVariety: payload.propertyVarietyName || payload.transactionVariant,
+      label: 'inventory.save.fallback',
+    });
+  }
 }
 
 const { PUBLIC_URL_PREFIX } = require('../files/publicUrl');
@@ -116,11 +131,10 @@ async function createProperty(payload) {
   await validateMasterCodes(payload);
   // property_code is UNIQUE in MySQL. Insert with a UUID placeholder so
   // concurrent creates can never collide on the constraint, then assign
-  // the final NSK-<TYPE>-YY-XXXXXX code with retry-on-collision.
+  // the final NSK-<TYPE>-YY-XXXXXXX code with retry-on-collision.
   const tmpCode = `TMP-${crypto.randomUUID()}`;
-  const propertyKey = toPropertyTypeKey(payload.propertyType);
   const id = await inventory.create({ ...payload, propertyCode: tmpCode });
-  await assignUniqueCode(propertyKey, async (code) => {
+  await assignUniqueCode(payload.propertyType, async (code) => {
     try {
       await inventory.updatePropertyCode(id, code);
       return true;
@@ -246,13 +260,20 @@ function toListItem(row) {
     // nulls here; the FE falls back to the masters lookup so historical
     // records keep rendering correctly.
     propertyTypeId: row.property_type_id ?? null,
-    propertyTypeName: row.property_type_name ?? null,
+    // Fix C (T-2026-057): prefer the resolved name from the LIST SQL's
+    // LEFT JOIN over the persisted snapshot column. `resolved_property_type_name`
+    // is COALESCE(persisted_snapshot, master_by_id.label, master_by_code.label),
+    // so pre-T-2026-055 rows with NULL snapshots still render a human label.
+    // Falls back to the persisted snapshot when the LIST SQL isn't the
+    // source of this row (e.g. a raw findById() call further down); falls
+    // back to null if both are NULL.
+    propertyTypeName: row.resolved_property_type_name ?? row.property_type_name ?? null,
     transactionType: row.transaction_type,
     transactionTypeId: row.transaction_type_id ?? null,
-    transactionTypeName: row.transaction_type_name ?? null,
+    transactionTypeName: row.resolved_transaction_type_name ?? row.transaction_type_name ?? null,
     transactionVariant: row.transaction_variant ?? null,
     propertyVarietyId: row.property_variety_id ?? null,
-    propertyVarietyName: row.property_variety_name ?? null,
+    propertyVarietyName: row.resolved_property_variety_name ?? row.property_variety_name ?? null,
     location: row.location,
     district: row.district ?? null,
     taluka: row.taluka ?? null,

@@ -223,8 +223,12 @@ router.post('/', idempotency(), validate(propertyBody), validateDynamicDataMiddl
     const created = await management.createProperty({
       ...req.body,
       price: req.body.price ?? 0,
-      propertyType: req.body.propertyType || '',
-      transactionType: req.body.transactionType || 'sale',
+      // T-2026-067: no default injection for the two classification
+      // fields — the chooser is the source of truth. A request that
+      // omits propertyType / transactionType must fail loudly, not
+      // silently default to values the user never chose.
+      propertyType: req.body.propertyType,
+      transactionType: req.body.transactionType,
       location: req.body.location || '',
       createdByAdminId: req.auth.role === 'admin' ? Number(req.auth.sub) : null,
     });
@@ -239,8 +243,12 @@ router.put('/:id', validate(idParam, 'params'), validate(propertyBody), validate
     res.json(await management.updateProperty(req.params.id, {
       ...req.body,
       price: req.body.price ?? 0,
-      propertyType: req.body.propertyType || '',
-      transactionType: req.body.transactionType || 'sale',
+      // T-2026-067: no default injection for the two classification
+      // fields — the chooser is the source of truth. A request that
+      // omits propertyType / transactionType must fail loudly, not
+      // silently default to values the user never chose.
+      propertyType: req.body.propertyType,
+      transactionType: req.body.transactionType,
       location: req.body.location || '',
     }));
   } catch (err) {

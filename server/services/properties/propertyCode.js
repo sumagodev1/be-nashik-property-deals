@@ -1,49 +1,126 @@
 /**
  * Property code generator — produces production-style identifiers like
- *   NSK-APT-26-8F3K92
+ *   NSK-FLT-26-A8K2M7P
  *
  * Structure:
  *   NSK       — city code (Nashik; project is single-city for now)
- *   APT       — 3-letter property-type abbreviation
- *   26        — 2-digit year (last two digits of the creation year)
- *   8F3K92    — 6-character random alphanumeric, uppercase, with visually
- *               ambiguous characters (0, O, 1, I, L) excluded.
+ *   FLT       — 3-letter property-type abbreviation (see PROPERTY_TYPE_CODES)
+ *   26        — 2-digit year (last two digits of the server creation year)
+ *   A8K2M7P   — 7-character random alphanumeric, uppercase A-Z + digits 0-9,
+ *               guaranteed to contain at least one letter AND one digit.
  *
  * The DB enforces UNIQUE on property_code, so callers must regenerate and
  * retry on the (rare) collision. `assignUniqueCode` does that for you: it
  * generates a candidate, attempts the update, and retries up to N times.
+ *
+ * IMPORTANT: This module is the sole source of truth for the property code
+ * format. Inventory, Enquiry, Website admin, and Seller (public) create
+ * flows all funnel through `assignUniqueCode` — the frontend never
+ * generates or edits codes.
  */
 
 const crypto = require('crypto');
 
 const CITY_CODE = 'NSK';
 
+// Canonical property-type → 3-letter code map. Keys are the snake_case
+// values stored in master_property_types.code. `other` is the catch-all
+// used whenever the incoming propertyType doesn't match a known entry.
 const PROPERTY_TYPE_CODES = Object.freeze({
-  flat: 'APT',
-  house: 'HSE',
-  villa: 'VIL',
-  plot: 'PLT',
-  commercial: 'COM',
-  agricultural: 'AGR',
-  other: 'OTH',
+  flat:                 'FLT',
+  land:                 'LND',
+  plot:                 'PLT',
+  sez_plot:             'SPT',
+  sez_land:             'SLD',
+  bungalow:             'BNG',
+  shop:                 'SHP',
+  hotel:                'HTL',
+  hostel:               'HST',
+  hospital:             'HSP',
+  commercial_space:     'COM',
+  industrial_plot:      'IND',
+  tdr:                  'TDR',
+  bank_auction:         'BKA',
+  paying_guest:         'PGS',
+  pre_leased_property:  'PLP',
+  project_registration: 'PRJ',
+  other:                'OTH',
 });
 
-// 32-char alphabet, no 0/O/1/I/L. 32^6 ≈ 1.07 billion combinations.
-const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-const SUFFIX_LEN = 6;
+// Aliases for values that historically arrived in a different shape
+// (legacy bucket keys from the old normalizer, misspellings, labels
+// from the UI, etc.). Anything not here or in PROPERTY_TYPE_CODES
+// falls through to `other`/OTH.
+const PROPERTY_TYPE_ALIASES = Object.freeze({
+  // Legacy bucket keys from the old toPropertyTypeKey() normalizer
+  bunglow:            'bungalow',
+  villa:              'bungalow',
+  house:              'bungalow',
+  apartment:          'flat',
+  commercial:         'commercial_space',
+  pre_leased:         'pre_leased_property',
+  sez:                'sez_plot',
+
+  // Human-readable label variants (spaces, hyphens, mixed case all
+  // normalize to snake_case before lookup, so we only need to alias
+  // the residual quirks)
+  agricultural:       'land',
+});
+
+// 36-char alphabet: uppercase A-Z + digits 0-9. 36^7 ≈ 78 billion
+// combinations, so collisions on the 7-char suffix are astronomically
+// unlikely for the expected inventory size.
+const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const SUFFIX_LEN = 7;
 const MAX_ATTEMPTS = 8;
 
+// crypto.randomInt is unbiased over [0, 36); using `% ALPHABET.length`
+// on raw bytes would bias slightly since 256 % 36 !== 0. The bias is
+// tiny but this is a UNIQUE-constrained identifier, so use the
+// unbiased path.
+function pickChar() {
+  return ALPHABET[crypto.randomInt(0, ALPHABET.length)];
+}
+
+function hasDigit(s)  { return /[0-9]/.test(s); }
+function hasLetter(s) { return /[A-Z]/.test(s); }
+
+// Generate a 7-char suffix that contains at least one letter AND one
+// digit. Statistically the first draw satisfies this ~87% of the time,
+// so retries are rare; the cap is defensive.
 function randomSuffix() {
-  const bytes = crypto.randomBytes(SUFFIX_LEN);
-  let out = '';
-  for (let i = 0; i < SUFFIX_LEN; i += 1) {
-    out += ALPHABET[bytes[i] % ALPHABET.length];
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    let out = '';
+    for (let i = 0; i < SUFFIX_LEN; i += 1) out += pickChar();
+    if (hasDigit(out) && hasLetter(out)) return out;
   }
-  return out;
+  // Extremely unlikely fallback: force the mix.
+  let out = '';
+  for (let i = 0; i < SUFFIX_LEN - 2; i += 1) out += pickChar();
+  const letter = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[crypto.randomInt(0, 26)];
+  const digit  = '0123456789'[crypto.randomInt(0, 10)];
+  return out + letter + digit;
+}
+
+// Normalize an incoming property-type value (any of: DB snake_case code,
+// human label with spaces/hyphens, legacy bucket key) to the canonical
+// key used by PROPERTY_TYPE_CODES.
+function normalizePropertyType(propertyType) {
+  const raw = String(propertyType || '').trim().toLowerCase();
+  if (!raw) return 'other';
+  // Collapse spaces, hyphens, slashes -> underscore so labels like
+  // "SEZ Plot" / "Pre-Leased Property" / "Commercial Space" line up
+  // with the snake_case master codes.
+  const snake = raw.replace(/[\s/-]+/g, '_').replace(/_+/g, '_');
+  if (Object.prototype.hasOwnProperty.call(PROPERTY_TYPE_CODES, snake)) return snake;
+  if (Object.prototype.hasOwnProperty.call(PROPERTY_TYPE_ALIASES, snake)) {
+    return PROPERTY_TYPE_ALIASES[snake];
+  }
+  return 'other';
 }
 
 function propertyTypeCode(propertyType) {
-  return PROPERTY_TYPE_CODES[propertyType] || PROPERTY_TYPE_CODES.other;
+  return PROPERTY_TYPE_CODES[normalizePropertyType(propertyType)];
 }
 
 function generatePropertyCode(propertyType, now = new Date()) {
@@ -78,6 +155,9 @@ async function assignUniqueCode(propertyType, tryAssign) {
 module.exports = {
   CITY_CODE,
   PROPERTY_TYPE_CODES,
+  PROPERTY_TYPE_ALIASES,
+  normalizePropertyType,
+  propertyTypeCode,
   generatePropertyCode,
   assignUniqueCode,
 };

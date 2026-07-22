@@ -1,18 +1,22 @@
 const { pool } = require('../pool');
 
+// Fix C: sortable columns qualified with `ip.` because the list SQL now
+// LEFT JOINs the classification masters, and `created_at` / `id` exist
+// on the master tables too. Other columns are inventory-only but the
+// prefix is safe / clear.
 const SORTABLE_COLUMNS = {
-  created_at: 'created_at',
-  price: 'price',
-  location: 'location',
-  property_type: 'property_type',
-  title: 'title',
+  created_at:    'ip.created_at',
+  price:         'ip.price',
+  location:      'ip.location',
+  property_type: 'ip.property_type',
+  title:         'ip.title',
 };
 
 function buildOrderBy(sort) {
   const [col, dir] = (sort || 'created_at:desc').split(':');
-  const safeCol = SORTABLE_COLUMNS[col] || 'created_at';
+  const safeCol = SORTABLE_COLUMNS[col] || 'ip.created_at';
   const safeDir = dir && dir.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-  return `ORDER BY ${safeCol} ${safeDir}, id DESC`;
+  return `ORDER BY ${safeCol} ${safeDir}, ip.id DESC`;
 }
 
 async function list({
@@ -58,7 +62,10 @@ async function list({
   ownerSearch,
 }) {
   const offset = (page - 1) * pageSize;
-  const where = ['deleted_at IS NULL'];
+  // Fix C: WHERE clauses need `ip.` prefixes on columns that also exist on
+  // the joined master tables (deleted_at, description, created_at). Other
+  // column names are unique to inventory_properties and stay unqualified.
+  const where = ['ip.deleted_at IS NULL'];
   const params = [];
 
   if (search) {
@@ -93,8 +100,11 @@ async function list({
     // (thousands, not millions). If this becomes hot, promote
     // frequently-searched details keys to dedicated columns or add a
     // FULLTEXT / generated-column index.
+    // Fix C: `description` is qualified because master tables also carry
+    // a `description` column (migration 057). Every other column here is
+    // unique to inventory_properties.
     where.push(`(
-      property_code LIKE ? OR title LIKE ? OR description LIKE ?
+      property_code LIKE ? OR title LIKE ? OR ip.description LIKE ?
       OR location LIKE ?
       OR property_type LIKE ? OR transaction_type LIKE ? OR transaction_variant LIKE ?
       OR status LIKE ? OR status_note LIKE ?
@@ -178,11 +188,12 @@ async function list({
     params.push(priceMax);
   }
   if (dateFrom) {
-    where.push('created_at >= ?');
+    // Fix C: `created_at` qualified because every joined master table also has it.
+    where.push('ip.created_at >= ?');
     params.push(dateFrom);
   }
   if (dateTo) {
-    where.push('created_at < DATE_ADD(?, INTERVAL 1 DAY)');
+    where.push('ip.created_at < DATE_ADD(?, INTERVAL 1 DAY)');
     params.push(dateTo);
   }
   if (typeof isDraft === 'boolean') {
@@ -193,8 +204,11 @@ async function list({
   const whereSql = `WHERE ${where.join(' AND ')}`;
   const orderSql = buildOrderBy(sort);
 
+  // Fix C: COUNT uses the same alias as the list SELECT so the shared
+  // whereSql (with `ip.` prefixes) resolves correctly. No JOINs needed
+  // here — the WHERE clauses only touch inventory_properties columns.
   const [[{ total }]] = await pool.query(
-    `SELECT COUNT(*) AS total FROM inventory_properties ${whereSql}`,
+    `SELECT COUNT(*) AS total FROM inventory_properties ip ${whereSql}`,
     params,
   );
 
@@ -204,16 +218,37 @@ async function list({
   // that's still under a few hundred KB total, well within a reasonable
   // API response. If this ever grows painful, add an opt-in `?slim=1`
   // param that falls back to the compact projection.
+  // Fix C (T-2026-057): LEFT JOIN the classification masters and COALESCE
+  // the resolved name so pre-T-2026-055 rows (which have NULL snapshot
+  // columns) always render a human label instead of a blank cell / raw
+  // code. Legacy rows still store the code/label under `property_type`,
+  // `transaction_type`, `transaction_variant`; the joins match by ID
+  // (preferred) OR by code (fallback). If NEITHER matches (masters row
+  // was hard-deleted), we fall through to the raw stored code.
+  //
+  // Aliases used downstream by toListItem:
+  //   resolved_property_type_name   — persisted name if present, else master.label
+  //   resolved_transaction_type_name — same shape
+  //   resolved_property_variety_name — same shape
   const [rows] = await pool.query(
-    `SELECT id, property_code, registration_date, title, description,
-            property_type, property_type_id, property_type_name,
-            transaction_type, transaction_type_id, transaction_type_name,
-            transaction_variant, property_variety_id, property_variety_name,
-            location, district, taluka, shivar, latitude, longitude, formatted_address, pincode,
-            area_value, area_unit, bhk, price, status, status_note, status_changed_at,
-            is_draft, owner_name, owner_contact,
-            agent_name, agent_contact, details, created_at, updated_at
-     FROM inventory_properties
+    `SELECT ip.id, ip.property_code, ip.registration_date, ip.title, ip.description,
+            ip.property_type, ip.property_type_id, ip.property_type_name,
+            ip.transaction_type, ip.transaction_type_id, ip.transaction_type_name,
+            ip.transaction_variant, ip.property_variety_id, ip.property_variety_name,
+            ip.location, ip.district, ip.taluka, ip.shivar, ip.latitude, ip.longitude, ip.formatted_address, ip.pincode,
+            ip.area_value, ip.area_unit, ip.bhk, ip.price, ip.status, ip.status_note, ip.status_changed_at,
+            ip.is_draft, ip.owner_name, ip.owner_contact,
+            ip.agent_name, ip.agent_contact, ip.details, ip.created_at, ip.updated_at,
+            COALESCE(ip.property_type_name, mpt_id.label, mpt_code.label) AS resolved_property_type_name,
+            COALESCE(ip.transaction_type_name, mtt_id.label, mtt_code.label) AS resolved_transaction_type_name,
+            COALESCE(ip.property_variety_name, mpv_id.label, mpv_code.label) AS resolved_property_variety_name
+     FROM inventory_properties ip
+     LEFT JOIN master_property_types mpt_id      ON mpt_id.id     = ip.property_type_id       AND mpt_id.deleted_at IS NULL
+     LEFT JOIN master_property_types mpt_code    ON mpt_code.code = ip.property_type          AND mpt_code.deleted_at IS NULL
+     LEFT JOIN master_transaction_types mtt_id   ON mtt_id.id     = ip.transaction_type_id    AND mtt_id.deleted_at IS NULL
+     LEFT JOIN master_transaction_types mtt_code ON mtt_code.code = ip.transaction_type       AND mtt_code.deleted_at IS NULL
+     LEFT JOIN master_lookups mpv_id             ON mpv_id.id     = ip.property_variety_id    AND mpv_id.deleted_at IS NULL AND mpv_id.master_key = 'property_variety'
+     LEFT JOIN master_lookups mpv_code           ON mpv_code.code = ip.transaction_variant    AND mpv_code.deleted_at IS NULL AND mpv_code.master_key = 'property_variety'
      ${whereSql}
      ${orderSql}
      LIMIT ? OFFSET ?`,
@@ -223,9 +258,31 @@ async function list({
   return { rows, total };
 }
 
+// Fix C (T-2026-057): single-row view/edit reads must also benefit from
+// the master COALESCE resolution — otherwise the View page renders a
+// blank Property Type / Variety cell for pre-T-2026-055 rows even
+// though the List page (which now uses the JOIN in `list()` above) shows
+// the correct label. Keeps the historical `SELECT *` behaviour by
+// appending the same three resolved_* aliases; downstream consumers
+// (toListItem / toDetail) ignore anything they don't recognise.
+const SELECT_WITH_RESOLVED_NAMES = `
+  SELECT ip.*,
+         COALESCE(ip.property_type_name, mpt_id.label, mpt_code.label) AS resolved_property_type_name,
+         COALESCE(ip.transaction_type_name, mtt_id.label, mtt_code.label) AS resolved_transaction_type_name,
+         COALESCE(ip.property_variety_name, mpv_id.label, mpv_code.label) AS resolved_property_variety_name
+    FROM inventory_properties ip
+    LEFT JOIN master_property_types mpt_id      ON mpt_id.id     = ip.property_type_id       AND mpt_id.deleted_at IS NULL
+    LEFT JOIN master_property_types mpt_code    ON mpt_code.code = ip.property_type          AND mpt_code.deleted_at IS NULL
+    LEFT JOIN master_transaction_types mtt_id   ON mtt_id.id     = ip.transaction_type_id    AND mtt_id.deleted_at IS NULL
+    LEFT JOIN master_transaction_types mtt_code ON mtt_code.code = ip.transaction_type       AND mtt_code.deleted_at IS NULL
+    LEFT JOIN master_lookups mpv_id             ON mpv_id.id     = ip.property_variety_id    AND mpv_id.deleted_at IS NULL AND mpv_id.master_key = 'property_variety'
+    LEFT JOIN master_lookups mpv_code           ON mpv_code.code = ip.transaction_variant    AND mpv_code.deleted_at IS NULL AND mpv_code.master_key = 'property_variety'
+`;
+
 async function findById(id) {
   const [rows] = await pool.query(
-    `SELECT * FROM inventory_properties WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+    `${SELECT_WITH_RESOLVED_NAMES}
+     WHERE ip.id = ? AND ip.deleted_at IS NULL LIMIT 1`,
     [id],
   );
   return rows[0] || null;
@@ -233,7 +290,8 @@ async function findById(id) {
 
 async function findByIdForConn(conn, id) {
   const [rows] = await conn.query(
-    `SELECT * FROM inventory_properties WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+    `${SELECT_WITH_RESOLVED_NAMES}
+     WHERE ip.id = ? AND ip.deleted_at IS NULL LIMIT 1`,
     [id],
   );
   return rows[0] || null;

@@ -7,6 +7,10 @@ const locations = require('./locations');
 const stats = require('./stats');
 const masters = require('./masters');
 const businessAssociates = require('./business-associates');
+// T-2026-058: dependency-tree endpoint that replaces the FE's
+// hardcoded chooserTree.js as the source of truth once migration
+// 063 has run. See routes/public/property-catalog.js.
+const propertyCatalog = require('./property-catalog');
 
 const router = express.Router();
 
@@ -18,5 +22,6 @@ router.use('/locations', locations);
 router.use('/stats', stats);
 router.use('/masters', masters);
 router.use('/business-associates', businessAssociates);
+router.use('/property-catalog', propertyCatalog);
 
 module.exports = router;

@@ -15,6 +15,13 @@ router.use(requireAuth, requireModule(MODULES.CMS_MANAGEMENT));
 
 const idParam = Joi.object({ id: Joi.number().integer().positive().required() });
 
+// Standard listing query params (server-side pagination). Shared across the
+// two paginated list endpoints below (banners + sidebar-ads).
+const listQuery = Joi.object({
+  page: Joi.number().integer().min(1).default(1),
+  pageSize: Joi.number().integer().min(1).max(100).default(10),
+});
+
 const bannerUpdateBody = Joi.object({
   altText: Joi.string().trim().max(255).allow('', null),
   caption: Joi.string().trim().max(255).allow('', null),
@@ -65,8 +72,8 @@ const settingsBody = Joi.object({
 
 // Banners --------------------------------------------------------------------
 
-router.get('/banners', async (req, res, next) => {
-  try { res.json({ data: await cms.listBanners() }); } catch (e) { next(e); }
+router.get('/banners', validate(listQuery, 'query'), async (req, res, next) => {
+  try { res.json(await cms.listBanners(req.query)); } catch (e) { next(e); }
 });
 
 router.get('/banners/:id', validate(idParam, 'params'), async (req, res, next) => {
@@ -168,8 +175,8 @@ function normalizeDate(input) {
   return s;
 }
 
-router.get('/sidebar-ads', async (req, res, next) => {
-  try { res.json({ data: await cms.listSidebarAds() }); } catch (e) { next(e); }
+router.get('/sidebar-ads', validate(listQuery, 'query'), async (req, res, next) => {
+  try { res.json(await cms.listSidebarAds(req.query)); } catch (e) { next(e); }
 });
 
 router.get('/sidebar-ads/:id', validate(idParam, 'params'), async (req, res, next) => {

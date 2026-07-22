@@ -1,13 +1,14 @@
 /**
- * Service layer for the Business Associates directory.
+ * Service layer for the Phone Book directory.
  *
- * Snake → camel DTO shaping, trim/normalize on write, soft-not-found errors.
- * Same shape is reused by the public route so the homepage card + admin
- * table render off identical fields.
+ * A fully independent module — separate table, separate queries, separate
+ * bulk-upload pipeline. Does not import or reuse any Business Associates
+ * service or query code, and uses its own designation master
+ * (`phone_book_designation`).
  */
 
 const { HttpError } = require('../../middleware/errors');
-const repo = require('../../db/queries/business_associates');
+const repo = require('../../db/queries/phone_book');
 const mastersRepo = require('../../db/queries/masters');
 const mastersService = require('../masters/management');
 const { pool } = require('../../db/pool');
@@ -25,7 +26,6 @@ function toDto(row) {
     middleName: row.middle_name,
     surname: row.surname,
     companyName: row.company_name,
-    businessCategory: row.business_category,
     designation: row.designation,
     addressLine1: row.address_line1,
     addressLine2: row.address_line2,
@@ -42,11 +42,10 @@ function toDto(row) {
     email2: row.email2,
     website1: row.website1,
     website2: row.website2,
-    // MySQL DATE round-trips as a JS Date — coerce back to YYYY-MM-DD so
-    // the frontend datepicker sees the correct string.
     dateOfBirth: row.date_of_birth instanceof Date
       ? row.date_of_birth.toISOString().slice(0, 10)
       : row.date_of_birth,
+    notes: row.notes,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -59,7 +58,6 @@ function normalize(p) {
     middleName: trimStr(p.middleName),
     surname: trimStr(p.surname),
     companyName: trimStr(p.companyName),
-    businessCategory: trimStr(p.businessCategory),
     designation: trimStr(p.designation),
     addressLine1: trimStr(p.addressLine1),
     addressLine2: trimStr(p.addressLine2),
@@ -77,6 +75,7 @@ function normalize(p) {
     website1: trimStr(p.website1),
     website2: trimStr(p.website2),
     dateOfBirth: p.dateOfBirth || null,
+    notes: trimStr(p.notes),
   };
 }
 
@@ -93,7 +92,7 @@ async function list(query = {}) {
 
 async function getOne(id) {
   const row = await repo.getById(id);
-  if (!row) throw new HttpError(404, 'NOT_FOUND', 'Business associate not found.');
+  if (!row) throw new HttpError(404, 'NOT_FOUND', 'Phone book contact not found.');
   return toDto(row);
 }
 
@@ -104,28 +103,18 @@ async function create(payload, adminId) {
 
 async function update(id, payload) {
   const existing = await repo.getById(id);
-  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Business associate not found.');
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Phone book contact not found.');
   const row = await repo.update(id, normalize(payload));
   return toDto(row);
 }
 
 async function remove(id) {
   const existing = await repo.getById(id);
-  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Business associate not found.');
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Phone book contact not found.');
   await repo.softDelete(id);
 }
 
-
-
-// ── Bulk upload helpers (additive) ──────────────────────────────────────
-//
-// bulkCheckDuplicates + bulkCreate live here so the route file stays thin.
-// The route file already validates payload shape via Joi; bulkCreate does
-// one additional server-side re-validation per row (required fields,
-// mobile format, email format) so a hand-crafted client that skips the
-// browser check still can't slip malformed rows past. Each row is inserted
-// in its own transaction — a failure on row N does NOT roll back rows 0..N-1.
-
+// ── Bulk upload helpers ─────────────────────────────────────────────────
 const PHONE_10 = /^\d{10}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -195,7 +184,7 @@ function validateOne(payload) {
   const phone1    = normContact(payload.phone1);
   const whatsapp  = normContact(payload.whatsapp);
   const email1    = normContact(payload.email1);
-  if (!firstName)  return 'First name is required.';
+  if (!firstName)  return 'Name is required.';
   if (!mobile1)    return 'Mobile Number is required.';
   if (!PHONE_10.test(mobile1))            return 'Mobile Number must be exactly 10 digits.';
   if (phone1   && !PHONE_10.test(phone1))   return 'Phone Number must be exactly 10 digits.';
@@ -205,27 +194,11 @@ function validateOne(payload) {
 }
 
 // ── Auto-create Designation Master (bulk-upload behaviour) ─────────────
-//
-// The enhancement request: unknown designations in the uploaded Excel must
-// NOT fail the row — instead we auto-create the master entry, then use
-// the newly-created code on the row. Duplicates (same label case-insensitively
-// or same derived code) must be deduped so a batch of 500 rows all labelled
-// "Builderssssss" produces exactly ONE new master row.
-//
-// The resolver runs once per bulk upload, before the per-row insert loop.
-// It returns a Map(normalizedLabel -> resolvedCode) which the loop then
-// consults to rewrite each row's `designation` from label -> code before
-// the row hits repo.create().
-//
-// Match precedence (mirrors the manual form's DesignationMasterSelect):
-//   1. If the incoming value already IS an existing master code → keep it
-//      as-is (backwards-compat with older Excel + the manual form).
-//   2. Else look up by label (case-insensitive, whitespace-collapsed).
-//   3. Else derive a code via codeFromLabel + create the master row.
-//      If create races with a concurrent creation (409 LABEL_TAKEN /
-//      CODE_TAKEN), fall back to whatever the DB now reports.
+// Phone Book uses its OWN designation vocabulary — `phone_book_designation`
+// — separate from Business Associates. Unknown labels in an uploaded Excel
+// are auto-created against THIS master (never against BA's).
 
-const DESIGNATION_MASTER_KEY = 'business_associate_designation';
+const DESIGNATION_MASTER_KEY = 'phone_book_designation';
 const DESIGNATION_TABLE = 'master_lookups';
 const DESIGNATION_DISCRIMINATOR = { masterKey: DESIGNATION_MASTER_KEY };
 
@@ -233,9 +206,6 @@ function normLabelForDedupe(v) {
   return String(v == null ? '' : v).trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
-// Same derivation the frontend DesignationMasterSelect uses. Kept in sync
-// so a manually-added designation and an auto-created one produce the
-// same code from the same label — the two flows converge on one master row.
 function codeFromLabel(label) {
   const code = String(label || '')
     .toLowerCase()
@@ -297,10 +267,6 @@ async function resolveDesignationsForBatch(items) {
       byCode.set(String(created.code).toLowerCase(), created.code);
       byLabel.set(normLabelForDedupe(created.label), created.code);
     } catch (err) {
-      // 409 races (LABEL_TAKEN / CODE_TAKEN) or validation rejections fall
-      // back to whatever code the DB reports for this label / derived code.
-      // If the retry lookup also fails we surface the raw label so the
-      // per-row loop can flag the row as invalid without failing the batch.
       // eslint-disable-next-line no-await-in-loop
       const retryByCode = await mastersRepo.findByCode(DESIGNATION_TABLE, derivedCode, { discriminator: DESIGNATION_DISCRIMINATOR });
       if (retryByCode) { resolved.set(normLabel, retryByCode.code); byCode.set(String(retryByCode.code).toLowerCase(), retryByCode.code); continue; }
@@ -322,8 +288,6 @@ async function bulkCreate(items, { skipDuplicates = false, adminId = null } = {}
   const dupResult = await bulkCheckDuplicates(contactOnly);
   const dupSet = new Set(dupResult.filter((d) => d.isDuplicate).map((d) => d.index));
 
-  // Auto-create any unknown designations up front. resolvedDesignations maps
-  // normalized-label → master code (or { error } when creation failed).
   const resolvedDesignations = await resolveDesignationsForBatch(items);
 
   const results = [];
@@ -340,8 +304,6 @@ async function bulkCreate(items, { skipDuplicates = false, adminId = null } = {}
         continue;
       }
     }
-    // Rewrite the row's `designation` from raw label → resolved master code.
-    // Preserve the original value when the row didn't supply a designation.
     const rawDesignation = typeof payload.designation === 'string' ? payload.designation.trim() : '';
     let rowPayload = payload;
     if (rawDesignation) {

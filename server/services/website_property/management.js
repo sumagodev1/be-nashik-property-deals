@@ -9,13 +9,15 @@ const excel = require('../files/excel');
 const { buildTablePdf } = require('../files/pdf');
 const { assignUniqueCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
+// Centralised Property Type / Transaction Type / Property Variety
+// validator — see services/masters/propertyMasters.js for the contract.
+const { validatePropertyClassification } = require('../masters/propertyMasters');
 const { trySendMail } = require('../email/transporter');
 const { renderEmail, sectionTitle, kvRow, kvTable, infoCard, quoteBlock, BRAND } = require('../email/emailTemplate');
 const audit = require('../admin/audit');
 
 async function validateMasterCodes(payload) {
-  await masters.assertActiveCode('property_type', payload.propertyType);
-  await masters.assertActiveCode('transaction_type', payload.transactionType);
+  await validatePropertyClassification(payload);
   await masters.assertActiveCode('flat_type', payload.bhk);
 }
 
@@ -88,7 +90,7 @@ async function createProperty(payload) {
 
   // property_code is UNIQUE in MySQL. Insert with a UUID placeholder so
   // concurrent creates can never collide on the constraint, then assign
-  // the final NSK-<TYPE>-YY-XXXXXX code with retry-on-collision.
+  // the final NSK-<TYPE>-YY-XXXXXXX code with retry-on-collision.
   const tmpCode = `TMP-${crypto.randomUUID()}`;
   const id = await wp.create({ ...payload, propertyCode: tmpCode });
   await assignUniqueCode(payload.propertyType, async (code) => {

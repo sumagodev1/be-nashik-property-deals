@@ -12,6 +12,14 @@ const excel = require('../files/excel');
 const { buildTablePdf } = require('../files/pdf');
 const { assignUniqueCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
+// Centralised Property Type / Transaction Type / Property Variety
+// validator — see services/masters/propertyMasters.js for the contract.
+const { validatePropertyClassification } = require('../masters/propertyMasters');
+// Fix D (T-2026-057): same cross-master dependency validator inventory
+// uses. See inventory/management.js for the full explanation.
+const formCodeCatalog = require('../../constants/formCodeCatalog');
+// Fix E (T-2026-058): DB-authoritative dependency validator.
+const propertyFormCatalog = require('../masters/propertyFormCatalog');
 
 // Structural mirror of services/inventory/management.js — every function has
 // the same signature and same downstream behaviour. Only the data source
@@ -23,38 +31,35 @@ const masters = require('../masters/management');
 // Enquiry surface grows fields the Inventory surface does not) can happen
 // here without dragging the sister module along.
 
-function toPropertyTypeKey(propertyType) {
-  const value = String(propertyType || '').trim().toLowerCase();
-  if (!value) return 'other';
-  if (value.includes('flat') || value.includes('apartment') || value.includes('house')) return 'flat';
-  if (value.includes('bunglow') || value.includes('villa')) return 'bunglow';
-  if (value.includes('plot')) return 'plot';
-  if (value.includes('shop')) return 'shop';
-  if (value.includes('commercial')) return 'commercial';
-  if (value.includes('land')) return 'land';
-  if (value.includes('hostel')) return 'hostel';
-  if (value.includes('paying guest') || value.includes('paying_guest')) return 'paying_guest';
-  if (value.includes('hospital')) return 'hospital';
-  if (value.includes('industrial')) return 'industrial_plot';
-  if (value.includes('sez')) return 'sez';
-  if (value.includes('tdr')) return 'tdr';
-  if (value.includes('pre-leased') || value.includes('pre leased')) return 'pre_leased';
-  if (value.includes('bank auction')) return 'bank_auction';
-  return 'other';
-}
-
 async function validateMasterCodes(payload) {
-  if (payload.transactionType) {
-    await masters.assertActiveCode('transaction_type', payload.transactionType);
-  }
-  if (payload.transactionVariant) {
-    await masters.assertActiveCode('transaction_type', payload.transactionVariant);
-  }
+  // Property Type + Transaction Type + Property Variety (carried on
+  // payload.transactionVariant) — pinned to their own masters by the
+  // centralised helper. Do not inline these three checks here.
+  await validatePropertyClassification(payload);
   await masters.assertActiveCode('flat_type', payload.bhk);
   await masters.assertActiveCode('status_type', payload.status);
   await masters.assertActiveCode('district', payload.district);
   await masters.assertActiveCode('taluka', payload.taluka);
   await masters.assertActiveCode('shivar', payload.shivar);
+
+  // Fix E (T-2026-058): DB-authoritative validator with JS fallback.
+  // See inventory/management.js for the full contract.
+  try {
+    await propertyFormCatalog.validateCombination({
+      mode: 'enquiry',
+      propertyType: payload.propertyTypeName || payload.propertyType,
+      transactionType: payload.transactionType,
+      propertyVariety: payload.propertyVarietyName || payload.transactionVariant,
+      label: 'enquiry.save',
+    });
+  } catch (_e) {
+    formCodeCatalog.validateCombination({
+      propertyType: payload.propertyTypeName || payload.propertyType,
+      transactionType: payload.transactionType,
+      propertyVariety: payload.propertyVarietyName || payload.transactionVariant,
+      label: 'enquiry.save.fallback',
+    });
+  }
 }
 
 const { PUBLIC_URL_PREFIX } = require('../files/publicUrl');
@@ -119,9 +124,8 @@ async function getProperty(id) {
 async function createProperty(payload) {
   await validateMasterCodes(payload);
   const tmpCode = `TMP-${crypto.randomUUID()}`;
-  const propertyKey = toPropertyTypeKey(payload.propertyType);
   const id = await enquiry.create({ ...payload, propertyCode: tmpCode });
-  await assignUniqueCode(propertyKey, async (code) => {
+  await assignUniqueCode(payload.propertyType, async (code) => {
     try {
       await enquiry.updatePropertyCode(id, code);
       return true;
@@ -242,13 +246,17 @@ function toListItem(row) {
     // nulls here; the FE falls back to the masters lookup so historical
     // records keep rendering correctly.
     propertyTypeId: row.property_type_id ?? null,
-    propertyTypeName: row.property_type_name ?? null,
+    // Fix C (T-2026-057): prefer the LIST-SQL COALESCE result over the
+    // persisted snapshot column so legacy rows (NULL snapshots) still
+    // render a human label. See inventory/management.js for the parallel
+    // explanation — this file mirrors that decision.
+    propertyTypeName: row.resolved_property_type_name ?? row.property_type_name ?? null,
     transactionType: row.transaction_type,
     transactionTypeId: row.transaction_type_id ?? null,
-    transactionTypeName: row.transaction_type_name ?? null,
+    transactionTypeName: row.resolved_transaction_type_name ?? row.transaction_type_name ?? null,
     transactionVariant: row.transaction_variant ?? null,
     propertyVarietyId: row.property_variety_id ?? null,
-    propertyVarietyName: row.property_variety_name ?? null,
+    propertyVarietyName: row.resolved_property_variety_name ?? row.property_variety_name ?? null,
     location: row.location,
     district: row.district ?? null,
     taluka: row.taluka ?? null,

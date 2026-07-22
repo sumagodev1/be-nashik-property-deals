@@ -9,7 +9,12 @@ const MODULES = Object.freeze({
   USER_MANAGEMENT: 'user_management',
   CMS_MANAGEMENT: 'cms_management',
   MASTER_MANAGEMENT: 'master_management',
+  // The key is retained (originally "Land Record Management") because it
+  // gates existing sub_admin permission grants. The user-facing label was
+  // relabelled to "Miscellaneous" in the frontend MODULE_LABELS map.
   LAND_RECORD_MANAGEMENT: 'land_record_management',
+  DOCUMENT_DIRECTORY: 'document_directory',
+  PHONE_BOOK_MANAGEMENT: 'phone_book_management',
 });
 
 const MODULE_KEYS = Object.values(MODULES);

@@ -7,19 +7,23 @@ const { pool } = require('../pool');
 // than a factory so a search for "SELECT ... FROM enquiry_properties" lands
 // directly on the code path that runs it.
 
+// Fix C (T-2026-057): same JOIN-and-coalesce pattern as
+// inventory_properties.js — see comments there for the full rationale.
+// Sortable columns and where-clause references qualified with `ep.`
+// because the LIST SQL below LEFT JOINs the classification masters.
 const SORTABLE_COLUMNS = {
-  created_at: 'created_at',
-  price: 'price',
-  location: 'location',
-  property_type: 'property_type',
-  title: 'title',
+  created_at:    'ep.created_at',
+  price:         'ep.price',
+  location:      'ep.location',
+  property_type: 'ep.property_type',
+  title:         'ep.title',
 };
 
 function buildOrderBy(sort) {
   const [col, dir] = (sort || 'created_at:desc').split(':');
-  const safeCol = SORTABLE_COLUMNS[col] || 'created_at';
+  const safeCol = SORTABLE_COLUMNS[col] || 'ep.created_at';
   const safeDir = dir && dir.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-  return `ORDER BY ${safeCol} ${safeDir}, id DESC`;
+  return `ORDER BY ${safeCol} ${safeDir}, ep.id DESC`;
 }
 
 async function list({
@@ -47,7 +51,10 @@ async function list({
   ownerSearch,
 }) {
   const offset = (page - 1) * pageSize;
-  const where = ['deleted_at IS NULL'];
+  // Fix C: WHERE prefixes match inventory_properties.js — `ep.` qualifies
+  // columns that also live on the joined master tables (deleted_at,
+  // description, created_at). Other names are unique to enquiry_properties.
+  const where = ['ep.deleted_at IS NULL'];
   const params = [];
 
   if (search) {
@@ -58,7 +65,7 @@ async function list({
     // different table; extracting a shared string would add indirection
     // without saving code.
     where.push(`(
-      property_code LIKE ? OR title LIKE ? OR description LIKE ?
+      property_code LIKE ? OR title LIKE ? OR ep.description LIKE ?
       OR location LIKE ?
       OR property_type LIKE ? OR transaction_type LIKE ? OR transaction_variant LIKE ?
       OR status LIKE ? OR status_note LIKE ?
@@ -135,11 +142,11 @@ async function list({
     params.push(priceMax);
   }
   if (dateFrom) {
-    where.push('created_at >= ?');
+    where.push('ep.created_at >= ?');
     params.push(dateFrom);
   }
   if (dateTo) {
-    where.push('created_at < DATE_ADD(?, INTERVAL 1 DAY)');
+    where.push('ep.created_at < DATE_ADD(?, INTERVAL 1 DAY)');
     params.push(dateTo);
   }
   if (typeof isDraft === 'boolean') {
@@ -151,20 +158,31 @@ async function list({
   const orderSql = buildOrderBy(sort);
 
   const [[{ total }]] = await pool.query(
-    `SELECT COUNT(*) AS total FROM enquiry_properties ${whereSql}`,
+    `SELECT COUNT(*) AS total FROM enquiry_properties ep ${whereSql}`,
     params,
   );
 
+  // Fix C: LEFT JOIN + COALESCE mirrors inventory_properties.js. See
+  // that file for the full explanation.
   const [rows] = await pool.query(
-    `SELECT id, property_code, registration_date, title, description,
-            property_type, property_type_id, property_type_name,
-            transaction_type, transaction_type_id, transaction_type_name,
-            transaction_variant, property_variety_id, property_variety_name,
-            location, district, taluka, shivar, latitude, longitude, formatted_address, pincode,
-            area_value, area_unit, bhk, price, status, status_note, status_changed_at,
-            is_draft, owner_name, owner_contact,
-            agent_name, agent_contact, details, created_at, updated_at
-     FROM enquiry_properties
+    `SELECT ep.id, ep.property_code, ep.registration_date, ep.title, ep.description,
+            ep.property_type, ep.property_type_id, ep.property_type_name,
+            ep.transaction_type, ep.transaction_type_id, ep.transaction_type_name,
+            ep.transaction_variant, ep.property_variety_id, ep.property_variety_name,
+            ep.location, ep.district, ep.taluka, ep.shivar, ep.latitude, ep.longitude, ep.formatted_address, ep.pincode,
+            ep.area_value, ep.area_unit, ep.bhk, ep.price, ep.status, ep.status_note, ep.status_changed_at,
+            ep.is_draft, ep.owner_name, ep.owner_contact,
+            ep.agent_name, ep.agent_contact, ep.details, ep.created_at, ep.updated_at,
+            COALESCE(ep.property_type_name, mpt_id.label, mpt_code.label) AS resolved_property_type_name,
+            COALESCE(ep.transaction_type_name, mtt_id.label, mtt_code.label) AS resolved_transaction_type_name,
+            COALESCE(ep.property_variety_name, mpv_id.label, mpv_code.label) AS resolved_property_variety_name
+     FROM enquiry_properties ep
+     LEFT JOIN master_property_types mpt_id      ON mpt_id.id     = ep.property_type_id       AND mpt_id.deleted_at IS NULL
+     LEFT JOIN master_property_types mpt_code    ON mpt_code.code = ep.property_type          AND mpt_code.deleted_at IS NULL
+     LEFT JOIN master_transaction_types mtt_id   ON mtt_id.id     = ep.transaction_type_id    AND mtt_id.deleted_at IS NULL
+     LEFT JOIN master_transaction_types mtt_code ON mtt_code.code = ep.transaction_type       AND mtt_code.deleted_at IS NULL
+     LEFT JOIN master_lookups mpv_id             ON mpv_id.id     = ep.property_variety_id    AND mpv_id.deleted_at IS NULL AND mpv_id.master_key = 'property_variety'
+     LEFT JOIN master_lookups mpv_code           ON mpv_code.code = ep.transaction_variant    AND mpv_code.deleted_at IS NULL AND mpv_code.master_key = 'property_variety'
      ${whereSql}
      ${orderSql}
      LIMIT ? OFFSET ?`,
@@ -174,9 +192,26 @@ async function list({
   return { rows, total };
 }
 
+// Fix C: findById also joins the masters so View/Edit render the same
+// resolved names as the List.
+const SELECT_WITH_RESOLVED_NAMES = `
+  SELECT ep.*,
+         COALESCE(ep.property_type_name, mpt_id.label, mpt_code.label) AS resolved_property_type_name,
+         COALESCE(ep.transaction_type_name, mtt_id.label, mtt_code.label) AS resolved_transaction_type_name,
+         COALESCE(ep.property_variety_name, mpv_id.label, mpv_code.label) AS resolved_property_variety_name
+    FROM enquiry_properties ep
+    LEFT JOIN master_property_types mpt_id      ON mpt_id.id     = ep.property_type_id       AND mpt_id.deleted_at IS NULL
+    LEFT JOIN master_property_types mpt_code    ON mpt_code.code = ep.property_type          AND mpt_code.deleted_at IS NULL
+    LEFT JOIN master_transaction_types mtt_id   ON mtt_id.id     = ep.transaction_type_id    AND mtt_id.deleted_at IS NULL
+    LEFT JOIN master_transaction_types mtt_code ON mtt_code.code = ep.transaction_type       AND mtt_code.deleted_at IS NULL
+    LEFT JOIN master_lookups mpv_id             ON mpv_id.id     = ep.property_variety_id    AND mpv_id.deleted_at IS NULL AND mpv_id.master_key = 'property_variety'
+    LEFT JOIN master_lookups mpv_code           ON mpv_code.code = ep.transaction_variant    AND mpv_code.deleted_at IS NULL AND mpv_code.master_key = 'property_variety'
+`;
+
 async function findById(id) {
   const [rows] = await pool.query(
-    `SELECT * FROM enquiry_properties WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+    `${SELECT_WITH_RESOLVED_NAMES}
+     WHERE ep.id = ? AND ep.deleted_at IS NULL LIMIT 1`,
     [id],
   );
   return rows[0] || null;
@@ -184,7 +219,8 @@ async function findById(id) {
 
 async function findByIdForConn(conn, id) {
   const [rows] = await conn.query(
-    `SELECT * FROM enquiry_properties WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+    `${SELECT_WITH_RESOLVED_NAMES}
+     WHERE ep.id = ? AND ep.deleted_at IS NULL LIMIT 1`,
     [id],
   );
   return rows[0] || null;

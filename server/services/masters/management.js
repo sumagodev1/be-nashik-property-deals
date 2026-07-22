@@ -145,6 +145,11 @@ const LOOKUP_KEYS = Object.freeze([
   // dropdown UI appends its own "Others" sentinel at the end, so we do not
   // seed a literal "Others" row here.
   'business_associate_designation',
+  // Phone Book directory — added in migration 069. Populates the
+  // Designation dropdown on the Admin → Phone Book form. Intentionally
+  // separate from `business_associate_designation` so the two modules
+  // curate their own vocabularies independently.
+  'phone_book_designation',
   // Global / Property Variety — added in migration 054. Drives the
   // "By Property Variety" dashboard card + future variety filters. Values
   // are pure category names (Resale, New, Under Construction, etc.), so the
@@ -385,6 +390,9 @@ const MASTER_LABELS = Object.freeze({
   // Business Associates — used by the Designation dropdown on
   // Admin → Business Associates.
   business_associate_designation: 'Global / Business Associate Designation',
+  // Phone Book — used by the Designation dropdown on Admin → Phone Book.
+  // Label per product spec is intentionally "Phone book designatio".
+  phone_book_designation: 'Phone book designatio',
   // Property Variety — Global; drives dashboard analytics + variety filters.
   property_variety: 'Global / Property Variety',
   // Website-scoped masters — power the public Seller Registration + Add-
@@ -935,6 +943,70 @@ async function assertActiveCode(masterKey, code) {
   }
 }
 
+// Canonicalise a code string for tolerant lookup. Handles the common FE
+// spelling drift ('paying-guest' / 'Paying Guest' / 'PAYING_GUEST' → 'paying_guest')
+// without swallowing genuinely different codes. Only used inside
+// resolveActiveMasterRef's fallback path; the strict path (ID lookup, or
+// exact-code lookup first) is tried before this so a match against the DB's
+// literal code always wins.
+function normaliseMasterCode(code) {
+  if (code === undefined || code === null) return '';
+  return String(code).trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+// Tolerant, ID-first resolver used by the centralised property-classification
+// validator (services/masters/propertyMasters.js). Resolution order:
+//   1. If `id` is a positive integer → look up by primary key.
+//   2. Else if `code` is non-empty → look up by exact code (case-insensitive
+//      via collation), and if that misses, retry with a normalised code.
+// Returns the DTO of the active row (`{id, code, label, ...}`) or `null` when
+// no input was supplied (partial updates / legacy pre-catalog records stay
+// permissive). Throws HttpError 400 with a per-field message if a non-empty
+// input was supplied but resolved to no active row.
+async function resolveActiveMasterRef(masterKey, { id, code } = {}) {
+  const hasId = id !== undefined && id !== null && id !== '' && Number.isInteger(Number(id)) && Number(id) > 0;
+  const hasCode = code !== undefined && code !== null && code !== '';
+  if (!hasId && !hasCode) return null;
+
+  const table = tableFor(masterKey);
+  const discriminator = discriminatorFor(masterKey);
+  const label = MASTER_LABELS[masterKey].toLowerCase();
+
+  if (hasId) {
+    const byId = await repo.findById(table, Number(id), { discriminator });
+    if (byId && byId.is_active) return toDto(byId);
+    // The FE gave us an ID that is either unknown, soft-deleted or inactive.
+    // If a code was also supplied, fall through and try to recover from it —
+    // this keeps stale drafts (saved before the master row was rotated)
+    // savable so long as the code still resolves.
+    if (!hasCode) {
+      throw new HttpError(
+        400,
+        'INVALID_MASTER_CODE',
+        `Unknown or inactive ${label} id: ${id}`,
+      );
+    }
+  }
+
+  // Exact-code match first (matches whatever the DB literally stores).
+  let byCode = await repo.findByCode(table, code, { discriminator });
+  if (!byCode || !byCode.is_active) {
+    // Fallback: normalise common FE spelling drift and retry. Only retried
+    // when the normalised form actually differs from the input, so this
+    // never doubles the DB round-trip for the common case.
+    const normalised = normaliseMasterCode(code);
+    if (normalised && normalised !== String(code)) {
+      byCode = await repo.findByCode(table, normalised, { discriminator });
+    }
+  }
+  if (byCode && byCode.is_active) return toDto(byCode);
+  throw new HttpError(
+    400,
+    'INVALID_MASTER_CODE',
+    `Unknown or inactive ${label}: "${code}"`,
+  );
+}
+
 module.exports = {
   masterKeys,
   masterMeta,
@@ -943,6 +1015,8 @@ module.exports = {
   getOne,
   activeCodes,
   assertActiveCode,
+  resolveActiveMasterRef,
+  normaliseMasterCode,
   create,
   update,
   remove,

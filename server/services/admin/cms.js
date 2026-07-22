@@ -6,9 +6,15 @@ const { isValidSettingKey, CMS_SETTING_KEYS } = require('../../constants/cms');
 
 // ---------- banners ----------
 
-async function listBanners() {
-  const rows = await cmsRepo.listAllBanners();
-  return rows.map(toBanner);
+async function listBanners(query = {}) {
+  const result = await cmsRepo.listAllBanners(query);
+  return {
+    data: result.data.map(toBanner),
+    total: result.total,
+    page: result.page,
+    pageSize: result.pageSize,
+    totalPages: Math.max(1, Math.ceil(result.total / result.pageSize)),
+  };
 }
 
 async function getBanner(id) {
@@ -102,9 +108,15 @@ function toBanner(row) {
 
 // ---------- sidebar ads ----------
 
-async function listSidebarAds() {
-  const rows = await cmsRepo.listAllSidebarAds();
-  return rows.map(toSidebarAd);
+async function listSidebarAds(query = {}) {
+  const result = await cmsRepo.listAllSidebarAds(query);
+  return {
+    data: result.data.map(toSidebarAd),
+    total: result.total,
+    page: result.page,
+    pageSize: result.pageSize,
+    totalPages: Math.max(1, Math.ceil(result.total / result.pageSize)),
+  };
 }
 
 async function getSidebarAd(id) {

@@ -14,6 +14,8 @@ const masters = require('./masters');
 const auditLog = require('./audit-log');
 const landRecords = require('./land-records');
 const businessAssociates = require('./business-associates');
+const phoneBook = require('./phone-book');
+const documents = require('./documents');
 const ownerSearch = require('./owner-search');
 const { MODULE_KEYS } = require('../../constants/modules');
 const { requireAuth, requireRole } = require('../../middleware/auth');
@@ -35,6 +37,8 @@ router.use('/masters', masters);
 router.use('/audit-log', auditLog);
 router.use('/land-records', landRecords);
 router.use('/business-associates', businessAssociates);
+router.use('/phone-book', phoneBook);
+router.use('/documents', documents);
 router.use('/owner-search', ownerSearch);
 
 router.get('/modules', requireAuth, requireRole('admin'), (req, res) => {

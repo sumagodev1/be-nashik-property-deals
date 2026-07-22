@@ -37,13 +37,21 @@ async function upsertSettings(entries) {
 
 // ---------- banners ----------
 
-async function listAllBanners() {
+async function listAllBanners({ page = 1, pageSize = 10 } = {}) {
+  const p = Math.max(1, Number(page) || 1);
+  const ps = Math.max(1, Math.min(100, Number(pageSize) || 10));
+  const offset = (p - 1) * ps;
+  const [[{ total }]] = await pool.query(
+    `SELECT COUNT(*) AS total FROM cms_banners`,
+  );
   const [rows] = await pool.query(
     `SELECT id, image_url, alt_text, caption, subcaption, sort_order, is_active, created_at, updated_at
      FROM cms_banners
-     ORDER BY sort_order ASC, id ASC`,
+     ORDER BY sort_order ASC, id ASC
+     LIMIT ? OFFSET ?`,
+    [ps, offset],
   );
-  return rows;
+  return { data: rows, total: Number(total), page: p, pageSize: ps };
 }
 
 async function listActiveBanners() {
@@ -96,15 +104,23 @@ async function deleteBanner(id) {
 // automatically. NULL start_date or end_date means "open-ended" on that
 // side (typical for evergreen ads with no scheduled end).
 
-async function listAllSidebarAds() {
+async function listAllSidebarAds({ page = 1, pageSize = 10 } = {}) {
+  const p = Math.max(1, Number(page) || 1);
+  const ps = Math.max(1, Math.min(100, Number(pageSize) || 10));
+  const offset = (p - 1) * ps;
+  const [[{ total }]] = await pool.query(
+    `SELECT COUNT(*) AS total FROM cms_sidebar_ads`,
+  );
   const [rows] = await pool.query(
     `SELECT id, image_url, title, subtitle, cta_text, cta_url,
             start_date, end_date, sort_order, is_active,
             created_at, updated_at
      FROM cms_sidebar_ads
-     ORDER BY sort_order ASC, id DESC`,
+     ORDER BY sort_order ASC, id DESC
+     LIMIT ? OFFSET ?`,
+    [ps, offset],
   );
-  return rows;
+  return { data: rows, total: Number(total), page: p, pageSize: ps };
 }
 
 async function findActiveSidebarAd() {
