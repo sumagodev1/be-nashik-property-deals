@@ -31,6 +31,12 @@ function buildWorkbookFromColumns({ sheetName = 'Sheet1', columns, rows }) {
   const aoa = [columns.map((c) => c.label || c.key)];
   for (const row of rows) {
     aoa.push(columns.map((c) => {
+      if (typeof c.render === 'function') {
+        try {
+          const rendered = c.render(row);
+          return rendered === null || rendered === undefined ? '' : rendered;
+        } catch { return ''; }
+      }
       const v = row[c.key];
       return v === null || v === undefined ? '' : v;
     }));
@@ -53,6 +59,11 @@ function buildWorkbookFromColumns({ sheetName = 'Sheet1', columns, rows }) {
 
   // Reasonable column widths.
   ws['!cols'] = columns.map((c) => ({ wch: c.width || 18 }));
+
+  // T-2026-072: freeze the header row so it stays visible when scrolling
+  // through large exports. Native SheetJS support via `!freeze` / '!views'.
+  ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+  ws['!views'] = [{ state: 'frozen', ySplit: 1, xSplit: 0 }];
 
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });

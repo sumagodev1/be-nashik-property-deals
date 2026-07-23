@@ -10,6 +10,14 @@ const imageUpload = require('../files/imageUpload');
 const documentUpload = require('../files/documentUpload');
 const excel = require('../files/excel');
 const { buildTablePdf } = require('../files/pdf');
+const csvUtil = require('../files/csv');
+const { getBrandingSnapshot } = require('../files/branding');
+const locationsQuery = require('../../db/queries/locations');
+const INVENTORY_STATUS_LABELS = {
+  available: 'Available', sold: 'Sold', rented: 'Rented',
+  under_offer: 'Under Offer', on_hold: 'On Hold', pending: 'Pending',
+  inactive: 'Inactive',
+};
 const { assignUniqueCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
 // Centralised Property Type / Transaction Type / Property Variety
@@ -68,35 +76,120 @@ async function validateMasterCodes(payload) {
 
 const { PUBLIC_URL_PREFIX } = require('../files/publicUrl');
 
-// Export column order — matches what the admin would expect when reviewing
-// inventory offline. ALL columns from the data-entry form so nothing is lost.
-const INVENTORY_HEADERS = [
-  'property_code', 'is_draft', 'status', 'title', 'property_type', 'transaction_type',
-  'location', 'bhk', 'area_value', 'area_unit', 'price',
-  'owner_name', 'owner_contact', 'agent_name', 'agent_contact',
-  'created_at', 'updated_at',
+// T-2026-072: Every export format (PDF / XLSX / CSV) uses this ONE column
+// set. Mirrors the admin list-page columns exactly — no monetary columns
+// (Price / Budget), no internal columns (is_draft, area/bhk, contact
+// numbers). The single source of truth means CSV/XLSX/PDF always agree
+// with what the admin sees on the screen, per the "no hidden data" rule.
+const INVENTORY_EXPORT_COLUMNS = [
+  { key: 'property_code',   label: 'Property ID',      align: 'left',   width: 16, weight: 2.0, noWrap: true, type: 's' },
+  { key: 'title',           label: 'Title',            align: 'left',   width: 30, weight: 2.6 },
+  { key: 'property_type',   label: 'Property Type',    align: 'left',   width: 18, weight: 1.6, noWrap: true },
+  { key: 'transaction_type', label: 'Transaction',     align: 'left',   width: 16, weight: 1.4, noWrap: true },
+  { key: 'property_variety', label: 'Property Variety', align: 'left',  width: 18, weight: 1.6, noWrap: true },
+  { key: 'district',        label: 'District',         align: 'left',   width: 14, weight: 1.2, noWrap: true },
+  { key: 'taluka',          label: 'Taluka',           align: 'left',   width: 14, weight: 1.2, noWrap: true },
+  { key: 'village',         label: 'Village / City',   align: 'left',   width: 14, weight: 1.2, noWrap: true },
+  { key: 'status',          label: 'Status',           align: 'center', width: 12, weight: 1.0, noWrap: true, headerAlign: 'center' },
+  { key: 'owner_name',      label: 'Owner',            align: 'left',   width: 18, weight: 1.6 },
+  { key: 'agent_name',      label: 'Agent',            align: 'left',   width: 18, weight: 1.4 },
+  { key: 'created_at',      label: 'Created Date',     align: 'center', width: 14, weight: 1.2, noWrap: true, headerAlign: 'center' },
 ];
 
+// Compat shim: legacy CSV endpoint used a raw string-array shape. Keep the
+// header/value helpers as compatibility names so nothing else in this file
+// (if any) breaks — but every export now goes through the shared column set
+// above via `inventoryRowFromExportColumns`.
+const INVENTORY_HEADERS = INVENTORY_EXPORT_COLUMNS.map((c) => c.label);
 function inventoryRowValues(r) {
+  return INVENTORY_EXPORT_COLUMNS.map((c) => renderInventoryCell(r, c.key));
+}
+
+function renderInventoryCell(r, key) {
+  switch (key) {
+    case 'property_code':    return r.property_code || '';
+    case 'title':            return r.title || '';
+    case 'property_type':    return r.resolved_property_type_name    || r.property_type_name    || r.property_type    || '';
+    case 'transaction_type': return r.resolved_transaction_type_name || r.transaction_type_name || r.transaction_type || '';
+    case 'property_variety': return r.resolved_property_variety_name || r.property_variety_name || r.transaction_variant || '';
+    case 'status':           return INVENTORY_STATUS_LABELS[r.status] || r.status || '';
+    case 'owner_name':       return r.owner_name || '';
+    case 'agent_name':       return r.agent_name || '';
+    case 'created_at':       return formatDate(r.created_at);
+    // District/Taluka/Village labels resolved via enrichRowsWithLocationLabels below.
+    case 'district':         return r._districtLabel || r.district || '';
+    case 'taluka':           return r._talukaLabel   || r.taluka   || '';
+    case 'village':          return r._shivarLabel   || r.shivar   || '';
+    default:                 return '';
+  }
+}
+
+// Batch-resolve district/taluka/shivar codes → labels, then attach as
+// underscore-prefixed fields on each row so renderInventoryCell can pick
+// them up without re-querying.
+async function enrichRowsWithLocationLabels(rows) {
+  const uniq = (arr) => Array.from(new Set(arr.filter(Boolean).map(String)));
+  const [districts, talukas, shivars] = await Promise.all([
+    locationsQuery.labelsForCodes('district', uniq(rows.map((r) => r.district))).catch(() => []),
+    locationsQuery.labelsForCodes('taluka',   uniq(rows.map((r) => r.taluka))).catch(() => []),
+    locationsQuery.labelsForCodes('shivar',   uniq(rows.map((r) => r.shivar))).catch(() => []),
+  ]);
+  const dMap = Object.fromEntries((districts || []).map((r) => [r.code, r.label]));
+  const tMap = Object.fromEntries((talukas   || []).map((r) => [r.code, r.label]));
+  const sMap = Object.fromEntries((shivars   || []).map((r) => [r.code, r.label]));
+  return rows.map((r) => ({
+    ...r,
+    _districtLabel: r.district ? (dMap[r.district] || r.district) : '',
+    _talukaLabel:   r.taluka   ? (tMap[r.taluka]   || r.taluka)   : '',
+    _shivarLabel:   r.shivar   ? (sMap[r.shivar]   || r.shivar)   : '',
+  }));
+}
+
+function buildInventorySummaryCards(rows) {
+  const counts = { available: 0, sold: 0, rented: 0 };
+  for (const r of rows) {
+    if (counts[r.status] != null) counts[r.status] += 1;
+  }
   return [
-    r.property_code,
-    r.is_draft ? 'yes' : 'no',
-    r.status,
-    r.title,
-    r.property_type,
-    r.transaction_type,
-    r.location || '',
-    r.bhk || '',
-    r.area_value !== null && r.area_value !== undefined ? Number(r.area_value) : '',
-    r.area_unit || '',
-    Number(r.price) || 0,
-    r.owner_name || '',
-    r.owner_contact || '',
-    r.agent_name || '',
-    r.agent_contact || '',
-    r.created_at,
-    r.updated_at,
+    { label: 'Total Records', value: String(rows.length) },
+    { label: 'Available',     value: String(counts.available) },
+    { label: 'Sold',          value: String(counts.sold) },
+    { label: 'Rented',        value: String(counts.rented) },
   ];
+}
+
+async function buildInventoryFilterChips(filters) {
+  const chips = [];
+  if (filters.search)       chips.push({ label: 'Search',       value: filters.search });
+  if (filters.ownerSearch)  chips.push({ label: 'Owner Search', value: filters.ownerSearch });
+  if (filters.status)       chips.push({ label: 'Status',       value: INVENTORY_STATUS_LABELS[filters.status] || filters.status });
+  if (filters.propertyType) chips.push({ label: 'Property Type', value: filters.propertyType });
+  if (filters.transactionType) chips.push({ label: 'Transaction', value: filters.transactionType });
+  if (filters.transactionVariant) chips.push({ label: 'Variety',   value: filters.transactionVariant });
+  // Resolve district/taluka/shivar to labels for the chip strip.
+  const needed = [];
+  if (filters.district) needed.push({ k: 'district', key: 'District', code: filters.district });
+  if (filters.taluka)   needed.push({ k: 'taluka',   key: 'Taluka',   code: filters.taluka   });
+  if (filters.shivar)   needed.push({ k: 'shivar',   key: 'Village',  code: filters.shivar   });
+  if (needed.length > 0) {
+    const byKey = {};
+    for (const n of needed) (byKey[n.k] ||= []).push(n.code);
+    const labelMaps = {};
+    await Promise.all(Object.entries(byKey).map(async ([mk, codes]) => {
+      const rows = await locationsQuery.labelsForCodes(mk, codes).catch(() => []);
+      labelMaps[mk] = Object.fromEntries((rows || []).map((r) => [r.code, r.label]));
+    }));
+    for (const n of needed) chips.push({ label: n.key, value: (labelMaps[n.k] && labelMaps[n.k][n.code]) || n.code });
+  }
+  if (filters.dateFrom || filters.dateTo) {
+    chips.push({ label: 'Date', value: (filters.dateFrom || 'earliest') + ' to ' + (filters.dateTo || 'today') });
+  }
+  return chips;
+}
+
+function exportedByLabel(auth) {
+  if (!auth) return 'Administrator';
+  return auth.name || auth.email || (auth.role === 'admin' ? 'Administrator' : 'Sub Admin');
 }
 
 function csvField(value) {
@@ -389,43 +482,6 @@ function toDetail(row, images, documents = []) {
   };
 }
 
-async function exportCsv(filters) {
-  // Pull all matching rows (no pagination) and build a CSV string.
-  const { rows } = await inventory.list({ ...filters, page: 1, pageSize: 100000 });
-  const lines = [INVENTORY_HEADERS.join(',')];
-  for (const r of rows) lines.push(inventoryRowValues(r).map(csvField).join(','));
-  return lines.join('\r\n');
-}
-
-async function exportXlsx(filters) {
-  const { rows } = await inventory.list({ ...filters, page: 1, pageSize: 100000 });
-  return excel.buildWorkbook({
-    sheetName: 'Inventory',
-    headers: INVENTORY_HEADERS,
-    rows: rows.map(inventoryRowValues),
-  });
-}
-
-// PDF export — a curated, human-readable subset of columns (the full CSV/Excel
-// dump is too wide to fit a printable page). Column `weight` controls how the
-// available landscape width is shared out.
-const INVENTORY_PDF_COLUMNS = [
-  { key: 'property_code',   label: 'Property ID',  weight: 2.3, noWrap: true },
-  { key: 'title',           label: 'Title',        weight: 2.6 },
-  { key: 'property_type',   label: 'Type',         weight: 1.4, noWrap: true },
-  { key: 'transaction_type', label: 'Txn',         weight: 1.2, noWrap: true },
-  { key: 'location',        label: 'Location',     weight: 2.4 },
-  { key: 'price',           label: 'Price (INR)',  weight: 1.6, align: 'right', headerAlign: 'right', noWrap: true },
-  { key: 'status',          label: 'Status',       weight: 1.2, noWrap: true, align: 'center', headerAlign: 'center' },
-  { key: 'owner_name',      label: 'Owner',        weight: 1.8 },
-  { key: 'agent_name',      label: 'Agent',        weight: 1.8 },
-  { key: 'created_at',      label: 'Created',      weight: 1.5, noWrap: true },
-];
-
-function formatInr(n) {
-  if (n === null || n === undefined || n === '') return '';
-  return Number(n).toLocaleString('en-IN');
-}
 function formatDate(d) {
   if (!d) return '';
   const date = d instanceof Date ? d : new Date(d);
@@ -433,25 +489,61 @@ function formatDate(d) {
   return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-async function exportPdf(filters) {
-  const { rows } = await inventory.list({ ...filters, page: 1, pageSize: 100000 });
-  const pdfRows = rows.map((r) => ({
-    property_code: r.property_code,
-    title: r.title,
-    property_type: r.property_type,
-    transaction_type: r.transaction_type,
-    location: r.location || '',
-    price: formatInr(r.price),
-    status: r.status,
-    owner_name: r.owner_name || '—',
-    agent_name: r.agent_name || '—',
-    created_at: formatDate(r.created_at),
-  }));
+// T-2026-072: all three export functions now accept `context` = { auth }
+// so the branded PDF header can render "Generated By" + branding pulled
+// from CMS settings. Backwards-compatible: callers that don't pass a
+// context still get a valid export (defaults kick in).
+
+async function exportCsv(filters, context = {}) {
+  const { rows: raw } = await inventory.list({ ...filters, page: 1, pageSize: 100000 });
+  const rows = await enrichRowsWithLocationLabels(raw);
+  return csvUtil.buildCsvFromColumns({
+    columns: INVENTORY_EXPORT_COLUMNS.map((c) => ({
+      label: c.label,
+      key: c.key,
+      render: (row) => renderInventoryCell(row, c.key),
+    })),
+    rows,
+  });
+}
+
+async function exportXlsx(filters, context = {}) {
+  const { rows: raw } = await inventory.list({ ...filters, page: 1, pageSize: 100000 });
+  const rows = await enrichRowsWithLocationLabels(raw);
+  return excel.buildWorkbookFromColumns({
+    sheetName: 'Inventory Properties',
+    columns: INVENTORY_EXPORT_COLUMNS.map((c) => ({
+      label: c.label,
+      key: c.key,
+      type: c.type || 's',
+      width: c.width,
+      render: (row) => renderInventoryCell(row, c.key),
+    })),
+    rows,
+  });
+}
+
+async function exportPdf(filters, context = {}) {
+  const { rows: raw } = await inventory.list({ ...filters, page: 1, pageSize: 100000 });
+  const rows = await enrichRowsWithLocationLabels(raw);
+  const [branding, filterChips] = await Promise.all([
+    getBrandingSnapshot(),
+    buildInventoryFilterChips(filters || {}),
+  ]);
   return buildTablePdf({
-    title: 'Inventory Properties',
-    subtitle: `${rows.length} record${rows.length === 1 ? '' : 's'} · Admin-managed inventory`,
-    columns: INVENTORY_PDF_COLUMNS,
-    rows: pdfRows,
+    title: 'Inventory Properties Report',
+    subtitle: `${rows.length} record${rows.length === 1 ? '' : 's'}`,
+    columns: INVENTORY_EXPORT_COLUMNS,
+    rows: rows.map((r) => {
+      const out = {};
+      for (const c of INVENTORY_EXPORT_COLUMNS) out[c.key] = renderInventoryCell(r, c.key);
+      return out;
+    }),
+    branding,
+    exportedBy: exportedByLabel(context.auth),
+    summaryCards: buildInventorySummaryCards(rows),
+    filterChips,
+    emptyMessage: 'No records found for the selected filters.',
   });
 }
 

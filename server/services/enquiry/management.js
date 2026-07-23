@@ -10,6 +10,14 @@ const imageUpload = require('../files/imageUpload');
 const documentUpload = require('../files/documentUpload');
 const excel = require('../files/excel');
 const { buildTablePdf } = require('../files/pdf');
+const csvUtil = require('../files/csv');
+const { getBrandingSnapshot } = require('../files/branding');
+const locationsQuery = require('../../db/queries/locations');
+const ENQUIRY_STATUS_LABELS = {
+  available: 'Available', sold: 'Sold', rented: 'Rented',
+  under_offer: 'Under Offer', on_hold: 'On Hold', pending: 'Pending',
+  inactive: 'Inactive',
+};
 const { assignUniqueCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
 // Centralised Property Type / Transaction Type / Property Variety
@@ -357,39 +365,24 @@ function toDetail(row, images, documents = []) {
   };
 }
 
-async function exportCsv(filters) {
-  const { rows } = await enquiry.list({ ...filters, page: 1, pageSize: 100000 });
-  const lines = [ENQUIRY_HEADERS.join(',')];
-  for (const r of rows) lines.push(enquiryRowValues(r).map(csvField).join(','));
-  return lines.join('\r\n');
-}
-
-async function exportXlsx(filters) {
-  const { rows } = await enquiry.list({ ...filters, page: 1, pageSize: 100000 });
-  return excel.buildWorkbook({
-    sheetName: 'Enquiry',
-    headers: ENQUIRY_HEADERS,
-    rows: rows.map(enquiryRowValues),
-  });
-}
-
-const ENQUIRY_PDF_COLUMNS = [
-  { key: 'property_code',   label: 'Property ID',  weight: 2.3, noWrap: true },
-  { key: 'title',           label: 'Title',        weight: 2.6 },
-  { key: 'property_type',   label: 'Type',         weight: 1.4, noWrap: true },
-  { key: 'transaction_type', label: 'Txn',         weight: 1.2, noWrap: true },
-  { key: 'location',        label: 'Location',     weight: 2.4 },
-  { key: 'price',           label: 'Price (INR)',  weight: 1.6, align: 'right', headerAlign: 'right', noWrap: true },
-  { key: 'status',          label: 'Status',       weight: 1.2, noWrap: true, align: 'center', headerAlign: 'center' },
-  { key: 'owner_name',      label: 'Owner',        weight: 1.8 },
-  { key: 'agent_name',      label: 'Agent',        weight: 1.8 },
-  { key: 'created_at',      label: 'Created',      weight: 1.5, noWrap: true },
+// T-2026-072: Mirror of Inventory's export pipeline. Same shared column
+// set + branded PDF + shared CSV (UTF-8 BOM) + Excel with widths/typing.
+// No monetary columns per UI mirror rule.
+const ENQUIRY_EXPORT_COLUMNS = [
+  { key: 'property_code',   label: 'Property ID',      align: 'left',   width: 16, weight: 2.0, noWrap: true, type: 's' },
+  { key: 'title',           label: 'Title',            align: 'left',   width: 30, weight: 2.6 },
+  { key: 'property_type',   label: 'Property Type',    align: 'left',   width: 18, weight: 1.6, noWrap: true },
+  { key: 'transaction_type', label: 'Transaction',     align: 'left',   width: 16, weight: 1.4, noWrap: true },
+  { key: 'property_variety', label: 'Property Variety', align: 'left',  width: 18, weight: 1.6, noWrap: true },
+  { key: 'district',        label: 'District',         align: 'left',   width: 14, weight: 1.2, noWrap: true },
+  { key: 'taluka',          label: 'Taluka',           align: 'left',   width: 14, weight: 1.2, noWrap: true },
+  { key: 'village',         label: 'Village / City',   align: 'left',   width: 14, weight: 1.2, noWrap: true },
+  { key: 'status',          label: 'Status',           align: 'center', width: 12, weight: 1.0, noWrap: true, headerAlign: 'center' },
+  { key: 'owner_name',      label: 'Owner',            align: 'left',   width: 18, weight: 1.6 },
+  { key: 'agent_name',      label: 'Agent',            align: 'left',   width: 18, weight: 1.4 },
+  { key: 'created_at',      label: 'Created Date',     align: 'center', width: 14, weight: 1.2, noWrap: true, headerAlign: 'center' },
 ];
 
-function formatInr(n) {
-  if (n === null || n === undefined || n === '') return '';
-  return Number(n).toLocaleString('en-IN');
-}
 function formatDate(d) {
   if (!d) return '';
   const date = d instanceof Date ? d : new Date(d);
@@ -397,25 +390,136 @@ function formatDate(d) {
   return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-async function exportPdf(filters) {
-  const { rows } = await enquiry.list({ ...filters, page: 1, pageSize: 100000 });
-  const pdfRows = rows.map((r) => ({
-    property_code: r.property_code,
-    title: r.title,
-    property_type: r.property_type,
-    transaction_type: r.transaction_type,
-    location: r.location || '',
-    price: formatInr(r.price),
-    status: r.status,
-    owner_name: r.owner_name || '—',
-    agent_name: r.agent_name || '—',
-    created_at: formatDate(r.created_at),
+function renderEnquiryCell(r, key) {
+  switch (key) {
+    case 'property_code':    return r.property_code || '';
+    case 'title':            return r.title || '';
+    case 'property_type':    return r.resolved_property_type_name    || r.property_type_name    || r.property_type    || '';
+    case 'transaction_type': return r.resolved_transaction_type_name || r.transaction_type_name || r.transaction_type || '';
+    case 'property_variety': return r.resolved_property_variety_name || r.property_variety_name || r.transaction_variant || '';
+    case 'status':           return ENQUIRY_STATUS_LABELS[r.status] || r.status || '';
+    case 'owner_name':       return r.owner_name || '';
+    case 'agent_name':       return r.agent_name || '';
+    case 'created_at':       return formatDate(r.created_at);
+    case 'district':         return r._districtLabel || r.district || '';
+    case 'taluka':           return r._talukaLabel   || r.taluka   || '';
+    case 'village':          return r._shivarLabel   || r.shivar   || '';
+    default:                 return '';
+  }
+}
+
+async function enrichRowsWithLocationLabels(rows) {
+  const uniq = (arr) => Array.from(new Set(arr.filter(Boolean).map(String)));
+  const [districts, talukas, shivars] = await Promise.all([
+    locationsQuery.labelsForCodes('district', uniq(rows.map((r) => r.district))).catch(() => []),
+    locationsQuery.labelsForCodes('taluka',   uniq(rows.map((r) => r.taluka))).catch(() => []),
+    locationsQuery.labelsForCodes('shivar',   uniq(rows.map((r) => r.shivar))).catch(() => []),
+  ]);
+  const dMap = Object.fromEntries((districts || []).map((r) => [r.code, r.label]));
+  const tMap = Object.fromEntries((talukas   || []).map((r) => [r.code, r.label]));
+  const sMap = Object.fromEntries((shivars   || []).map((r) => [r.code, r.label]));
+  return rows.map((r) => ({
+    ...r,
+    _districtLabel: r.district ? (dMap[r.district] || r.district) : '',
+    _talukaLabel:   r.taluka   ? (tMap[r.taluka]   || r.taluka)   : '',
+    _shivarLabel:   r.shivar   ? (sMap[r.shivar]   || r.shivar)   : '',
   }));
+}
+
+function buildEnquirySummaryCards(rows) {
+  const counts = { available: 0, sold: 0, rented: 0 };
+  for (const r of rows) if (counts[r.status] != null) counts[r.status] += 1;
+  return [
+    { label: 'Total Records', value: String(rows.length) },
+    { label: 'Available',     value: String(counts.available) },
+    { label: 'Sold',          value: String(counts.sold) },
+    { label: 'Rented',        value: String(counts.rented) },
+  ];
+}
+
+async function buildEnquiryFilterChips(filters) {
+  const chips = [];
+  if (filters.search)       chips.push({ label: 'Search',       value: filters.search });
+  if (filters.ownerSearch)  chips.push({ label: 'Owner Search', value: filters.ownerSearch });
+  if (filters.status)       chips.push({ label: 'Status',       value: ENQUIRY_STATUS_LABELS[filters.status] || filters.status });
+  if (filters.propertyType) chips.push({ label: 'Property Type', value: filters.propertyType });
+  if (filters.transactionType) chips.push({ label: 'Transaction', value: filters.transactionType });
+  if (filters.transactionVariant) chips.push({ label: 'Variety',   value: filters.transactionVariant });
+  const needed = [];
+  if (filters.district) needed.push({ k: 'district', key: 'District', code: filters.district });
+  if (filters.taluka)   needed.push({ k: 'taluka',   key: 'Taluka',   code: filters.taluka   });
+  if (filters.shivar)   needed.push({ k: 'shivar',   key: 'Village',  code: filters.shivar   });
+  if (needed.length > 0) {
+    const byKey = {};
+    for (const n of needed) (byKey[n.k] ||= []).push(n.code);
+    const labelMaps = {};
+    await Promise.all(Object.entries(byKey).map(async ([mk, codes]) => {
+      const rows = await locationsQuery.labelsForCodes(mk, codes).catch(() => []);
+      labelMaps[mk] = Object.fromEntries((rows || []).map((r) => [r.code, r.label]));
+    }));
+    for (const n of needed) chips.push({ label: n.key, value: (labelMaps[n.k] && labelMaps[n.k][n.code]) || n.code });
+  }
+  if (filters.dateFrom || filters.dateTo) {
+    chips.push({ label: 'Date', value: (filters.dateFrom || 'earliest') + ' to ' + (filters.dateTo || 'today') });
+  }
+  return chips;
+}
+
+function exportedByLabel(auth) {
+  if (!auth) return 'Administrator';
+  return auth.name || auth.email || (auth.role === 'admin' ? 'Administrator' : 'Sub Admin');
+}
+
+async function exportCsv(filters, context = {}) {
+  const { rows: raw } = await enquiry.list({ ...filters, page: 1, pageSize: 100000 });
+  const rows = await enrichRowsWithLocationLabels(raw);
+  return csvUtil.buildCsvFromColumns({
+    columns: ENQUIRY_EXPORT_COLUMNS.map((c) => ({
+      label: c.label,
+      key: c.key,
+      render: (row) => renderEnquiryCell(row, c.key),
+    })),
+    rows,
+  });
+}
+
+async function exportXlsx(filters, context = {}) {
+  const { rows: raw } = await enquiry.list({ ...filters, page: 1, pageSize: 100000 });
+  const rows = await enrichRowsWithLocationLabels(raw);
+  return excel.buildWorkbookFromColumns({
+    sheetName: 'Enquiry Properties',
+    columns: ENQUIRY_EXPORT_COLUMNS.map((c) => ({
+      label: c.label,
+      key: c.key,
+      type: c.type || 's',
+      width: c.width,
+      render: (row) => renderEnquiryCell(row, c.key),
+    })),
+    rows,
+  });
+}
+
+async function exportPdf(filters, context = {}) {
+  const { rows: raw } = await enquiry.list({ ...filters, page: 1, pageSize: 100000 });
+  const rows = await enrichRowsWithLocationLabels(raw);
+  const [branding, filterChips] = await Promise.all([
+    getBrandingSnapshot(),
+    buildEnquiryFilterChips(filters || {}),
+  ]);
   return buildTablePdf({
-    title: 'Enquiry Properties',
-    subtitle: `${rows.length} record${rows.length === 1 ? '' : 's'} · Admin-managed enquiry records`,
-    columns: ENQUIRY_PDF_COLUMNS,
-    rows: pdfRows,
+    title: 'Enquiry Properties Report',
+    subtitle: `${rows.length} record${rows.length === 1 ? '' : 's'}`,
+    columns: ENQUIRY_EXPORT_COLUMNS,
+    rows: rows.map((r) => {
+      const out = {};
+      for (const c of ENQUIRY_EXPORT_COLUMNS) out[c.key] = renderEnquiryCell(r, c.key);
+      return out;
+    }),
+    branding,
+    exportedBy: exportedByLabel(context.auth),
+    summaryCards: buildEnquirySummaryCards(rows),
+    filterChips,
+    emptyMessage: 'No records found for the selected filters.',
   });
 }
 
