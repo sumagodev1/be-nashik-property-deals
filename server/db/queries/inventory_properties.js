@@ -100,28 +100,38 @@ async function list({
     // (thousands, not millions). If this becomes hot, promote
     // frequently-searched details keys to dedicated columns or add a
     // FULLTEXT / generated-column index.
-    // Fix C: `description` is qualified because master tables also carry
-    // a `description` column (migration 057). Every other column here is
-    // unique to inventory_properties.
+    // T-2026-081 (ER_NON_UNIQ_ERROR fix): EVERY column below is now
+    // qualified with `ip.` because this WHERE runs against the JOINed
+    // SELECT that pulls in master_lookups twice (mpv_id, mpv_code).
+    // master_lookups carries `description` (migration 075), `pincode`
+    // (migration 049), plus the standard `id / created_at / updated_at /
+    // deleted_at` columns — any of them would otherwise trip MySQL's
+    // ambiguous-column check. Same-shape COUNT query below reuses the
+    // same WHERE, so full qualification is required for both.
+    // Fix C: `description` was previously the only qualified column here
+    // (master_status_types added `description` in migration 057). We now
+    // qualify every field for the same reason at the master_lookups scale.
     where.push(`(
-      property_code LIKE ? OR title LIKE ? OR ip.description LIKE ?
-      OR location LIKE ?
-      OR property_type LIKE ? OR transaction_type LIKE ? OR transaction_variant LIKE ?
-      OR status LIKE ? OR status_note LIKE ?
-      OR district LIKE ? OR taluka LIKE ? OR shivar LIKE ? OR pincode LIKE ?
-      OR bhk LIKE ? OR area_unit LIKE ?
-      OR CAST(price AS CHAR) LIKE ? OR CAST(area_value AS CHAR) LIKE ?
-      OR CAST(JSON_REMOVE(details, '$.dynamicData.contacts', '$.dynamicData.keyPersons', '$.dynamicData.referenceSourceOfLead') AS CHAR) LIKE ?
+      ip.property_code LIKE ? OR ip.title LIKE ? OR ip.description LIKE ?
+      OR ip.location LIKE ? OR ip.formatted_address LIKE ?
+      OR ip.property_type LIKE ? OR ip.property_type_name LIKE ?
+      OR ip.transaction_type LIKE ? OR ip.transaction_type_name LIKE ?
+      OR ip.transaction_variant LIKE ? OR ip.property_variety_name LIKE ?
+      OR ip.status LIKE ? OR ip.status_note LIKE ?
+      OR ip.district LIKE ? OR ip.taluka LIKE ? OR ip.shivar LIKE ? OR ip.pincode LIKE ?
+      OR ip.bhk LIKE ? OR ip.area_unit LIKE ?
+      OR CAST(ip.price AS CHAR) LIKE ? OR CAST(ip.area_value AS CHAR) LIKE ?
+      OR CAST(JSON_REMOVE(ip.details, '$.dynamicData.contacts', '$.dynamicData.keyPersons', '$.dynamicData.referenceSourceOfLead') AS CHAR) LIKE ?
     )`);
     const s = `%${search}%`;
-    for (let i = 0; i < 18; i++) params.push(s);
+    for (let i = 0; i < 22; i++) params.push(s);
   }
   if (propertyType) {
-    where.push('property_type = ?');
+    where.push('ip.property_type = ?');
     params.push(propertyType);
   }
   if (transactionType) {
-    where.push('transaction_type = ?');
+    where.push('ip.transaction_type = ?');
     params.push(transactionType);
   }
   // Owner Search (T-2026-032, additive). Owner-only LIKE - matches
@@ -135,15 +145,15 @@ async function list({
   if (typeof ownerSearch === 'string' && ownerSearch.trim() !== '') {
     const like = `%${ownerSearch.trim()}%`;
     where.push(`(
-      owner_name LIKE ? OR owner_contact LIKE ?
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.contacts[*].name') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.contacts[*].phones[*]') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.contacts[*].mobiles[*]') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.contacts[*].emails[*]') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].name') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].phones[*]') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].mobiles[*]') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].emails[*]') IS NOT NULL
+      ip.owner_name LIKE ? OR ip.owner_contact LIKE ?
+      OR JSON_SEARCH(ip.details, 'one', ?, NULL, '$.dynamicData.contacts[*].name') IS NOT NULL
+      OR JSON_SEARCH(ip.details, 'one', ?, NULL, '$.dynamicData.contacts[*].phones[*]') IS NOT NULL
+      OR JSON_SEARCH(ip.details, 'one', ?, NULL, '$.dynamicData.contacts[*].mobiles[*]') IS NOT NULL
+      OR JSON_SEARCH(ip.details, 'one', ?, NULL, '$.dynamicData.contacts[*].emails[*]') IS NOT NULL
+      OR JSON_SEARCH(ip.details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].name') IS NOT NULL
+      OR JSON_SEARCH(ip.details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].phones[*]') IS NOT NULL
+      OR JSON_SEARCH(ip.details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].mobiles[*]') IS NOT NULL
+      OR JSON_SEARCH(ip.details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].emails[*]') IS NOT NULL
     )`);
     params.push(like, like, like, like, like, like, like, like, like, like);
   }
@@ -155,40 +165,39 @@ async function list({
       propertyTypeIn.split(',').map((s) => s.trim()).filter(Boolean),
     )).slice(0, 200); // hard cap — matches the largest realistic tree slice
     if (labels.length > 0) {
-      where.push(`property_type IN (${labels.map(() => '?').join(', ')})`);
+      where.push(`ip.property_type IN (${labels.map(() => '?').join(', ')})`);
       params.push(...labels);
     }
   }
   if (district) {
-    where.push('district = ?');
+    where.push('ip.district = ?');
     params.push(district);
   }
   if (taluka) {
-    where.push('taluka = ?');
+    where.push('ip.taluka = ?');
     params.push(taluka);
   }
   if (shivar) {
-    where.push('shivar = ?');
+    where.push('ip.shivar = ?');
     params.push(shivar);
   }
   if (status) {
-    where.push('status = ?');
+    where.push('ip.status = ?');
     params.push(status);
   }
   if (location) {
-    where.push('location LIKE ?');
+    where.push('ip.location LIKE ?');
     params.push(`%${location}%`);
   }
   if (priceMin !== undefined) {
-    where.push('price >= ?');
+    where.push('ip.price >= ?');
     params.push(priceMin);
   }
   if (priceMax !== undefined) {
-    where.push('price <= ?');
+    where.push('ip.price <= ?');
     params.push(priceMax);
   }
   if (dateFrom) {
-    // Fix C: `created_at` qualified because every joined master table also has it.
     where.push('ip.created_at >= ?');
     params.push(dateFrom);
   }
@@ -197,7 +206,7 @@ async function list({
     params.push(dateTo);
   }
   if (typeof isDraft === 'boolean') {
-    where.push('is_draft = ?');
+    where.push('ip.is_draft = ?');
     params.push(isDraft ? 1 : 0);
   }
 

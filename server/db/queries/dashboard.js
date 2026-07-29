@@ -463,22 +463,35 @@ async function dynamicStatusCounters(table) {
     `SELECT COUNT(*) AS total FROM ${table} WHERE deleted_at IS NULL`,
   );
 
-  // Per-status counts: LEFT JOIN master_status_types on code=status so
+  // T-2026-080: Property Status master split — inventory keeps the legacy
+  // dedicated `master_status_types` table, enquiry moves to the generic
+  // `master_lookups` table filtered by master_key='enquiry_status'. The
+  // status-code column on both property tables is unchanged; only the
+  // master we join against changes per surface.
+  //
+  // Per-status counts: LEFT JOIN the appropriate master on code=status so
   // active statuses with zero occurrences still surface. is_active=1 and
   // deleted_at IS NULL on the master side ensures deactivated / soft-
   // deleted statuses drop out of the KPI strip while remaining
   // renderable in historical rows (label fallback is on the frontend).
+  const isEnquiry = table === 'enquiry_properties';
+  const masterFromClause = isEnquiry
+    ? `master_lookups m`
+    : `master_status_types m`;
+  const masterWhereClause = isEnquiry
+    ? `m.is_active = 1 AND m.deleted_at IS NULL AND m.master_key = 'enquiry_status'`
+    : `m.is_active = 1 AND m.deleted_at IS NULL`;
   const [rows] = await pool.query(
     `SELECT m.code, m.label, m.sort_order AS sortOrder,
             COALESCE(t.cnt, 0) AS count
-       FROM master_status_types m
+       FROM ${masterFromClause}
        LEFT JOIN (
          SELECT status, COUNT(*) AS cnt
            FROM ${table}
           WHERE deleted_at IS NULL AND status IS NOT NULL AND status != ''
           GROUP BY status
        ) t ON t.status = m.code
-      WHERE m.is_active = 1 AND m.deleted_at IS NULL
+      WHERE ${masterWhereClause}
       ORDER BY m.sort_order ASC, m.code ASC`,
   );
 

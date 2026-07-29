@@ -155,6 +155,25 @@ const LOOKUP_KEYS = Object.freeze([
   // are pure category names (Resale, New, Under Construction, etc.), so the
   // default LOOKUP_LABEL_RULE applies (letters/digits/spaces + / ( ) & , . : % + -).
   'property_variety',
+  // Global / Project Name — added in migration 072. Single reusable
+  // vocabulary for the "Project Name" / "Name of Project" dropdowns across
+  // Flat (Inventory + Enquiry), Project, Pre-Leased and Bank Auction forms.
+  // Admin-curated + grown via the in-form "Other → Save" flow. Pure category
+  // names, so the default LOOKUP_LABEL_RULE applies.
+  'project_name',
+  // Global / Location — added in migration 073. Single reusable vocabulary
+  // for the "Location" field (formerly "Location with Landmark Required") on
+  // the Enquiry registration forms — the dualMode "Specific" side. Admin-
+  // curated + grown via the in-form "Other → Save" flow. Pure locality names,
+  // so the default LOOKUP_LABEL_RULE applies.
+  'location',
+  // Enquiry / Property Status — added in migration 075. Split out from the
+  // shared `status_type` master (which continues to serve Inventory) so the
+  // two workflows can evolve independently. Seeds four defaults each with a
+  // Description/Meaning; the legacy inventory-style codes (available/sold/
+  // rented/inactive) are seeded as INACTIVE so historical enquiry rows still
+  // resolve to a human label without offering those codes in new dropdowns.
+  'enquiry_status',
   // Website-scoped masters — added in migration 055. Deliberately
   // INDEPENDENT from the Global masters above so the public Seller
   // Registration + Add-Property flow can evolve its vocabulary without
@@ -178,7 +197,8 @@ const MASTER_LABELS = Object.freeze({
   // contact/lead fields rendered by the shared inventory shell).
   property_type:    'Global / Property Type',
   transaction_type: 'Global / Transaction Type',
-  status_type:      'Global / Property Status',
+  status_type:      'Inventory / Property Status',
+  enquiry_status:   'Enquiry / Property Status',
   contact_relation: 'Global / Contact Relation',
   contact_type:     'Global / Contact Type',
   lead_source:      'Global / Lead Source',
@@ -395,6 +415,12 @@ const MASTER_LABELS = Object.freeze({
   phone_book_designation: 'Phone book designatio',
   // Property Variety — Global; drives dashboard analytics + variety filters.
   property_variety: 'Global / Property Variety',
+  // Project Name — Global; single source of truth for the Project Name /
+  // Name of Project dropdowns across Flat / Project / Pre-Leased / Bank Auction.
+  project_name: 'Global / Project Name',
+  // Location — Global; single source of truth for the "Location" dropdown
+  // (formerly "Location with Landmark Required") on the Enquiry forms.
+  location: 'Global / Location',
   // Website-scoped masters — power the public Seller Registration + Add-
   // Property flow. Independent from the Global equivalents above.
   website_property_type:     'Website / Property Type',
@@ -451,13 +477,16 @@ const USAGE_REFS = Object.freeze({
     { table: 'inventory_properties', column: 'bhk', friendlyLabel: 'Inventory Properties' },
     { table: 'website_properties',   column: 'bhk', friendlyLabel: 'Website Properties' },
   ],
-  // T-2026-045: Property Status usage now spans BOTH Inventory and Enquiry
-  // properties (enquiry_properties.status was widened by migration 056).
+  // T-2026-080: Property Status split into two independent masters.
+  //   * status_type    → only Inventory Properties (Enquiry moved to
+  //                       enquiry_status master).
+  //   * enquiry_status → only Enquiry Properties.
   // Website has NO domain-status column (only approval_status) so it is
-  // intentionally omitted here - the delete-safety modal on the frontend
-  // must not falsely claim website records reference this status.
+  // intentionally omitted here.
   status_type: [
     { table: 'inventory_properties', column: 'status', friendlyLabel: 'Inventory Properties' },
+  ],
+  enquiry_status: [
     { table: 'enquiry_properties',   column: 'status', friendlyLabel: 'Enquiry Properties' },
   ],
   // Promoted-to-column lookups: tracked because they have a fast index.

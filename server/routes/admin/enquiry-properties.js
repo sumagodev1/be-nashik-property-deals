@@ -107,7 +107,15 @@ const propertyBody = Joi.object({
   areaUnit: Joi.string().max(50).optional().allow('', null),
   bhk: masterCodeField.optional().allow('', null),
   price: Joi.number().min(0).max(PRICE_MAX).optional().allow(null, ''),
-  status: masterCodeField.default('available'),
+  // T-2026-086: default MUST be an ACTIVE code in the `enquiry_status`
+  // master (T-2026-080 split from status_type). 'available' was the legacy
+  // default here — since the split it lives in enquiry_status as an
+  // INACTIVE fallback row, so a Joi-injected 'available' would trip
+  // assertActiveCode('enquiry_status', ...) at the service layer. Any
+  // enquiry create that omits `status` (typical: forms without an in-form
+  // Status field, e.g. Hospital Enquiry) now lands on the canonical
+  // starting state 'new_enquiry' instead.
+  status: masterCodeField.default('new_enquiry'),
   isDraft: Joi.boolean().default(false),
   // T-2026-040: Owner-duplicate confirmation bypass flag. Frontend sets
   // this to true after the operator confirms the "Duplicate Owner Found"
@@ -137,9 +145,43 @@ const suggestQuery = Joi.object({
 
 const exportQuery = listQuery.fork(['page', 'pageSize'], (s) => s.optional());
 
+// ENQUIRY-ONLY: the "Nature" field (dynamicData.nature) is a MULTI-select on
+// the Enquiry surface, so it is stored/returned as an array of master codes.
+// Coerce whatever the client sends into a clean, de-duped array:
+//   - legacy scalar  'apartment'            -> ['apartment']   (backward compat)
+//   - array          ['apartment','society'] -> as-is (trimmed, de-duped)
+//   - '' / null / undefined                  -> [] (or left absent)
+// This lives here (route-local) so the shared dynamic-data validator and the
+// Inventory route stay byte-for-byte unchanged — Inventory keeps its single
+// scalar Nature.
+function normalizeEnquiryNature(dyn) {
+  if (!dyn || typeof dyn !== 'object') return;
+  if (!Object.prototype.hasOwnProperty.call(dyn, 'nature')) return;
+  const raw = dyn.nature;
+  const list = Array.isArray(raw)
+    ? raw
+    : (raw === '' || raw === null || raw === undefined ? [] : [raw]);
+  const seen = new Set();
+  const out = [];
+  for (const v of list) {
+    const s = String(v ?? '').trim();
+    if (!s) continue;
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  dyn.nature = out;
+}
+
 function validateDynamicDataMiddleware(req, res, next) {
   try {
     const body = req.body || {};
+    // Enquiry-only Nature array coercion runs for drafts too so the stored
+    // shape stays consistent whether or not the record is a draft.
+    if (body.details && body.details.dynamicData) {
+      normalizeEnquiryNature(body.details.dynamicData);
+    }
     if (body.isDraft) return next();
     const dyn = body.details && body.details.dynamicData;
     if (!dyn) return next();
@@ -152,6 +194,10 @@ function validateDynamicDataMiddleware(req, res, next) {
       return next(new HttpError(400, 'VALIDATION_ERROR', 'Invalid request', details));
     }
     req.body.details.dynamicData = value;
+    // The shared validator preserves unknown keys (stripUnknown:false) and
+    // never touches `nature`, but re-assert the array shape defensively in
+    // case any coercion pass reshaped it.
+    normalizeEnquiryNature(req.body.details.dynamicData);
     return next();
   } catch (err) {
     return next(err);

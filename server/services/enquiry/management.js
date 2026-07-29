@@ -39,13 +39,45 @@ const propertyFormCatalog = require('../masters/propertyFormCatalog');
 // Enquiry surface grows fields the Inventory surface does not) can happen
 // here without dragging the sister module along.
 
+// T-2026-087: transparent auto-heal for legacy inventory-side status codes
+// that leak into an enquiry write payload. Since the T-2026-080 split those
+// codes are INACTIVE fallback rows on the `enquiry_status` master — kept for
+// legacy label rendering, NOT valid for fresh writes. Any client that still
+// emits them (a stale FE bundle, a stale localStorage draft, a direct API
+// call by legacy tooling, or an edit of a pre-migration row) has its status
+// silently remapped to the equivalent active enquiry code before validation.
+// Idempotent for values already on the new codes.
+//
+// Mapping mirrors migration 075's row-level UPDATE so historical enquiries
+// migrated by that migration and future writes coerced here converge on the
+// same canonical codes.
+const LEGACY_ENQUIRY_STATUS_MAP = Object.freeze({
+  available: 'new_enquiry',
+  sold:      'enquiry_converted',
+  rented:    'enquiry_converted',
+  inactive:  'enquiry_lost',
+});
+function healEnquiryStatus(code) {
+  if (typeof code !== 'string') return code;
+  const mapped = LEGACY_ENQUIRY_STATUS_MAP[code.toLowerCase()];
+  return mapped || code;
+}
+
 async function validateMasterCodes(payload) {
   // Property Type + Transaction Type + Property Variety (carried on
   // payload.transactionVariant) — pinned to their own masters by the
   // centralised helper. Do not inline these three checks here.
   await validatePropertyClassification(payload);
   await masters.assertActiveCode('flat_type', payload.bhk);
-  await masters.assertActiveCode('status_type', payload.status);
+  // T-2026-080: Enquiry status lives in its own master (`enquiry_status`),
+  // split from the inventory-only `status_type`. Legacy inventory codes are
+  // seeded as INACTIVE rows in migration 075 so historical rows still render
+  // — assertActiveCode() only accepts ACTIVE rows.
+  // T-2026-087: legacy codes are auto-healed to their active equivalents
+  // (see LEGACY_ENQUIRY_STATUS_MAP) BEFORE the assertion so any legacy
+  // client / stale draft / edit of a pre-migration row keeps saving.
+  payload.status = healEnquiryStatus(payload.status);
+  await masters.assertActiveCode('enquiry_status', payload.status);
   await masters.assertActiveCode('district', payload.district);
   await masters.assertActiveCode('taluka', payload.taluka);
   await masters.assertActiveCode('shivar', payload.shivar);
@@ -154,10 +186,20 @@ async function updateProperty(id, payload) {
 }
 
 async function updateStatus(id, status, note, changedBy) {
-  await masters.assertActiveCode('status_type', status);
+  // T-2026-080: Enquiry now has its own status master (`enquiry_status`),
+  // independent of the Inventory `status_type` vocabulary. Historical
+  // enquiry rows may still carry legacy inventory codes (available/sold/
+  // rented/inactive) — those codes are seeded as inactive rows in the
+  // new master so old values still resolve for read paths, but they
+  // cannot be picked as the target of a fresh status change (the code
+  // must be an ACTIVE `enquiry_status` row).
+  // T-2026-087: same legacy-code auto-heal as validateMasterCodes above so
+  // the row-action status-change modal accepts legacy codes too.
+  const healed = healEnquiryStatus(status);
+  await masters.assertActiveCode('enquiry_status', healed);
   const existing = await enquiry.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
-  await enquiry.updateStatus(id, status, note, changedBy);
+  await enquiry.updateStatus(id, healed, note, changedBy);
   return getProperty(id);
 }
 

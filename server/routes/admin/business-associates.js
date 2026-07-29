@@ -45,6 +45,13 @@ const body = Joi.object({
   companyName: optText(255),
   businessCategory: optText(255),
   designation: optText(200),
+  // Dependent dropdowns shown after Designation is picked.
+  //  - areaWise      → Global `location` master LABEL (matches enquiry
+  //                    location's stored-label convention for backward
+  //                    compat with pre-existing legacy free-text values).
+  //  - propertyWise  → Global `property_type` master CODE (e.g. 'flat').
+  areaWise: optText(255),
+  propertyWise: optText(64),
   addressLine1: optText(255),
   addressLine2: optText(255),
   cityCode: optText(64),

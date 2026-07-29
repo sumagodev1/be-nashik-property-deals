@@ -10,7 +10,7 @@ const { pool } = require('../pool');
 const COLUMNS = `
   id, salutation, first_name, middle_name, surname,
   company_name, business_category,
-  designation,
+  designation, area_wise, property_wise,
   address_line1, address_line2,
   city_code, taluka_code, district_code,
   phone1, phone2, mobile1, mobile2, mobile3, whatsapp,
@@ -83,13 +83,13 @@ async function create(payload, adminId) {
     `INSERT INTO business_associates (
       salutation, first_name, middle_name, surname,
       company_name, business_category,
-      designation,
+      designation, area_wise, property_wise,
       address_line1, address_line2,
       city_code, taluka_code, district_code,
       phone1, phone2, mobile1, mobile2, mobile3, whatsapp,
       email1, email2, website1, website2, date_of_birth,
       created_by_admin_id
-    ) VALUES (?,?,?,?, ?,?, ?, ?,?, ?,?,?, ?,?,?,?,?,?, ?,?,?,?,?, ?)`,
+    ) VALUES (?,?,?,?, ?,?, ?,?,?, ?,?, ?,?,?, ?,?,?,?,?,?, ?,?,?,?,?, ?)`,
     [
       payload.salutation,
       payload.firstName,
@@ -98,6 +98,8 @@ async function create(payload, adminId) {
       payload.companyName || null,
       payload.businessCategory || null,
       payload.designation || null,
+      payload.areaWise || null,
+      payload.propertyWise || null,
       payload.addressLine1 || null,
       payload.addressLine2 || null,
       payload.cityCode || null,
@@ -125,7 +127,7 @@ async function update(id, payload) {
     `UPDATE business_associates SET
       salutation = ?, first_name = ?, middle_name = ?, surname = ?,
       company_name = ?, business_category = ?,
-      designation = ?,
+      designation = ?, area_wise = ?, property_wise = ?,
       address_line1 = ?, address_line2 = ?,
       city_code = ?, taluka_code = ?, district_code = ?,
       phone1 = ?, phone2 = ?, mobile1 = ?, mobile2 = ?, mobile3 = ?, whatsapp = ?,
@@ -139,6 +141,8 @@ async function update(id, payload) {
       payload.companyName || null,
       payload.businessCategory || null,
       payload.designation || null,
+      payload.areaWise || null,
+      payload.propertyWise || null,
       payload.addressLine1 || null,
       payload.addressLine2 || null,
       payload.cityCode || null,

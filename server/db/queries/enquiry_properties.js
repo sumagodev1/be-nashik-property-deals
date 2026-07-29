@@ -64,42 +64,56 @@ async function list({
     // Kept identical (not factored) because the SQL runs against a
     // different table; extracting a shared string would add indirection
     // without saving code.
+    //
+    // T-2026-081 (ER_NON_UNIQ_ERROR fix): EVERY column below is now
+    // qualified with `ep.` because this WHERE runs against the JOINed
+    // SELECT that pulls in master_lookups twice (mpv_id, mpv_code).
+    // master_lookups carries `description` (migration 075), `pincode`
+    // (migration 049), plus the standard `id / created_at / updated_at /
+    // deleted_at` columns — any of them would otherwise trip MySQL's
+    // ambiguous-column check. Same-shape COUNT query below reuses the
+    // same WHERE, so full qualification is required for both.
     where.push(`(
-      property_code LIKE ? OR title LIKE ? OR ep.description LIKE ?
-      OR location LIKE ?
-      OR property_type LIKE ? OR transaction_type LIKE ? OR transaction_variant LIKE ?
-      OR status LIKE ? OR status_note LIKE ?
-      OR district LIKE ? OR taluka LIKE ? OR shivar LIKE ? OR pincode LIKE ?
-      OR bhk LIKE ? OR area_unit LIKE ?
-      OR CAST(price AS CHAR) LIKE ? OR CAST(area_value AS CHAR) LIKE ?
-      OR CAST(JSON_REMOVE(details, '$.dynamicData.contacts', '$.dynamicData.keyPersons', '$.dynamicData.referenceSourceOfLead') AS CHAR) LIKE ?
+      ep.property_code LIKE ? OR ep.title LIKE ? OR ep.description LIKE ?
+      OR ep.location LIKE ? OR ep.formatted_address LIKE ?
+      OR ep.property_type LIKE ? OR ep.property_type_name LIKE ?
+      OR ep.transaction_type LIKE ? OR ep.transaction_type_name LIKE ?
+      OR ep.transaction_variant LIKE ? OR ep.property_variety_name LIKE ?
+      OR ep.status LIKE ? OR ep.status_note LIKE ?
+      OR ep.district LIKE ? OR ep.taluka LIKE ? OR ep.shivar LIKE ? OR ep.pincode LIKE ?
+      OR ep.bhk LIKE ? OR ep.area_unit LIKE ?
+      OR CAST(ep.price AS CHAR) LIKE ? OR CAST(ep.area_value AS CHAR) LIKE ?
+      OR CAST(JSON_REMOVE(ep.details, '$.dynamicData.contacts', '$.dynamicData.keyPersons', '$.dynamicData.referenceSourceOfLead') AS CHAR) LIKE ?
     )`);
     const s = `%${search}%`;
-    for (let i = 0; i < 18; i++) params.push(s);
+    for (let i = 0; i < 22; i++) params.push(s);
   }
   if (propertyType) {
-    where.push('property_type = ?');
+    where.push('ep.property_type = ?');
     params.push(propertyType);
   }
   if (transactionType) {
-    where.push('transaction_type = ?');
+    where.push('ep.transaction_type = ?');
     params.push(transactionType);
   }
   // Owner Search (T-2026-032, additive). Owner-only LIKE - mirror of
   // db/queries/inventory_properties.js. See there for the full contract
   // and the JSON_SEARCH path restriction. Composes with `search` via AND.
+  // T-2026-081: qualified with `ep.` alongside the global-search fix
+  // above so master_lookups joins never make owner_name / owner_contact /
+  // details ambiguous.
   if (typeof ownerSearch === 'string' && ownerSearch.trim() !== '') {
     const like = `%${ownerSearch.trim()}%`;
     where.push(`(
-      owner_name LIKE ? OR owner_contact LIKE ?
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.contacts[*].name') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.contacts[*].phones[*]') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.contacts[*].mobiles[*]') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.contacts[*].emails[*]') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].name') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].phones[*]') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].mobiles[*]') IS NOT NULL
-      OR JSON_SEARCH(details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].emails[*]') IS NOT NULL
+      ep.owner_name LIKE ? OR ep.owner_contact LIKE ?
+      OR JSON_SEARCH(ep.details, 'one', ?, NULL, '$.dynamicData.contacts[*].name') IS NOT NULL
+      OR JSON_SEARCH(ep.details, 'one', ?, NULL, '$.dynamicData.contacts[*].phones[*]') IS NOT NULL
+      OR JSON_SEARCH(ep.details, 'one', ?, NULL, '$.dynamicData.contacts[*].mobiles[*]') IS NOT NULL
+      OR JSON_SEARCH(ep.details, 'one', ?, NULL, '$.dynamicData.contacts[*].emails[*]') IS NOT NULL
+      OR JSON_SEARCH(ep.details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].name') IS NOT NULL
+      OR JSON_SEARCH(ep.details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].phones[*]') IS NOT NULL
+      OR JSON_SEARCH(ep.details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].mobiles[*]') IS NOT NULL
+      OR JSON_SEARCH(ep.details, 'one', ?, NULL, '$.dynamicData.keyPersons[*].emails[*]') IS NOT NULL
     )`);
     params.push(like, like, like, like, like, like, like, like, like, like);
   }
@@ -109,36 +123,36 @@ async function list({
       propertyTypeIn.split(',').map((s) => s.trim()).filter(Boolean),
     )).slice(0, 200);
     if (labels.length > 0) {
-      where.push(`property_type IN (${labels.map(() => '?').join(', ')})`);
+      where.push(`ep.property_type IN (${labels.map(() => '?').join(', ')})`);
       params.push(...labels);
     }
   }
   if (district) {
-    where.push('district = ?');
+    where.push('ep.district = ?');
     params.push(district);
   }
   if (taluka) {
-    where.push('taluka = ?');
+    where.push('ep.taluka = ?');
     params.push(taluka);
   }
   if (shivar) {
-    where.push('shivar = ?');
+    where.push('ep.shivar = ?');
     params.push(shivar);
   }
   if (status) {
-    where.push('status = ?');
+    where.push('ep.status = ?');
     params.push(status);
   }
   if (location) {
-    where.push('location LIKE ?');
+    where.push('ep.location LIKE ?');
     params.push(`%${location}%`);
   }
   if (priceMin !== undefined) {
-    where.push('price >= ?');
+    where.push('ep.price >= ?');
     params.push(priceMin);
   }
   if (priceMax !== undefined) {
-    where.push('price <= ?');
+    where.push('ep.price <= ?');
     params.push(priceMax);
   }
   if (dateFrom) {
@@ -150,7 +164,7 @@ async function list({
     params.push(dateTo);
   }
   if (typeof isDraft === 'boolean') {
-    where.push('is_draft = ?');
+    where.push('ep.is_draft = ?');
     params.push(isDraft ? 1 : 0);
   }
 
@@ -266,7 +280,15 @@ async function create(payload) {
       payload.areaUnit || null,
       payload.bhk || null,
       payload.price,
-      payload.status || 'available',
+      // T-2026-086: fallback aligned with the enquiry_status master
+      // (T-2026-080 split). The Joi schema in routes/admin/enquiry-
+      // properties.js already defaults to 'new_enquiry' when the FE omits
+      // status; this fallback covers the edge case where the payload
+      // reaches this query with status=='' (Joi's default only fires on
+      // undefined). 'available' would fail assertActiveCode on the
+      // enquiry side and is preserved only as an INACTIVE label-resolver
+      // row for legacy records.
+      payload.status || 'new_enquiry',
       payload.isDraft ? 1 : 0,
       payload.ownerName || null,
       payload.ownerContact || null,

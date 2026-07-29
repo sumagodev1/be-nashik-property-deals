@@ -46,10 +46,12 @@ function applyDiscriminator(where, params, discriminator) {
   }
 }
 
-// T-2026-045: description column exists ONLY on master_status_types today.
-// Central helper so every SELECT/INSERT/UPDATE stays consistent. Extend the
-// Set below to widen support to more tables in future.
-const TABLES_WITH_DESCRIPTION = new Set(["master_status_types"]);
+// T-2026-045: description column originally lived only on master_status_types.
+// T-2026-080: extended to master_lookups (migration 075) so lookup-key masters
+// can also carry a Description/Meaning per row — currently used by the new
+// `enquiry_status` master. All other lookup keys keep description NULL until
+// an admin fills it in; the SELECT/CRUD path is uniform.
+const TABLES_WITH_DESCRIPTION = new Set(["master_status_types", "master_lookups"]);
 function hasDescription(table) { return TABLES_WITH_DESCRIPTION.has(table); }
 function descCol(table) { return hasDescription(table) ? ", description" : ""; }
 
@@ -192,10 +194,10 @@ async function revive(table, id, { code, label, sortOrder, isActive, parentCode,
   if (table === 'master_lookups') {
     await pool.query(
       `UPDATE master_lookups
-         SET code = ?, label = ?, parent_code = ?, sort_order = ?,
+         SET code = ?, label = ?, description = ?, parent_code = ?, sort_order = ?,
              is_active = ?, deleted_at = NULL
        WHERE id = ?`,
-      [code, label, parentCode ?? null, sortOrder ?? 0, isActive ? 1 : 0, id],
+      [code, label, normalizeDescription(description), parentCode ?? null, sortOrder ?? 0, isActive ? 1 : 0, id],
     );
     return;
   }
@@ -265,10 +267,13 @@ async function codeTaken(table, code, excludeId = null, { discriminator } = {}) 
 async function create(table, { code, label, sortOrder, isActive, masterKey, parentCode, description }) {
   assertTable(table);
   if (table === 'master_lookups') {
+    // T-2026-080: master_lookups.description added by migration 075. Passed
+    // through here so any lookup key that carries a Description/Meaning (e.g.
+    // `enquiry_status`) round-trips cleanly. Other lookup keys leave it NULL.
     const [r] = await pool.query(
-      `INSERT INTO master_lookups (master_key, code, label, parent_code, sort_order, is_active)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [masterKey, code, label, parentCode ?? null, sortOrder ?? 0, isActive ? 1 : 0],
+      `INSERT INTO master_lookups (master_key, code, label, description, parent_code, sort_order, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [masterKey, code, label, normalizeDescription(description), parentCode ?? null, sortOrder ?? 0, isActive ? 1 : 0],
     );
     return r.insertId;
   }
@@ -299,9 +304,12 @@ async function update(table, id, { code, label, sortOrder, isActive, parentCode,
   const where = ['id = ?', 'deleted_at IS NULL'];
   const params = [];
   if (table === 'master_lookups') {
+    // T-2026-080: description added to the update path so lookup-key
+    // Descriptions (e.g. enquiry_status) can be edited from MasterEntryModal.
     params.push(
       code,
       label,
+      normalizeDescription(description),
       parentCode ?? null,
       sortOrder ?? 0,
       isActive ? 1 : 0,
@@ -310,7 +318,7 @@ async function update(table, id, { code, label, sortOrder, isActive, parentCode,
     applyDiscriminator(where, params, discriminator);
     await pool.query(
       `UPDATE master_lookups
-         SET code = ?, label = ?, parent_code = ?, sort_order = ?, is_active = ?
+         SET code = ?, label = ?, description = ?, parent_code = ?, sort_order = ?, is_active = ?
        WHERE ${where.join(' AND ')}`,
       params,
     );
