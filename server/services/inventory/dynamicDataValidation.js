@@ -142,7 +142,16 @@ const codeArrayOrScalar = Joi.alternatives()
 const dynamicDataSchema = Joi.object({
   // Identity / meta
   propertyCode: shortText,
+  // Posting Date (renamed from `registrationDate` — the top-level
+  // `posting_date` column is authoritative on save; the FE also mirrors
+  // the value into dynamicData for form rendering, so we validate both
+  // shapes here. `registrationDate` is kept as a legacy alias for
+  // in-flight forms rehydrated from older payloads.
+  postingDate: Joi.string().pattern(ISO_DATE_RE).allow('', null)
+    .messages({ 'string.pattern.base': 'Date must be in YYYY-MM-DD format' }),
   registrationDate: Joi.string().pattern(ISO_DATE_RE).allow('', null)
+    .messages({ 'string.pattern.base': 'Date must be in YYYY-MM-DD format' }),
+  availableFromDate: Joi.string().pattern(ISO_DATE_RE).allow('', null)
     .messages({ 'string.pattern.base': 'Date must be in YYYY-MM-DD format' }),
 
   // Free text
@@ -197,24 +206,24 @@ const dynamicDataSchema = Joi.object({
 
   // Master-backed selects — the client passes a master code; validate shape.
   bunglowSize: masterCodeField,
-  bunglowStatus: masterCodeField,
+  // bunglowStatus: masterCodeField, — DISABLED (T-2026-081): per-property Status master retired. `.unknown(true)` on the parent schema lets any legacy value from historical records pass through untouched.
   // flatType is `select` in some flat variants, `dualMode` in others.
   flatType: dualModeOrScalar,
   flatSize: masterCodeField,
-  flatStatus: masterCodeField,
+  // flatStatus: masterCodeField, — DISABLED (T-2026-081)
   flatNature: masterCodeField,
   // plotType / plotShape are `select` in single-mode plot variants and
   // `dualMode` in dual-mode purchase / rent-in / lease-in variants.
   plotType: dualModeOrScalar,
-  plotStatus: masterCodeField,
+  // plotStatus: masterCodeField, — DISABLED (T-2026-081)
   plotShape: dualModeOrScalar,
   plotCorner: masterCodeField,
   plotAreaUnit: masterCodeField,
   plotRateUnit: masterCodeField,
   plotLayoutStatus: masterCodeField,
-  shopStatus: masterCodeField,
-  commercialStatus: masterCodeField,
-  landStatus: masterCodeField,
+  // shopStatus: masterCodeField, — DISABLED (T-2026-081)
+  // commercialStatus: masterCodeField, — DISABLED (T-2026-081)
+  // landStatus: masterCodeField, — DISABLED (T-2026-081)
   // Land keys are polymorphic across variants — sometimes `select` (scalar),
   // sometimes `dualMode` (`{specific, any}`). Use dualModeOrScalar so both
   // shapes pass and get coerced to the object form for storage.
@@ -222,7 +231,7 @@ const dynamicDataSchema = Joi.object({
   landVariety: dualModeOrScalar,
   landType: dualModeOrScalar,
   landAreaUnit: masterCodeField,
-  hostelStatus: masterCodeField,
+  // hostelStatus: masterCodeField, — DISABLED (T-2026-081)
   hostelCategory: masterCodeField,
   hostelRoomsCount: masterCodeField,
   hostelResidence: masterCodeField,
@@ -232,7 +241,7 @@ const dynamicDataSchema = Joi.object({
   payingGuestFloor: masterCodeField,
   payingGuestFacing: masterCodeField,
   payingGuestCondition: masterCodeField,
-  payingGuestStatus: masterCodeField,
+  // payingGuestStatus: masterCodeField, — DISABLED (T-2026-081)
   hospitalType: masterCodeField,
   industrialShedType: masterCodeField,
   industrialPlotStatus: masterCodeField,
@@ -240,11 +249,11 @@ const dynamicDataSchema = Joi.object({
   tdrZone: masterCodeField,
   tdrFloor: masterCodeField,
   tdrPlotFacing: masterCodeField,
-  tdrStatus: masterCodeField,
+  // tdrStatus: masterCodeField, — DISABLED (T-2026-081)
   bankAuctionProjectType: masterCodeField,
   bankAuctionPendingDues: masterCodeField,
   preLeasedProjectType: masterCodeField,
-  projectSaleStatus: masterCodeField,
+  // projectSaleStatus: masterCodeField, — DISABLED (T-2026-081)
   projectFacing: masterCodeField,
   projectCondition: masterCodeField,
   // leasePeriod is `select` (master code) in most forms but `text`
@@ -277,6 +286,21 @@ const dynamicDataSchema = Joi.object({
   bunglowRentDepositBudget: masterCodeField,
   bunglowBookingAmountFixed: masterCodeField,
   bunglowPossessionAfter: masterCodeField,
+  // Rowhouse — parallel to Bungalow. `rowhousePropertyPosition` replaces
+  // the "Bunglow Type" field (Left Corner / Middle / Right Corner) and is
+  // a master-code select. All other rowhouse* fields mirror the Bungalow
+  // shape.
+  rowhousePropertyPosition: masterCodeField,
+  rowhouseSize: masterCodeField,
+  rowhouseLeaseMonthlyBudget: masterCodeField,
+  rowhouseLeaseYearlyBudget: masterCodeField,
+  rowhouseDepositBudget: masterCodeField,
+  rowhouseRentMonthlyBudget: masterCodeField,
+  rowhouseRentDepositBudget: masterCodeField,
+  rowhouseBookingAmountFixed: masterCodeField,
+  rowhousePossessionAfter: masterCodeField,
+  rowhouseAgeRange: masterCodeField,
+  amenitiesRowhouseFurniture: codeArray,
   commercialLeaseMonthlyBudget: masterCodeField,
   commercialLeaseYearlyBudget: masterCodeField,
   commercialDepositBudget: masterCodeField,

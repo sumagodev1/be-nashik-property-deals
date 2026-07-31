@@ -219,30 +219,6 @@ async function streamDocument(id, res, { disposition = 'inline' } = {}) {
   stream.pipe(res);
 }
 
-const SHARE_EMAIL_HTML = `<div style="font-family: Arial, sans-serif; color:#111; font-size:14px; line-height:1.6;">
-  <p>Hello,</p>
-  <p>Greetings from Nasik Property Deals.</p>
-  <p>Thank you for visiting Nasik Property Deals.</p>
-  <p>Please find the attached document shared with you.</p>
-  <p>If you have any questions, feel free to contact us.</p>
-  <p style="margin-top:24px;">Regards,<br/>Nasik Property Deals Team</p>
-</div>`;
-
-const SHARE_EMAIL_TEXT = [
-  'Hello,',
-  '',
-  'Greetings from Nasik Property Deals.',
-  '',
-  'Thank you for visiting Nasik Property Deals.',
-  '',
-  'Please find the attached document shared with you.',
-  '',
-  'If you have any questions, feel free to contact us.',
-  '',
-  'Regards,',
-  'Nasik Property Deals Team',
-].join('\n');
-
 const DEFAULT_SHARE_SUBJECT = 'Document Shared - Nasik Property Deals';
 
 /**
@@ -271,17 +247,15 @@ async function shareByEmail(id, { recipientEmail, subject, message }) {
     ? String(subject).trim()
     : DEFAULT_SHARE_SUBJECT;
 
-  // Optional custom user message is prepended above the standard body.
+  // Use only the user's message as the email body. Empty message → no body.
   const userMessage = message && String(message).trim() ? String(message).trim() : '';
+  const textBody = userMessage;
   const htmlBody = userMessage
     ? `<p style="font-family: Arial, sans-serif; color:#111; font-size:14px; white-space:pre-wrap;">${userMessage
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')}</p>${SHARE_EMAIL_HTML}`
-    : SHARE_EMAIL_HTML;
-  const textBody = userMessage
-    ? `${userMessage}\n\n${SHARE_EMAIL_TEXT}`
-    : SHARE_EMAIL_TEXT;
+      .replace(/>/g, '&gt;')}</p>`
+    : '';
 
   const transporter = emailer.getTransporter();
   const from = (function buildFrom() {
@@ -298,8 +272,8 @@ async function shareByEmail(id, { recipientEmail, subject, message }) {
       from,
       to,
       subject: finalSubject,
-      text: textBody,
-      html: htmlBody,
+      text: textBody || undefined,
+      html: htmlBody || undefined,
       attachments: [
         {
           filename: row.original_filename,

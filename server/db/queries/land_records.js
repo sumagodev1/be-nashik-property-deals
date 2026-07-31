@@ -33,7 +33,7 @@ async function listGaothan({ page = 1, pageSize = 10, search = '' } = {}) {
   );
   const [rows] = await pool.query(
     `SELECT ${GAOTHAN_COLUMNS} FROM gaothan_land_locators ${where}
-     ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+     ORDER BY location ASC, id ASC LIMIT ? OFFSET ?`,
     [...args, pageSize, offset],
   );
   return { data: rows, total: Number(total), page, pageSize };
@@ -133,7 +133,7 @@ async function listSurvey({ page = 1, pageSize = 10, search = '' } = {}) {
   );
   const [rows] = await pool.query(
     `SELECT ${SURVEY_COLUMNS} FROM survey_number_locators ${where}
-     ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+     ORDER BY locality ASC, id ASC LIMIT ? OFFSET ?`,
     [...args, pageSize, offset],
   );
   return { data: rows, total: Number(total), page, pageSize };
@@ -237,7 +237,7 @@ async function listPaperNotice({ page = 1, pageSize = 10, search = '' } = {}) {
   );
   const [rows] = await pool.query(
     `SELECT ${PAPER_COLUMNS} FROM paper_notice_records ${where}
-     ORDER BY notice_date DESC, id DESC LIMIT ? OFFSET ?`,
+     ORDER BY advocate_name ASC, id ASC LIMIT ? OFFSET ?`,
     [...args, pageSize, offset],
   );
   return { data: rows, total: Number(total), page, pageSize };

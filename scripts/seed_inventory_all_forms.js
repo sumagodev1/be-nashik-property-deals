@@ -224,7 +224,7 @@ async function main() {
         `INSERT INTO inventory_properties
           (property_code, title, description, property_type, transaction_type, transaction_variant,
            location, latitude, longitude, area_value, area_unit, price, status,
-           registration_date, details, is_draft)
+           posting_date, details, is_draft)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', CURDATE(), ?, 0)`,
         [
           propertyCode, title, description, storedPropertyType,

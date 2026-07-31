@@ -192,14 +192,14 @@ async function main() {
       for (const row of byCategory.enquiry) {
         const [ins] = await conn.query(
           `INSERT INTO enquiry_properties (
-              property_code, registration_date, title, description, property_type,
+              property_code, posting_date, title, description, property_type,
               transaction_type, transaction_variant, location, district, taluka, shivar,
               latitude, longitude, pincode,
               area_value, area_unit, bhk, price, status, status_note, status_changed_at, status_changed_by,
               is_draft, owner_name, owner_contact, agent_name, agent_contact, details,
               created_by_admin_id, created_at, updated_at, deleted_at
             )
-            SELECT property_code, registration_date, title, description, property_type,
+            SELECT property_code, posting_date, title, description, property_type,
                    transaction_type, transaction_variant, location, district, taluka, shivar,
                    latitude, longitude, pincode,
                    area_value, area_unit, bhk, price, status, status_note, status_changed_at, status_changed_by,

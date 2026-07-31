@@ -1,71 +1,30 @@
 /**
- * Property code generator — produces production-style identifiers like
+ * Property code generator — produces identifiers like
  *   NSK-FLT-26-A8K2M7P
  *
  * Structure:
- *   NSK       — city code (Nashik; project is single-city for now)
- *   FLT       — 3-letter property-type abbreviation (see PROPERTY_TYPE_CODES)
- *   26        — 2-digit year (last two digits of the server creation year)
- *   A8K2M7P   — 7-character random alphanumeric, uppercase A-Z + digits 0-9,
- *               guaranteed to contain at least one letter AND one digit.
+ *   NSK    — 3-letter district short code (from master_lookups.short_code
+ *             for the selected district row)
+ *   FLT    — 2-3 letter property type code (from master_property_types.id_code;
+ *             falls back to PROPERTY_TYPE_ID_CODES map when the DB column is NULL)
+ *   26     — 2-digit year (last two digits of the server creation year)
+ *   A8K2M7P — 7-character random alphanumeric, uppercase A–Z + digits 0–9,
+ *              guaranteed to contain at least one letter AND one digit.
  *
  * The DB enforces UNIQUE on property_code, so callers must regenerate and
- * retry on the (rare) collision. `assignUniqueCode` does that for you: it
- * generates a candidate, attempts the update, and retries up to N times.
+ * retry on the (rare) collision. `assignUniqueCode` does that for you.
  *
  * IMPORTANT: This module is the sole source of truth for the property code
  * format. Inventory, Enquiry, Website admin, and Seller (public) create
  * flows all funnel through `assignUniqueCode` — the frontend never
  * generates or edits codes.
+ *
+ * Existing property IDs (pre-migration 079) remain unchanged; this module
+ * only affects NEW registrations.
  */
 
 const crypto = require('crypto');
-
-const CITY_CODE = 'NSK';
-
-// Canonical property-type → 3-letter code map. Keys are the snake_case
-// values stored in master_property_types.code. `other` is the catch-all
-// used whenever the incoming propertyType doesn't match a known entry.
-const PROPERTY_TYPE_CODES = Object.freeze({
-  flat:                 'FLT',
-  land:                 'LND',
-  plot:                 'PLT',
-  sez_plot:             'SPT',
-  sez_land:             'SLD',
-  bungalow:             'BNG',
-  shop:                 'SHP',
-  hotel:                'HTL',
-  hostel:               'HST',
-  hospital:             'HSP',
-  commercial_space:     'COM',
-  industrial_plot:      'IND',
-  tdr:                  'TDR',
-  bank_auction:         'BKA',
-  paying_guest:         'PGS',
-  pre_leased_property:  'PLP',
-  project_registration: 'PRJ',
-  other:                'OTH',
-});
-
-// Aliases for values that historically arrived in a different shape
-// (legacy bucket keys from the old normalizer, misspellings, labels
-// from the UI, etc.). Anything not here or in PROPERTY_TYPE_CODES
-// falls through to `other`/OTH.
-const PROPERTY_TYPE_ALIASES = Object.freeze({
-  // Legacy bucket keys from the old toPropertyTypeKey() normalizer
-  bunglow:            'bungalow',
-  villa:              'bungalow',
-  house:              'bungalow',
-  apartment:          'flat',
-  commercial:         'commercial_space',
-  pre_leased:         'pre_leased_property',
-  sez:                'sez_plot',
-
-  // Human-readable label variants (spaces, hyphens, mixed case all
-  // normalize to snake_case before lookup, so we only need to alias
-  // the residual quirks)
-  agricultural:       'land',
-});
+const { getPropertyTypeIdCode } = require('../../db/queries/masters');
 
 // 36-char alphabet: uppercase A-Z + digits 0-9. 36^7 ≈ 78 billion
 // combinations, so collisions on the 7-char suffix are astronomically
@@ -73,6 +32,31 @@ const PROPERTY_TYPE_ALIASES = Object.freeze({
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const SUFFIX_LEN = 7;
 const MAX_ATTEMPTS = 8;
+
+// Fallback map used when master_property_types.id_code is NULL (e.g. a newly
+// added property type that has not been seeded yet, or running before
+// migration 079). This ensures code generation never fails even without a
+// DB round-trip returning a value.
+const PROPERTY_TYPE_ID_CODES = {
+  bank_auction:         'BAU',
+  bungalow:             'BNG',
+  commercial_space:     'CMS',
+  flat:                 'FLT',
+  hospital:             'HSP',
+  hostel:               'HST',
+  hotel:                'HOT',
+  industrial_plot:      'IPL',
+  land:                 'LND',
+  paying_guest:         'PG',
+  plot:                 'PLT',
+  pre_leased_property:  'PLP',
+  project_registration: 'PRJ',
+  rowhouse:             'RWH',
+  sez_land:             'SZL',
+  sez_plot:             'SZP',
+  shop:                 'SHP',
+  tdr:                  'TDR',
+};
 
 // crypto.randomInt is unbiased over [0, 36); using `% ALPHABET.length`
 // on raw bytes would bias slightly since 256 % 36 !== 0. The bias is
@@ -102,30 +86,44 @@ function randomSuffix() {
   return out + letter + digit;
 }
 
-// Normalize an incoming property-type value (any of: DB snake_case code,
-// human label with spaces/hyphens, legacy bucket key) to the canonical
-// key used by PROPERTY_TYPE_CODES.
-function normalizePropertyType(propertyType) {
-  const raw = String(propertyType || '').trim().toLowerCase();
-  if (!raw) return 'other';
-  // Collapse spaces, hyphens, slashes -> underscore so labels like
-  // "SEZ Plot" / "Pre-Leased Property" / "Commercial Space" line up
-  // with the snake_case master codes.
-  const snake = raw.replace(/[\s/-]+/g, '_').replace(/_+/g, '_');
-  if (Object.prototype.hasOwnProperty.call(PROPERTY_TYPE_CODES, snake)) return snake;
-  if (Object.prototype.hasOwnProperty.call(PROPERTY_TYPE_ALIASES, snake)) {
-    return PROPERTY_TYPE_ALIASES[snake];
+/**
+ * Resolve the 2-3 letter property type abbreviation for the given canonical
+ * property type code (e.g. 'flat' → 'FLT').
+ *
+ * Resolution order:
+ *   1. DB lookup: master_property_types.id_code (configurable via Masters UI)
+ *   2. Hardcoded fallback map (PROPERTY_TYPE_ID_CODES above)
+ *   3. 'UNK' sentinel so ID generation never throws
+ *
+ * @param {string} propertyTypeCode  Canonical master code, e.g. 'flat', 'plot'.
+ * @returns {Promise<string>}        Uppercase abbreviation, e.g. 'FLT'.
+ */
+async function resolvePropertyTypeIdCode(propertyTypeCode) {
+  if (propertyTypeCode) {
+    const dbCode = await getPropertyTypeIdCode(propertyTypeCode);
+    if (dbCode) return String(dbCode).toUpperCase();
+    const fallback = PROPERTY_TYPE_ID_CODES[propertyTypeCode];
+    if (fallback) return fallback;
   }
-  return 'other';
+  return 'UNK';
 }
 
-function propertyTypeCode(propertyType) {
-  return PROPERTY_TYPE_CODES[normalizePropertyType(propertyType)];
-}
-
-function generatePropertyCode(propertyType, now = new Date()) {
+/**
+ * Generate a property code for the given district and property type.
+ *
+ * @param {string} districtCode      3-letter uppercase district abbreviation
+ *                                   (e.g. 'NSK', 'PUN', 'NGP').
+ * @param {string} propertyTypeIdCode 2-3 letter property type abbreviation
+ *                                   (e.g. 'FLT', 'PLT'). Use
+ *                                   resolvePropertyTypeIdCode() to obtain this.
+ * @param {Date}   [now]             Server timestamp used for the YY segment.
+ * @returns {string}                 e.g. 'NSK-FLT-26-A8K2M7P'
+ */
+function generatePropertyCode(districtCode, propertyTypeIdCode, now = new Date()) {
   const yy = String(now.getFullYear() % 100).padStart(2, '0');
-  return `${CITY_CODE}-${propertyTypeCode(propertyType)}-${yy}-${randomSuffix()}`;
+  const dc = String(districtCode || 'UNK').toUpperCase().slice(0, 10);
+  const tc = String(propertyTypeIdCode || 'UNK').toUpperCase().slice(0, 10);
+  return `${dc}-${tc}-${yy}-${randomSuffix()}`;
 }
 
 /**
@@ -133,10 +131,14 @@ function generatePropertyCode(propertyType, now = new Date()) {
  * must return true on success or throw / return false on UNIQUE collision.
  * Throws after MAX_ATTEMPTS — collisions are astronomically unlikely so a
  * persistent failure means something else is wrong.
+ *
+ * @param {string}   districtCode      3-letter district short code.
+ * @param {string}   propertyTypeIdCode 2-3 letter property type abbreviation.
+ * @param {Function} tryAssign         Async fn(code) → true | false.
  */
-async function assignUniqueCode(propertyType, tryAssign) {
+async function assignUniqueCode(districtCode, propertyTypeIdCode, tryAssign) {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-    const code = generatePropertyCode(propertyType);
+    const code = generatePropertyCode(districtCode, propertyTypeIdCode);
     let ok = false;
     try {
       ok = await tryAssign(code);
@@ -153,11 +155,8 @@ async function assignUniqueCode(propertyType, tryAssign) {
 }
 
 module.exports = {
-  CITY_CODE,
-  PROPERTY_TYPE_CODES,
-  PROPERTY_TYPE_ALIASES,
-  normalizePropertyType,
-  propertyTypeCode,
+  PROPERTY_TYPE_ID_CODES,
+  resolvePropertyTypeIdCode,
   generatePropertyCode,
   assignUniqueCode,
 };

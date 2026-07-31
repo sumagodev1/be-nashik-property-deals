@@ -63,7 +63,7 @@ async function list({ page = 1, pageSize = 10, search = '', ownerSearch = '' } =
   );
   const [rows] = await pool.query(
     `SELECT ${COLUMNS} FROM business_associates ${where}
-     ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+     ORDER BY first_name ASC, COALESCE(surname,'') ASC, id ASC LIMIT ? OFFSET ?`,
     [...args, pageSize, offset],
   );
   return { data: rows, total: Number(total), page, pageSize };

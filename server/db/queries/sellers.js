@@ -183,7 +183,7 @@ async function listForAdmin({ page, pageSize, search, userType, isActive, isVeri
     'full_name:desc': 's.full_name DESC, s.id DESC',
     'listing_count:desc': 'listing_count DESC, s.id DESC',
   };
-  const orderSql = `ORDER BY ${SORT[sort] || SORT['created_at:desc']}`;
+  const orderSql = `ORDER BY ${SORT[sort] || SORT['full_name:asc']}`;
   const offset = (page - 1) * pageSize;
 
   const [[{ total }]] = await pool.query(

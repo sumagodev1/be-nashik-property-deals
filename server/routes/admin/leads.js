@@ -28,7 +28,7 @@ const listQuery = Joi.object({
   ).optional(),
   dateFrom: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateTo: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  sort: Joi.string().pattern(/^(created_at|status):(asc|desc)$/).default('created_at:desc'),
+  sort: Joi.string().pattern(/^(created_at|status|buyer_name):(asc|desc)$/).default('buyer_name:asc'),
 });
 
 const exportQuery = listQuery.fork(['page', 'pageSize'], (s) => s.optional());

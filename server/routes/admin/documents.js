@@ -42,8 +42,8 @@ const listQuery = Joi.object({
     'file_size',
     'created_at',
     'status',
-  ).default('created_at'),
-  sortDir: Joi.string().valid('asc', 'desc').default('desc'),
+  ).default('document_name'),
+  sortDir: Joi.string().valid('asc', 'desc').default('asc'),
 });
 
 // Metadata schema for the multipart create route. Multer strips the file

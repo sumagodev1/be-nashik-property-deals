@@ -366,6 +366,21 @@ async function labelTaken(table, label, excludeId = null, { discriminator } = {}
   return rows.length > 0;
 }
 
+/**
+ * Look up the id_code for a property type (e.g. 'flat' → 'FLT').
+ * Returns null when the type is not found or has no id_code set.
+ * Used by propertyCode.js to embed the type abbreviation in property IDs.
+ */
+async function getPropertyTypeIdCode(propertyTypeCode) {
+  if (!propertyTypeCode) return null;
+  const [rows] = await pool.query(
+    `SELECT id_code FROM master_property_types
+     WHERE code = ? AND deleted_at IS NULL LIMIT 1`,
+    [propertyTypeCode],
+  );
+  return (rows[0] && rows[0].id_code) || null;
+}
+
 module.exports = {
   ALLOWED_TABLES,
   TABLES_WITH_DESCRIPTION,
@@ -384,4 +399,5 @@ module.exports = {
   update,
   revive,
   softDelete,
+  getPropertyTypeIdCode,
 };

@@ -6,6 +6,7 @@ const { requireAuth, requireModule } = require('../../middleware/auth');
 const { imageUploadMiddleware, documentUploadMiddleware } = require('../../middleware/imageMulter');
 const idempotency = require('../../middleware/idempotency');
 const management = require('../../services/website_property/management');
+const { shareProperty } = require('../../services/properties/shareProperty');
 const { AREA_UNITS } = require('../../constants/property');
 const masterCodeField = Joi.string().trim().lowercase().pattern(/^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$/);
 const { APPROVAL_STATUSES } = require('../../constants/website');
@@ -49,7 +50,7 @@ const listQuery = Joi.object({
   dateTo: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
   sort: Joi.string()
     .pattern(/^(created_at|price|location|property_type|title|approved_at):(asc|desc)$/)
-    .default('created_at:desc'),
+    .default('title:asc'),
 });
 
 // Every property field is optional. Only `sellerId` remains required on
@@ -217,5 +218,42 @@ router.get('/:id/documents/:fileId', validate(subIdParam, 'params'), async (req,
     return management.streamDocument(res, file);
   } catch (e) { next(e); }
 });
+
+// Share the property via email. Runtime-only; owner / staff-only fields are
+// stripped inside the share service (never reach the wire).
+const shareSectionField = Joi.object({
+  key:       Joi.string().trim().max(120).required(),
+  label:     Joi.string().trim().max(255).allow('', null).optional(),
+  type:      Joi.string().trim().max(64).allow('', null).optional(),
+  masterKey: Joi.string().trim().max(120).allow('', null).optional(),
+}).unknown(true);
+const shareSection = Joi.object({
+  key:    Joi.string().trim().max(120).allow('', null).optional(),
+  title:  Joi.string().trim().max(255).required(),
+  fields: Joi.array().items(shareSectionField).max(200).default([]),
+}).unknown(true);
+const shareBody = Joi.object({
+  recipientEmails: Joi.string().trim().min(3).max(2000).required(),
+  subject: Joi.string().trim().max(255).allow('', null).optional(),
+  message: Joi.string().trim().max(5000).allow('', null).optional(),
+  sections: Joi.array().items(shareSection).max(30).optional(),
+  includeDetails:     Joi.boolean().default(true),
+  includeDescription: Joi.boolean().default(true),
+  includeImages:      Joi.boolean().default(true),
+  includeDocuments:   Joi.boolean().default(true),
+  includePropertyUrl: Joi.boolean().default(true),
+});
+
+router.post(
+  '/:id/share',
+  validate(idParam, 'params'),
+  validate(shareBody, 'body'),
+  async (req, res, next) => {
+    try {
+      const result = await shareProperty('website', Number(req.params.id), req.body);
+      res.json({ message: 'Property shared successfully.', ...result });
+    } catch (e) { next(e); }
+  },
+);
 
 module.exports = router;

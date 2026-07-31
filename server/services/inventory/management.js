@@ -13,12 +13,13 @@ const { buildTablePdf } = require('../files/pdf');
 const csvUtil = require('../files/csv');
 const { getBrandingSnapshot } = require('../files/branding');
 const locationsQuery = require('../../db/queries/locations');
+const { getDistrictShortCode } = locationsQuery;
 const INVENTORY_STATUS_LABELS = {
   available: 'Available', sold: 'Sold', rented: 'Rented',
   under_offer: 'Under Offer', on_hold: 'On Hold', pending: 'Pending',
   inactive: 'Inactive',
 };
-const { assignUniqueCode } = require('../properties/propertyCode');
+const { assignUniqueCode, resolvePropertyTypeIdCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
 // Centralised Property Type / Transaction Type / Property Variety
 // validator. Every service that persists a property MUST use this so the
@@ -82,18 +83,20 @@ const { PUBLIC_URL_PREFIX } = require('../files/publicUrl');
 // numbers). The single source of truth means CSV/XLSX/PDF always agree
 // with what the admin sees on the screen, per the "no hidden data" rule.
 const INVENTORY_EXPORT_COLUMNS = [
-  { key: 'property_code',   label: 'Property ID',      align: 'left',   width: 16, weight: 2.0, noWrap: true, type: 's' },
-  { key: 'title',           label: 'Title',            align: 'left',   width: 30, weight: 2.6 },
-  { key: 'property_type',   label: 'Property Type',    align: 'left',   width: 18, weight: 1.6, noWrap: true },
-  { key: 'transaction_type', label: 'Transaction',     align: 'left',   width: 16, weight: 1.4, noWrap: true },
-  { key: 'property_variety', label: 'Property Variety', align: 'left',  width: 18, weight: 1.6, noWrap: true },
-  { key: 'district',        label: 'District',         align: 'left',   width: 14, weight: 1.2, noWrap: true },
-  { key: 'taluka',          label: 'Taluka',           align: 'left',   width: 14, weight: 1.2, noWrap: true },
-  { key: 'village',         label: 'Village / City',   align: 'left',   width: 14, weight: 1.2, noWrap: true },
-  { key: 'status',          label: 'Status',           align: 'center', width: 12, weight: 1.0, noWrap: true, headerAlign: 'center' },
-  { key: 'owner_name',      label: 'Owner',            align: 'left',   width: 18, weight: 1.6 },
-  { key: 'agent_name',      label: 'Agent',            align: 'left',   width: 18, weight: 1.4 },
-  { key: 'created_at',      label: 'Created Date',     align: 'center', width: 14, weight: 1.2, noWrap: true, headerAlign: 'center' },
+  { key: 'property_code',    label: 'Property ID',         align: 'left',   width: 16, weight: 2.0, noWrap: true, type: 's' },
+  { key: 'title',            label: 'Title',               align: 'left',   width: 30, weight: 2.6 },
+  { key: 'property_type',    label: 'Property Type',       align: 'left',   width: 18, weight: 1.6, noWrap: true },
+  { key: 'transaction_type', label: 'Transaction',         align: 'left',   width: 16, weight: 1.4, noWrap: true },
+  { key: 'property_variety', label: 'Property Variety',    align: 'left',   width: 18, weight: 1.6, noWrap: true },
+  { key: 'district',         label: 'District',            align: 'left',   width: 14, weight: 1.2, noWrap: true },
+  { key: 'taluka',           label: 'Taluka',              align: 'left',   width: 14, weight: 1.2, noWrap: true },
+  { key: 'village',          label: 'Village / City',      align: 'left',   width: 14, weight: 1.2, noWrap: true },
+  { key: 'status',           label: 'Status',              align: 'center', width: 12, weight: 1.0, noWrap: true, headerAlign: 'center' },
+  { key: 'owner_name',       label: 'Owner',               align: 'left',   width: 18, weight: 1.6 },
+  { key: 'agent_name',       label: 'Agent',               align: 'left',   width: 18, weight: 1.4 },
+  { key: 'posting_date',     label: 'Posting Date',        align: 'center', width: 14, weight: 1.2, noWrap: true, headerAlign: 'center' },
+  { key: 'available_from_date', label: 'Available From',   align: 'center', width: 14, weight: 1.2, noWrap: true, headerAlign: 'center' },
+  { key: 'created_at',       label: 'Created On Date',     align: 'center', width: 18, weight: 1.4, noWrap: true, headerAlign: 'center' },
 ];
 
 // Compat shim: legacy CSV endpoint used a raw string-array shape. Keep the
@@ -115,7 +118,9 @@ function renderInventoryCell(r, key) {
     case 'status':           return INVENTORY_STATUS_LABELS[r.status] || r.status || '';
     case 'owner_name':       return r.owner_name || '';
     case 'agent_name':       return r.agent_name || '';
-    case 'created_at':       return formatDate(r.created_at);
+    case 'posting_date':     return formatDateShort(r.posting_date);
+    case 'available_from_date': return formatDateShort(r.available_from_date);
+    case 'created_at':       return formatDateTime(r.created_at);
     // District/Taluka/Village labels resolved via enrichRowsWithLocationLabels below.
     case 'district':         return r._districtLabel || r.district || '';
     case 'taluka':           return r._talukaLabel   || r.taluka   || '';
@@ -222,12 +227,29 @@ async function getProperty(id) {
 
 async function createProperty(payload) {
   await validateMasterCodes(payload);
+
+  // District, Taluka, and Shivar are all mandatory.
+  if (!payload.district) {
+    throw new HttpError(400, 'DISTRICT_REQUIRED', 'District is required to create a property');
+  }
+  if (!payload.taluka) {
+    throw new HttpError(400, 'TALUKA_REQUIRED', 'Taluka is required to create a property');
+  }
+  if (!payload.shivar) {
+    throw new HttpError(400, 'SHIVAR_REQUIRED', 'Village / City / Shivar is required to create a property');
+  }
+  const districtShortCode = await getDistrictShortCode(payload.district);
+  if (!districtShortCode) {
+    throw new HttpError(400, 'INVALID_DISTRICT', 'Selected district does not have a property ID code configured');
+  }
+
   // property_code is UNIQUE in MySQL. Insert with a UUID placeholder so
   // concurrent creates can never collide on the constraint, then assign
-  // the final NSK-<TYPE>-YY-XXXXXXX code with retry-on-collision.
+  // the final DISTRICTCODE-TYPECODE-YY-RANDOM7 code with retry-on-collision.
+  const propertyTypeIdCode = await resolvePropertyTypeIdCode(payload.propertyType);
   const tmpCode = `TMP-${crypto.randomUUID()}`;
   const id = await inventory.create({ ...payload, propertyCode: tmpCode });
-  await assignUniqueCode(payload.propertyType, async (code) => {
+  await assignUniqueCode(districtShortCode, propertyTypeIdCode, async (code) => {
     try {
       await inventory.updatePropertyCode(id, code);
       return true;
@@ -243,6 +265,9 @@ async function updateProperty(id, payload) {
   await validateMasterCodes(payload);
   const existing = await inventory.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  if (!payload.district) throw new HttpError(400, 'DISTRICT_REQUIRED', 'District is required');
+  if (!payload.taluka)   throw new HttpError(400, 'TALUKA_REQUIRED',   'Taluka is required');
+  if (!payload.shivar)   throw new HttpError(400, 'SHIVAR_REQUIRED',   'Village / City / Shivar is required');
   await inventory.update(id, payload);
   // Code format is independent of draft state — the UI surfaces draft
   // separately via the is_draft column, so no renaming on toggle.
@@ -342,7 +367,8 @@ function toListItem(row) {
   return {
     id: row.id,
     propertyCode: row.property_code,
-    registrationDate: row.registration_date,
+    postingDate: row.posting_date,
+    availableFromDate: row.available_from_date,
     title: row.title,
     description: row.description ?? null,
     propertyType: row.property_type,
@@ -487,6 +513,30 @@ function formatDate(d) {
   const date = d instanceof Date ? d : new Date(d);
   if (Number.isNaN(date.getTime())) return String(d);
   return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+// DD/MM/YYYY (IST) — used for Posting Date / Available From Date export cells.
+function formatDateShort(d) {
+  if (!d) return '';
+  const date = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(date.getTime())) return String(d);
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Kolkata',
+  }).format(date);
+}
+
+// DD/MM/YYYY hh:mm AM/PM (IST) — used for Created On Date export cell.
+function formatDateTime(d) {
+  if (!d) return '';
+  const date = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(date.getTime())) return String(d);
+  const datePart = new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Kolkata',
+  }).format(date);
+  const timePart = new Intl.DateTimeFormat('en-US', {
+    hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata',
+  }).format(date);
+  return `${datePart} ${timePart}`;
 }
 
 // T-2026-072: all three export functions now accept `context` = { auth }

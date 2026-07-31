@@ -33,7 +33,7 @@ const sellersListQuery = Joi.object({
   dateTo: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
   sort: Joi.string()
     .valid('created_at:desc', 'created_at:asc', 'full_name:asc', 'full_name:desc', 'listing_count:desc')
-    .default('created_at:desc'),
+    .default('full_name:asc'),
 });
 
 const sellersExportQuery = sellersListQuery.fork(['page', 'pageSize'], (s) => s.optional());

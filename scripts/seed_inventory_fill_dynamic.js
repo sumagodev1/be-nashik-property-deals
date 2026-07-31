@@ -228,10 +228,11 @@ async function main() {
       for (const section of form.sections) {
         if (section.kind !== 'fields' || !Array.isArray(section.fields)) continue;
         for (const field of section.fields) {
-          // propertyCode + registrationDate live on the top-level row, not
+          // propertyCode + postingDate live on the top-level row, not
           // in dynamicData — skip so the form's shadow-key merge stays
-          // authoritative.
-          if (field.key === 'propertyCode' || field.key === 'registrationDate') continue;
+          // authoritative. `registrationDate` is the legacy key still
+          // accepted for older form configs.
+          if (field.key === 'propertyCode' || field.key === 'postingDate' || field.key === 'registrationDate') continue;
           const raw = await dummyFieldValue(conn, field, masterCache);
           // Some keys (facing / condition / age / bunglowType) are strict
           // dualMode on the server regardless of the form config's field type.

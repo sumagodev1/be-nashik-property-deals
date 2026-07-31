@@ -9,8 +9,9 @@ const { HttpError } = require('../../middleware/errors');
 const wp = require('../../db/queries/website_properties');
 const propertyFiles = require('../../db/queries/property_files');
 const imageUpload = require('../files/imageUpload');
-const { assignUniqueCode } = require('../properties/propertyCode');
+const { assignUniqueCode, resolvePropertyTypeIdCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
+const { getDistrictShortCode } = require('../../db/queries/locations');
 // Centralised Property Type / Transaction Type / Property Variety
 // validator — see services/masters/propertyMasters.js for the contract.
 const { validatePropertyClassification } = require('../masters/propertyMasters');
@@ -75,9 +76,20 @@ async function getOwn(sellerId, id) {
 
 async function createOwn(sellerId, payload) {
   await validateMasterCodes(payload);
+
+  // District is required — the property ID prefix is derived from it.
+  if (!payload.district) {
+    throw new HttpError(400, 'DISTRICT_REQUIRED', 'District is required to register a property');
+  }
+  const districtShortCode = await getDistrictShortCode(payload.district);
+  if (!districtShortCode) {
+    throw new HttpError(400, 'INVALID_DISTRICT', 'Selected district does not have a property ID code configured');
+  }
+
   // property_code is UNIQUE in MySQL. Insert with a UUID placeholder so
   // concurrent submissions can never collide on the constraint, then assign
-  // the final NSK-<TYPE>-YY-XXXXXXX code with retry-on-collision.
+  // the final DISTRICTCODE-TYPECODE-YY-RANDOM7 code with retry-on-collision.
+  const propertyTypeIdCode = await resolvePropertyTypeIdCode(payload.propertyType);
   const tmpCode = `TMP-${crypto.randomUUID()}`;
   const id = await wp.create({
     ...payload,
@@ -86,7 +98,7 @@ async function createOwn(sellerId, payload) {
     approvalStatus: 'pending',
     isActive: true,
   });
-  await assignUniqueCode(payload.propertyType, async (code) => {
+  await assignUniqueCode(districtShortCode, propertyTypeIdCode, async (code) => {
     try {
       await wp.updatePropertyCode(id, code);
       return true;

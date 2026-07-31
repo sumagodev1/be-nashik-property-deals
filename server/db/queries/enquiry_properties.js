@@ -20,10 +20,10 @@ const SORTABLE_COLUMNS = {
 };
 
 function buildOrderBy(sort) {
-  const [col, dir] = (sort || 'created_at:desc').split(':');
-  const safeCol = SORTABLE_COLUMNS[col] || 'ep.created_at';
+  const [col, dir] = (sort || 'title:asc').split(':');
+  const safeCol = SORTABLE_COLUMNS[col] || 'ep.title';
   const safeDir = dir && dir.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-  return `ORDER BY ${safeCol} ${safeDir}, ep.id DESC`;
+  return `ORDER BY ${safeCol} ${safeDir}, ep.id ASC`;
 }
 
 async function list({
@@ -179,7 +179,7 @@ async function list({
   // Fix C: LEFT JOIN + COALESCE mirrors inventory_properties.js. See
   // that file for the full explanation.
   const [rows] = await pool.query(
-    `SELECT ep.id, ep.property_code, ep.registration_date, ep.title, ep.description,
+    `SELECT ep.id, ep.property_code, ep.posting_date, ep.available_from_date, ep.title, ep.description,
             ep.property_type, ep.property_type_id, ep.property_type_name,
             ep.transaction_type, ep.transaction_type_id, ep.transaction_type_name,
             ep.transaction_variant, ep.property_variety_id, ep.property_variety_name,
@@ -246,16 +246,17 @@ async function create(payload) {
     : null;
   const [result] = await pool.query(
     `INSERT INTO enquiry_properties
-     (property_code, registration_date, title, description, property_type, property_type_id, property_type_name,
+     (property_code, posting_date, available_from_date, title, description, property_type, property_type_id, property_type_name,
       transaction_type, transaction_type_id, transaction_type_name, transaction_variant, property_variety_id, property_variety_name,
       location, district, taluka, shivar,
       latitude, longitude, formatted_address, pincode,
       area_value, area_unit, bhk, price, status, is_draft,
       owner_name, owner_contact, agent_name, agent_contact, details, created_by_admin_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.propertyCode,
-      payload.registrationDate || null,
+      payload.postingDate || null,
+      payload.availableFromDate || null,
       payload.title,
       payload.description || null,
       payload.propertyType,
@@ -311,7 +312,7 @@ async function update(id, payload) {
     : null;
   await pool.query(
     `UPDATE enquiry_properties SET
-       registration_date = ?, title = ?, description = ?,
+       posting_date = ?, available_from_date = ?, title = ?, description = ?,
        property_type = ?, property_type_id = ?, property_type_name = ?,
        transaction_type = ?, transaction_type_id = ?, transaction_type_name = ?,
        transaction_variant = ?, property_variety_id = ?, property_variety_name = ?,
@@ -321,7 +322,8 @@ async function update(id, payload) {
        owner_name = ?, owner_contact = ?, agent_name = ?, agent_contact = ?, details = ?
      WHERE id = ? AND deleted_at IS NULL`,
     [
-      payload.registrationDate || null,
+      payload.postingDate || null,
+      payload.availableFromDate || null,
       payload.title,
       payload.description || null,
       payload.propertyType,

@@ -7,8 +7,9 @@ const imageUpload = require('../files/imageUpload');
 const documentUpload = require('../files/documentUpload');
 const excel = require('../files/excel');
 const { buildTablePdf } = require('../files/pdf');
-const { assignUniqueCode } = require('../properties/propertyCode');
+const { assignUniqueCode, resolvePropertyTypeIdCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
+const { getDistrictShortCode } = require('../../db/queries/locations');
 // Centralised Property Type / Transaction Type / Property Variety
 // validator — see services/masters/propertyMasters.js for the contract.
 const { validatePropertyClassification } = require('../masters/propertyMasters');
@@ -88,12 +89,22 @@ async function createProperty(payload) {
   const seller = await sellers.findById(payload.sellerId);
   if (!seller) throw new HttpError(400, 'INVALID_SELLER', 'Seller not found');
 
+  // District is required — the property ID prefix is derived from it.
+  if (!payload.district) {
+    throw new HttpError(400, 'DISTRICT_REQUIRED', 'District is required to create a website property');
+  }
+  const districtShortCode = await getDistrictShortCode(payload.district);
+  if (!districtShortCode) {
+    throw new HttpError(400, 'INVALID_DISTRICT', 'Selected district does not have a property ID code configured');
+  }
+
   // property_code is UNIQUE in MySQL. Insert with a UUID placeholder so
   // concurrent creates can never collide on the constraint, then assign
-  // the final NSK-<TYPE>-YY-XXXXXXX code with retry-on-collision.
+  // the final DISTRICTCODE-TYPECODE-YY-RANDOM7 code with retry-on-collision.
+  const propertyTypeIdCode = await resolvePropertyTypeIdCode(payload.propertyType);
   const tmpCode = `TMP-${crypto.randomUUID()}`;
   const id = await wp.create({ ...payload, propertyCode: tmpCode });
-  await assignUniqueCode(payload.propertyType, async (code) => {
+  await assignUniqueCode(districtShortCode, propertyTypeIdCode, async (code) => {
     try {
       await wp.updatePropertyCode(id, code);
       return true;

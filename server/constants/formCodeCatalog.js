@@ -39,6 +39,7 @@ const PROPERTY_TYPE_TO_PREFIX = Object.freeze({
   // side hits the same prefix.
   bungalow:              'bunglow',
   bunglow:               'bunglow',
+  rowhouse:              'rowhouse',
   hospital:              'hospital',
   hostel:                'hostel',
   hotel:                 'hotel',
@@ -71,6 +72,13 @@ const REGISTERED_FORM_CODES = Object.freeze([
   'bunglow-resale-rent-in', 'bunglow-new-rent-in',
   'bunglow-resale-rent-out', 'bunglow-new-rent-out',
   'bunglow-resale', 'bunglow-new-sale',
+  // Rowhouse — 12 codes parallel to Bungalow, no paying-guest variants.
+  'rowhouse-resale-lease-in', 'rowhouse-new-lease-in',
+  'rowhouse-resale-lease-out', 'rowhouse-new-lease-out',
+  'rowhouse-resale-purchase', 'rowhouse-new-purchase',
+  'rowhouse-resale-rent-in', 'rowhouse-new-rent-in',
+  'rowhouse-resale-rent-out', 'rowhouse-new-rent-out',
+  'rowhouse-resale', 'rowhouse-new-sale',
   'commercial-lease-in-resale', 'commercial-lease-in-new',
   'commercial-lease-out-resale', 'commercial-lease-out-new',
   'commercial-resale-purchase', 'commercial-new-purchase',

@@ -10,10 +10,10 @@ const SORTABLE_COLUMNS = {
 };
 
 function buildOrderBy(sort) {
-  const [col, dir] = (sort || 'created_at:desc').split(':');
-  const safeCol = SORTABLE_COLUMNS[col] || 'wp.created_at';
+  const [col, dir] = (sort || 'title:asc').split(':');
+  const safeCol = SORTABLE_COLUMNS[col] || 'wp.title';
   const safeDir = dir && dir.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-  return `ORDER BY ${safeCol} ${safeDir}, wp.id DESC`;
+  return `ORDER BY ${safeCol} ${safeDir}, wp.id ASC`;
 }
 
 async function list({

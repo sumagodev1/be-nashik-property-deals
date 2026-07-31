@@ -30,8 +30,8 @@ async function list({
   page = 1,
   pageSize = 10,
   search = '',
-  sortBy = 'created_at',
-  sortDir = 'desc',
+  sortBy = 'document_name',
+  sortDir = 'asc',
 } = {}) {
   const offset = (page - 1) * pageSize;
   const args = [];

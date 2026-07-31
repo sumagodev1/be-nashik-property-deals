@@ -184,6 +184,31 @@ async function labelsForCodes(masterKey, codes) {
   return rows;
 }
 
+/**
+ * Resolve a district `code` (from master_lookups) to its 3-letter short_code
+ * used as the property-ID prefix. Returns null if the district is not found
+ * or has no short_code seeded yet.
+ *
+ * @param {string} districtCode  The value stored in inventory/enquiry/website
+ *                               property rows' `district` column (e.g. '522'
+ *                               or legacy slug 'nashik').
+ * @returns {Promise<string|null>}
+ */
+async function getDistrictShortCode(districtCode) {
+  if (!districtCode) return null;
+  const [rows] = await pool.query(
+    `SELECT short_code
+       FROM master_lookups
+      WHERE master_key = ?
+        AND code = ?
+        AND deleted_at IS NULL
+      LIMIT 1`,
+    [KEYS.DISTRICT, String(districtCode)],
+  );
+  const row = rows[0];
+  return (row && row.short_code) ? String(row.short_code).toUpperCase() : null;
+}
+
 module.exports = {
   KEYS,
   listDistricts,
@@ -193,4 +218,5 @@ module.exports = {
   resolveVillageContext,
   resolveTalukaContext,
   labelsForCodes,
+  getDistrictShortCode,
 };

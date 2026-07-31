@@ -3,13 +3,14 @@ const { pool } = require('../pool');
 const SORTABLE_COLUMNS = {
   created_at: 'l.created_at',
   status: 'l.status',
+  buyer_name: 'l.buyer_name',
 };
 
 function buildOrderBy(sort) {
-  const [col, dir] = (sort || 'created_at:desc').split(':');
-  const safeCol = SORTABLE_COLUMNS[col] || 'l.created_at';
+  const [col, dir] = (sort || 'buyer_name:asc').split(':');
+  const safeCol = SORTABLE_COLUMNS[col] || 'l.buyer_name';
   const safeDir = dir && dir.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-  return `ORDER BY ${safeCol} ${safeDir}, l.id DESC`;
+  return `ORDER BY ${safeCol} ${safeDir}, l.id ASC`;
 }
 
 function buildWhere({ status, actionType, propertyId, propertyCode, search, dateFrom, dateTo, assignedTo }) {

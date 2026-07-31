@@ -13,10 +13,10 @@ const SORTABLE_COLUMNS = {
 };
 
 function buildOrderBy(sort) {
-  const [col, dir] = (sort || 'created_at:desc').split(':');
-  const safeCol = SORTABLE_COLUMNS[col] || 'ip.created_at';
+  const [col, dir] = (sort || 'title:asc').split(':');
+  const safeCol = SORTABLE_COLUMNS[col] || 'ip.title';
   const safeDir = dir && dir.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-  return `ORDER BY ${safeCol} ${safeDir}, ip.id DESC`;
+  return `ORDER BY ${safeCol} ${safeDir}, ip.id ASC`;
 }
 
 async function list({
@@ -240,7 +240,7 @@ async function list({
   //   resolved_transaction_type_name — same shape
   //   resolved_property_variety_name — same shape
   const [rows] = await pool.query(
-    `SELECT ip.id, ip.property_code, ip.registration_date, ip.title, ip.description,
+    `SELECT ip.id, ip.property_code, ip.posting_date, ip.available_from_date, ip.title, ip.description,
             ip.property_type, ip.property_type_id, ip.property_type_name,
             ip.transaction_type, ip.transaction_type_id, ip.transaction_type_name,
             ip.transaction_variant, ip.property_variety_id, ip.property_variety_name,
@@ -312,16 +312,17 @@ async function create(payload) {
     : null;
   const [result] = await pool.query(
     `INSERT INTO inventory_properties
-     (property_code, registration_date, title, description, property_type, property_type_id, property_type_name,
+     (property_code, posting_date, available_from_date, title, description, property_type, property_type_id, property_type_name,
       transaction_type, transaction_type_id, transaction_type_name, transaction_variant, property_variety_id, property_variety_name,
       location, district, taluka, shivar,
       latitude, longitude, formatted_address, pincode,
       area_value, area_unit, bhk, price, status, is_draft,
       owner_name, owner_contact, agent_name, agent_contact, details, created_by_admin_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.propertyCode,
-      payload.registrationDate || null,
+      payload.postingDate || null,
+      payload.availableFromDate || null,
       payload.title,
       payload.description || null,
       payload.propertyType,
@@ -369,7 +370,7 @@ async function update(id, payload) {
     : null;
   await pool.query(
     `UPDATE inventory_properties SET
-       registration_date = ?, title = ?, description = ?,
+       posting_date = ?, available_from_date = ?, title = ?, description = ?,
        property_type = ?, property_type_id = ?, property_type_name = ?,
        transaction_type = ?, transaction_type_id = ?, transaction_type_name = ?,
        transaction_variant = ?, property_variety_id = ?, property_variety_name = ?,
@@ -379,7 +380,8 @@ async function update(id, payload) {
        owner_name = ?, owner_contact = ?, agent_name = ?, agent_contact = ?, details = ?
      WHERE id = ? AND deleted_at IS NULL`,
     [
-      payload.registrationDate || null,
+      payload.postingDate || null,
+      payload.availableFromDate || null,
       payload.title,
       payload.description || null,
       payload.propertyType,

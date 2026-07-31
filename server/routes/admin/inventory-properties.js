@@ -6,6 +6,7 @@ const { requireAuth, requireModule } = require('../../middleware/auth');
 const { imageUploadMiddleware, documentUploadMiddleware } = require('../../middleware/imageMulter');
 const idempotency = require('../../middleware/idempotency');
 const management = require('../../services/inventory/management');
+const { shareProperty } = require('../../services/properties/shareProperty');
 const { validateDynamicData } = require('../../services/inventory/dynamicDataValidation');
 const {
   AREA_UNITS,
@@ -28,17 +29,44 @@ const subIdParam = Joi.object({
   fileId: Joi.number().integer().positive().required(),
 });
 
-// All property fields are optional at the API layer — the DB accepts partial
+// Most property fields are optional at the API layer — the DB accepts partial
 // payloads. Callers can send any subset of these keys; missing/empty values
 // are treated as "not provided" and never rejected. Only structural sanity
 // caps remain (max lengths) to prevent abuse — no min lengths, no format
 // patterns, no `.required()` for property fields.
+//
+// The 7 product-mandatory fields (Property Description, Owner Contact Name,
+// Owner Contact Number, District, Taluka, Village, Address) ARE enforced —
+// via `requiredWhenNotDraft` below — so a non-draft submission that omits
+// any of them is rejected with a 400 VALIDATION_ERROR. Drafts stay lenient
+// so half-filled records can still be parked. Applies to every Inventory
+// AND Enquiry property form. Website Self Registration uses a separate
+// route surface and is NOT affected.
 const titleField = Joi.string().trim().max(255).allow('', null);
 const descField = Joi.string().trim().max(2000).allow('', null);
 const locField = Joi.string().trim().max(255).allow('', null);
 const propertyTypeField = Joi.string().trim().max(255).allow('', null);
 const phoneField = Joi.string().trim().max(20).allow('', null);
 const personField = Joi.string().trim().max(255).allow('', null);
+
+// Wrap a "usually optional" field so it is REQUIRED when `isDraft` is falsy
+// (a real submission) and OPTIONAL when `isDraft` is true (half-filled park).
+// `msg` is the message the admin sees inline — matches the FE messages so
+// the two sides stay consistent when the FE mirrors the BE reject verbatim.
+function requiredWhenNotDraft(baseSchema, msg) {
+  return Joi.when('isDraft', {
+    is: true,
+    then: baseSchema,
+    otherwise: baseSchema
+      .required()
+      .disallow('', null)
+      .messages({
+        'any.required':  msg,
+        'any.invalid':   msg,
+        'string.empty':  msg,
+      }),
+  });
+}
 
 const listQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
@@ -77,7 +105,7 @@ const listQuery = Joi.object({
   isDraft: Joi.boolean().optional(),
   sort: Joi.string()
     .pattern(/^(created_at|price|location|property_type|title):(asc|desc)$/)
-    .default('created_at:desc'),
+    .default('title:asc'),
 });
 
 // Sanity ceilings — catch typos like an extra zero on price/area without
@@ -92,8 +120,18 @@ const AREA_MAX = 10_00_000;
 // bounds to catch obvious typos) are the only remaining constraints.
 const propertyBody = Joi.object({
   title: titleField,
-  description: descField,
-  registrationDate: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional().allow('', null),
+  // Property Description — MANDATORY on every Inventory / Enquiry submit.
+  // Populated on the FE by promoting `details.dynamicData.propertyDescription`
+  // to the top-level `description` before submit.
+  description: requiredWhenNotDraft(descField, 'Property Description is required.'),
+  // Posting Date — OPTIONAL per product policy (only the 7 fields listed at
+  // the top of this file are mandatory). Renamed from `registrationDate` in
+  // T-2026-XXX. The DB column was renamed too (migration 081). If the client
+  // omits it, the route body handler backfills today's date so the NOT NULL
+  // DB column still lands a value.
+  postingDate: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional().allow('', null),
+  // Available From Date — optional. Owner may or may not disclose availability.
+  availableFromDate: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional().allow('', null),
   propertyType: propertyTypeField,
   transactionType: Joi.string().trim().max(255).allow('', null).optional(),
   transactionVariant: masterCodeField.optional().allow('', null),
@@ -110,10 +148,13 @@ const propertyBody = Joi.object({
   transactionTypeName:  Joi.string().trim().max(255).allow('', null).optional(),
   propertyVarietyId:    Joi.number().integer().min(1).optional().allow(null, ''),
   propertyVarietyName:  Joi.string().trim().max(255).allow('', null).optional(),
-  location: locField,
-  district: masterCodeField.optional().allow('', null),
-  taluka: masterCodeField.optional().allow('', null),
-  shivar: masterCodeField.optional().allow('', null),
+  // "Location with Landmark" — MANDATORY. Free-text captured alongside the
+  // District/Taluka/Village cascade; without it the row is not discoverable
+  // in the list search.
+  location: requiredWhenNotDraft(locField, 'Location is required.'),
+  district: requiredWhenNotDraft(masterCodeField, 'District is required.'),
+  taluka: requiredWhenNotDraft(masterCodeField, 'Taluka is required.'),
+  shivar: requiredWhenNotDraft(masterCodeField, 'Village is required.'),
   latitude: Joi.number().min(-90).max(90).optional().allow(null, ''),
   longitude: Joi.number().min(-180).max(180).optional().allow(null, ''),
   // T-2026-048: reverse-geocoded human-readable address paired with lat/lng.
@@ -133,8 +174,13 @@ const propertyBody = Joi.object({
   // the confirmation without a schema change. The service layer uses a
   // column-listed INSERT so this key is naturally stripped before the DB.
   skipDuplicateOwnerValidation: Joi.boolean().optional(),
-  ownerName: personField.optional(),
-  ownerContact: phoneField.optional(),
+  // Owner Contact Name + Number — MANDATORY on every Inventory / Enquiry
+  // submit. Populated on the FE by promoting the first contact card's name
+  // (`details.dynamicData.contacts[0].name`) and first mobile slot
+  // (`contacts[0].mobiles[0]`) into these two top-level columns before
+  // submit so the DB columns match the FE input.
+  ownerName: requiredWhenNotDraft(personField, 'Owner Contact Name is required.'),
+  ownerContact: requiredWhenNotDraft(phoneField, 'Owner Contact Number is required.'),
   agentName: personField.optional(),
   agentContact: phoneField.optional(),
   // Open-ended bag of category-specific fields (flat floor / plot zoning /
@@ -175,16 +221,37 @@ function validateDynamicDataMiddleware(req, res, next) {
     const body = req.body || {};
     if (body.isDraft) return next();
     const dyn = body.details && body.details.dynamicData;
-    if (!dyn) return next();
+    // Product-mandatory dynamic-form field: Address lives on
+    // `details.dynamicData.address` (there is no top-level column). Enforce
+    // it here so the FE gets a routable per-field VALIDATION_ERROR when the
+    // admin submits without it. Every other product-mandatory field is
+    // enforced by the top-level Joi `propertyBody`.
+    const mandatoryDynErrors = [];
+    const addressVal = dyn && typeof dyn.address === 'string' ? dyn.address.trim() : '';
+    if (!addressVal) {
+      mandatoryDynErrors.push({
+        path: 'details.dynamicData.address',
+        message: 'Address is required.',
+      });
+    }
+    if (!dyn) {
+      if (mandatoryDynErrors.length > 0) {
+        return next(new HttpError(400, 'VALIDATION_ERROR', 'Validation failed.', mandatoryDynErrors));
+      }
+      return next();
+    }
     const { value, errors } = validateDynamicData(dyn);
-    if (errors.length > 0) {
+    if (errors.length > 0 || mandatoryDynErrors.length > 0) {
       // Prefix each path so the frontend can route the message back to the
       // right field in the dynamic form (`details.dynamicData.<field>`).
-      const details = errors.map((e) => ({
-        path: `details.dynamicData.${e.path}`,
-        message: e.message,
-      }));
-      return next(new HttpError(400, 'VALIDATION_ERROR', 'Invalid request', details));
+      const details = [
+        ...mandatoryDynErrors,
+        ...errors.map((e) => ({
+          path: `details.dynamicData.${e.path}`,
+          message: e.message,
+        })),
+      ];
+      return next(new HttpError(400, 'VALIDATION_ERROR', 'Validation failed.', details));
     }
     // Write the sanitized value back so the DB stores trimmed / coerced data.
     req.body.details.dynamicData = value;
@@ -266,6 +333,9 @@ router.post('/', idempotency(), validate(propertyBody), validateDynamicDataMiddl
       ...req.body,
       // Drafts default missing fields to safe placeholders so the row is insertable.
       price: req.body.price ?? 0,
+      // Posting Date is optional on the API; the DB column is NOT NULL, so
+      // backfill today's date when the client omits it.
+      postingDate: req.body.postingDate || new Date().toISOString().slice(0, 10),
       // T-2026-067: no `|| 'sale'` default on transactionType and no
       // `|| ''` PT injection. Both fields are user-selected via the
       // chooser; a request that omits them must fail loudly rather
@@ -286,6 +356,10 @@ router.put('/:id', validate(idParam, 'params'), validate(propertyBody), validate
     res.json(await management.updateProperty(req.params.id, {
       ...req.body,
       price: req.body.price ?? 0,
+      // Same postingDate backfill as create — the DB column is NOT NULL, so
+      // a payload without a Posting Date lands today's date rather than
+      // rejecting.
+      postingDate: req.body.postingDate || new Date().toISOString().slice(0, 10),
       // T-2026-067: no `|| 'sale'` default on transactionType and no
       // `|| ''` PT injection. Both fields are user-selected via the
       // chooser; a request that omits them must fail loudly rather
@@ -354,6 +428,49 @@ router.delete('/:id/documents/:fileId', validate(subIdParam, 'params'), async (r
     next(err);
   }
 });
+
+// Share the property via email. Runtime-only — nothing about the share is
+// persisted; SMTP failure surfaces a specific HttpError. Owner / staff-only
+// fields are stripped inside the share service (never reach the wire).
+const shareSectionField = Joi.object({
+  key:       Joi.string().trim().max(120).required(),
+  label:     Joi.string().trim().max(255).allow('', null).optional(),
+  type:      Joi.string().trim().max(64).allow('', null).optional(),
+  masterKey: Joi.string().trim().max(120).allow('', null).optional(),
+}).unknown(true);
+const shareSection = Joi.object({
+  key:    Joi.string().trim().max(120).allow('', null).optional(),
+  title:  Joi.string().trim().max(255).required(),
+  fields: Joi.array().items(shareSectionField).max(200).default([]),
+}).unknown(true);
+const shareBody = Joi.object({
+  recipientEmails: Joi.string().trim().min(3).max(2000).required(),
+  subject: Joi.string().trim().max(255).allow('', null).optional(),
+  message: Joi.string().trim().max(5000).allow('', null).optional(),
+  // Dynamic path (preferred): frontend sends the section schema derived
+  // from the form config.
+  sections: Joi.array().items(shareSection).max(30).optional(),
+  // Back-compat flags for older clients that pre-date the dynamic renderer.
+  includeDetails:     Joi.boolean().default(true),
+  includeDescription: Joi.boolean().default(true),
+  includeImages:      Joi.boolean().default(true),
+  includeDocuments:   Joi.boolean().default(true),
+  includePropertyUrl: Joi.boolean().default(true),
+});
+
+router.post(
+  '/:id/share',
+  validate(idParam, 'params'),
+  validate(shareBody, 'body'),
+  async (req, res, next) => {
+    try {
+      const result = await shareProperty('inventory', Number(req.params.id), req.body);
+      res.json({ message: 'Property shared successfully.', ...result });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 // Stream a private document. Auth + module gate already enforced by router.use.
 router.get('/:id/documents/:fileId', validate(subIdParam, 'params'), async (req, res, next) => {

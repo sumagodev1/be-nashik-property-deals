@@ -55,16 +55,31 @@ const LOOKUP_KEYS = Object.freeze([
   // Bunglow MD-driven masters — added in migration 030. The Bunglow inventory
   // forms (bungalow-forms.md) drive every multi-option field through these.
   'bunglow_size', 'bunglow_facing_specific', 'bunglow_facing_any',
-  'bunglow_age_specific', 'bunglow_condition', 'bunglow_status',
+  'bunglow_age_specific', 'bunglow_condition', /* 'bunglow_status', — DISABLED (T-2026-081): per-property Status masters retired in favour of the global `status_type` (Inventory) / `enquiry_status` (Enquiry) masters. Rows remain in master_lookups for backward-compat; only the key registration is off. */
   'bunglow_defect_built', 'bunglow_defect_community',
   'bunglow_lease_monthly_budget', 'bunglow_lease_yearly_budget',
   'bunglow_deposit_budget', 'bunglow_rent_monthly_budget',
   'bunglow_rent_deposit_budget', 'bunglow_tenant_preference',
   'bunglow_booking_amount_fixed', 'bunglow_possession_after',
+  // Rowhouse MD-driven masters — added in migration 084. Rowhouse is a new
+  // Property Type parallel to Bungalow (no Bungalow masters reused). The
+  // extra `rowhouse_property_position` key replaces the retired "Bunglow
+  // Type" field (Left Corner / Middle / Right Corner).
+  // `rowhouse_age_range` mirrors `bunglow_age_range`; `amenities_rowhouse_furniture`
+  // mirrors `amenities_bunglow_furniture`.
+  'rowhouse_property_position',
+  'rowhouse_size', 'rowhouse_facing_specific', 'rowhouse_facing_any',
+  'rowhouse_age_specific', 'rowhouse_age_range', 'rowhouse_condition',
+  'rowhouse_defect_built', 'rowhouse_defect_community',
+  'rowhouse_lease_monthly_budget', 'rowhouse_lease_yearly_budget',
+  'rowhouse_deposit_budget', 'rowhouse_rent_monthly_budget',
+  'rowhouse_rent_deposit_budget', 'rowhouse_tenant_preference',
+  'rowhouse_booking_amount_fixed', 'rowhouse_possession_after',
+  'amenities_rowhouse_furniture',
   // Commercial Space MD-driven masters — added in migration 031. Sourced
   // from `reference of forms/Commercial Space Registration Forms.md`.
   'commercial_facing_specific', 'commercial_facing_any',
-  'commercial_age_specific', 'commercial_condition', 'commercial_status',
+  'commercial_age_specific', 'commercial_condition', /* 'commercial_status', — DISABLED (T-2026-081): per-property Status masters retired */
   'commercial_defect_built', 'commercial_defect_community',
   'commercial_lease_monthly_budget', 'commercial_lease_yearly_budget',
   'commercial_deposit_budget', 'commercial_rent_budget',
@@ -72,7 +87,7 @@ const LOOKUP_KEYS = Object.freeze([
   // Flat MD-driven masters — added in migration 032. Sourced from
   // `reference of forms/Flat Registration Forms.md`.
   'flat_type', 'flat_size', 'flat_facing_specific', 'flat_facing_any',
-  'flat_age_specific', 'flat_condition', 'flat_status', 'flat_nature',
+  'flat_age_specific', 'flat_condition', /* 'flat_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'flat_nature',
   'flat_parking_type', 'flat_no_of_car_parking',
   'flat_defect_built', 'flat_defect_community',
   'flat_lease_monthly_budget', 'flat_lease_yearly_budget',
@@ -82,21 +97,21 @@ const LOOKUP_KEYS = Object.freeze([
   // Hostel MD-driven masters — added in migration 033. Sourced from
   // `reference of forms/Hostel Registration Form.md`.
   'hostel_category', 'hostel_rooms_count', 'hostel_facing',
-  'hostel_condition', 'hostel_status', 'hostel_amount_budget',
+  'hostel_condition', /* 'hostel_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'hostel_amount_budget',
   // Land MD-driven masters — added in migration 034. Sourced from
   // `reference of forms/Land Registration Forms.md`.
   'land_sub_type', 'land_category_residential', 'land_category_commercial',
-  'land_category_industrial', 'land_facing', 'land_status',
+  'land_category_industrial', 'land_facing', /* 'land_status', — DISABLED (T-2026-081): per-property Status masters retired */
   'land_area_unit', 'land_lease_monthly_budget', 'land_lease_yearly_budget',
   'land_deposit_budget',
   // Paying Guest MD-driven masters — added in migration 035. Sourced from
   // `reference of forms/Paying Guest Registration Forms.md`.
   'paying_guest_size', 'paying_guest_floor', 'paying_guest_facing',
-  'paying_guest_condition', 'paying_guest_status', 'paying_guest_defect_built',
+  'paying_guest_condition', /* 'paying_guest_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'paying_guest_defect_built',
   // Plot MD-driven masters — added in migration 036. Sourced from
   // `reference of forms/Plot Registration Form.md`.
   'plot_sub_residential', 'plot_sub_commercial', 'plot_facing',
-  'plot_corner', 'plot_layout_status', 'plot_status', 'plot_area_unit',
+  'plot_corner', 'plot_layout_status', /* 'plot_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'plot_area_unit',
   'plot_rate_unit', 'plot_amenities', 'plot_emi_count',
   'plot_emi_booking_percent', 'plot_lease_monthly_budget',
   'plot_lease_yearly_budget', 'plot_deposit_budget',
@@ -110,13 +125,13 @@ const LOOKUP_KEYS = Object.freeze([
   // `reference of forms/Shop Registration Forms.md`. (`shop_expected_tenant`
   // is a legacy key — only its seed gets topped up.)
   'shop_facing_specific', 'shop_facing_any', 'shop_age_specific',
-  'shop_condition', 'shop_status', 'shop_defect_built', 'shop_defect_community',
+  'shop_condition', /* 'shop_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'shop_defect_built', 'shop_defect_community',
   'shop_lease_monthly_budget', 'shop_lease_yearly_budget', 'shop_deposit_budget',
   'shop_booking_amount_fixed',
   // TDR MD-driven masters — added in migration 039. Sourced from
   // `reference of forms/TDR Registration Form.md`. (`tdr_zone` and
   // `tdr_floor` are legacy keys — only their seeds get topped up.)
-  'tdr_plot_facing', 'tdr_development_ratio', 'tdr_purchase', 'tdr_status',
+  'tdr_plot_facing', 'tdr_development_ratio', 'tdr_purchase', /* 'tdr_status', — DISABLED (T-2026-081): per-property Status masters retired */
   // Bank Auction MD-driven masters — added in migration 040. Sourced from
   // `reference of forms/Bank Auction Registration Form.md`.
   // (`bank_auction_pending_dues` is a legacy key — only its seed gets
@@ -129,7 +144,7 @@ const LOOKUP_KEYS = Object.freeze([
   // Project MD-driven masters — added in migration 044. Sourced from
   // `reference of forms/Project Registration Form.md`.
   'project_facing', 'project_condition', 'project_defect_built',
-  'project_sale_status',
+  /* 'project_sale_status', — DISABLED (T-2026-081): per-property Status masters retired */
   // Land Record Management masters — added in migration 047. Sourced from
   // `reference of forms/LandRecordManagement.md`. Only the Paper Notice
   // form contributes masters; the Gaothan + Survey Number forms reuse
@@ -260,7 +275,7 @@ const MASTER_LABELS = Object.freeze({
   bunglow_facing_any:           'Bunglow / Facing (Any)',
   bunglow_age_specific:         'Bunglow / Age (Specific)',
   bunglow_condition:            'Bunglow / Condition',
-  bunglow_status:               'Bunglow / Status',
+  // bunglow_status:               'Bunglow / Status', — DISABLED (T-2026-081)
   bunglow_defect_built:         'Bunglow / Defect (Built)',
   bunglow_defect_community:     'Bunglow / Defect (Community)',
   bunglow_lease_monthly_budget: 'Bunglow / Lease Budget (Monthly)',
@@ -271,12 +286,31 @@ const MASTER_LABELS = Object.freeze({
   bunglow_tenant_preference:    'Bunglow / Tenant Preference',
   bunglow_booking_amount_fixed: 'Bunglow / Booking Amount (Fixed)',
   bunglow_possession_after:     'Bunglow / Possession After',
+  // Rowhouse / X — hierarchical labels, parallel to Bungalow.
+  rowhouse_property_position:    'Rowhouse / Property Position',
+  rowhouse_size:                 'Rowhouse / Size',
+  rowhouse_facing_specific:      'Rowhouse / Facing (Specific)',
+  rowhouse_facing_any:           'Rowhouse / Facing (Any)',
+  rowhouse_age_specific:         'Rowhouse / Age (Specific)',
+  rowhouse_age_range:            'Rowhouse / Age Range',
+  rowhouse_condition:            'Rowhouse / Condition',
+  rowhouse_defect_built:         'Rowhouse / Defect (Built)',
+  rowhouse_defect_community:     'Rowhouse / Defect (Community)',
+  rowhouse_lease_monthly_budget: 'Rowhouse / Lease Budget (Monthly)',
+  rowhouse_lease_yearly_budget:  'Rowhouse / Lease Budget (Yearly)',
+  rowhouse_deposit_budget:       'Rowhouse / Deposit Budget',
+  rowhouse_rent_monthly_budget:  'Rowhouse / Rent Budget (Monthly)',
+  rowhouse_rent_deposit_budget:  'Rowhouse / Rent Deposit Budget',
+  rowhouse_tenant_preference:    'Rowhouse / Tenant Preference',
+  rowhouse_booking_amount_fixed: 'Rowhouse / Booking Amount (Fixed)',
+  rowhouse_possession_after:     'Rowhouse / Possession After',
+  amenities_rowhouse_furniture:  'Rowhouse / Furniture',
   // Commercial Space / X
   commercial_facing_specific:      'Commercial Space / Facing (Specific)',
   commercial_facing_any:           'Commercial Space / Facing (Any)',
   commercial_age_specific:         'Commercial Space / Age (Specific)',
   commercial_condition:            'Commercial Space / Condition',
-  commercial_status:               'Commercial Space / Status',
+  // commercial_status:               'Commercial Space / Status', — DISABLED (T-2026-081)
   commercial_defect_built:         'Commercial Space / Defect (Built)',
   commercial_defect_community:     'Commercial Space / Defect (Community)',
   commercial_lease_monthly_budget: 'Commercial Space / Lease Budget (Monthly)',
@@ -293,7 +327,7 @@ const MASTER_LABELS = Object.freeze({
   flat_facing_any:                 'Flat / Facing (Any)',
   flat_age_specific:               'Flat / Age (Specific)',
   flat_condition:                  'Flat / Condition',
-  flat_status:                     'Flat / Status',
+  // flat_status:                     'Flat / Status', — DISABLED (T-2026-081)
   flat_nature:                     'Flat / Nature',
   flat_parking_type:               'Flat / Parking Type',
   flat_no_of_car_parking:          'Flat / No. of Car Parking',
@@ -313,7 +347,7 @@ const MASTER_LABELS = Object.freeze({
   hostel_rooms_count:              'Hostel / Rooms Count',
   hostel_facing:                   'Hostel / Facing',
   hostel_condition:                'Hostel / Condition',
-  hostel_status:                   'Hostel / Status',
+  // hostel_status:                   'Hostel / Status', — DISABLED (T-2026-081)
   hostel_amount_budget:            'Hostel / Amount Budget',
   // Re-namespace pre-existing legacy key.
   hostel_residence:                'Hostel / Residence',
@@ -330,7 +364,7 @@ const MASTER_LABELS = Object.freeze({
   land_category_commercial:        'Land / Category (Commercial)',
   land_category_industrial:        'Land / Category (Industrial)',
   land_facing:                     'Land / Facing',
-  land_status:                     'Land / Status',
+  // land_status:                     'Land / Status', — DISABLED (T-2026-081)
   land_area_unit:                  'Land / Area Unit',
   land_lease_monthly_budget:       'Land / Lease Budget (Monthly)',
   land_lease_yearly_budget:        'Land / Lease Budget (Yearly)',
@@ -340,7 +374,7 @@ const MASTER_LABELS = Object.freeze({
   paying_guest_floor:              'Paying Guest / Floor',
   paying_guest_facing:             'Paying Guest / Facing',
   paying_guest_condition:          'Paying Guest / Condition',
-  paying_guest_status:             'Paying Guest / Status',
+  // paying_guest_status:             'Paying Guest / Status', — DISABLED (T-2026-081)
   paying_guest_defect_built:       'Paying Guest / Defect (Built)',
   // Plot / X — re-namespaces several legacy keys.
   plot_type:                       'Plot / Plot Type',
@@ -350,7 +384,7 @@ const MASTER_LABELS = Object.freeze({
   plot_facing:                     'Plot / Facing',
   plot_corner:                     'Plot / Corner',
   plot_layout_status:              'Plot / Layout Status',
-  plot_status:                     'Plot / Status',
+  // plot_status:                     'Plot / Status', — DISABLED (T-2026-081)
   plot_area_unit:                  'Plot / Area Unit',
   plot_rate_unit:                  'Plot / Rate Unit',
   plot_amenities:                  'Plot / Amenities',
@@ -369,7 +403,7 @@ const MASTER_LABELS = Object.freeze({
   shop_facing_any:                 'Shop / Facing (Any)',
   shop_age_specific:               'Shop / Age (Specific)',
   shop_condition:                  'Shop / Condition',
-  shop_status:                     'Shop / Status',
+  // shop_status:                     'Shop / Status', — DISABLED (T-2026-081)
   shop_defect_built:               'Shop / Defect (Built)',
   shop_defect_community:           'Shop / Defect (Community)',
   shop_lease_monthly_budget:       'Shop / Lease Budget (Monthly)',
@@ -383,7 +417,7 @@ const MASTER_LABELS = Object.freeze({
   tdr_plot_facing:                 'TDR / Plot Facing',
   tdr_development_ratio:           'TDR / Development Ratio',
   tdr_purchase:                    'TDR / TDR Purchase',
-  tdr_status:                      'TDR / Status',
+  // tdr_status:                      'TDR / Status', — DISABLED (T-2026-081)
   // Bank Auction / X — re-namespaces legacy `bank_auction_pending_dues`.
   bank_auction_project_type:       'Bank Auction / Project Type',
   bank_auction_pending_dues:       'Bank Auction / Pending Dues',
@@ -397,7 +431,7 @@ const MASTER_LABELS = Object.freeze({
   project_facing:                  'Project / Facing',
   project_condition:               'Project / Condition',
   project_defect_built:            'Project / Defect (Built)',
-  project_sale_status:             'Project / Sale Status',
+  // project_sale_status:             'Project / Sale Status', — DISABLED (T-2026-081)
   // Paper Notice — six separate masters per source doc naming convention
   // (all six area-unit masters carry the same vocabulary but stay separate
   // so admins can rename any one independently).
@@ -589,6 +623,13 @@ const AMOUNT_MASTER_KEYS = new Set([
   'bunglow_rent_monthly_budget',
   'bunglow_rent_deposit_budget',
   'bunglow_booking_amount_fixed',
+  // Rowhouse (new property type — mirrors Bungalow bucket set)
+  'rowhouse_lease_monthly_budget',
+  'rowhouse_lease_yearly_budget',
+  'rowhouse_deposit_budget',
+  'rowhouse_rent_monthly_budget',
+  'rowhouse_rent_deposit_budget',
+  'rowhouse_booking_amount_fixed',
   // Commercial Space
   'commercial_lease_monthly_budget',
   'commercial_lease_yearly_budget',
