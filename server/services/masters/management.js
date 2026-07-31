@@ -197,6 +197,28 @@ const LOOKUP_KEYS = Object.freeze([
   'website_property_type',
   'website_transaction_type',
   'website_property_variety',
+  // Hotel MD-driven masters — added in migration 085. Sourced from
+  // `reference of forms/hotel.md`. Only `hotel_type` is expandable
+  // (Other → Save flow via TEXT_MASTER_SELECT_CONFIG on the FE); every
+  // other key is a fixed Available / Not Available pair and is listed in
+  // FIXED_VALUE_MASTERS on the FE so no Other UI renders.
+  'hotel_type',
+  // Utilities (6)
+  'hotel_generator_power_backup', 'hotel_inverter_ups_support',
+  'hotel_water_tanks', 'hotel_water_pumps',
+  'hotel_lift_facility', 'hotel_parking_facility',
+  // Technology Setup (9)
+  'hotel_billing_computer', 'hotel_pos_software', 'hotel_online_ordering_system',
+  'hotel_receipt_printer', 'hotel_qr_menu', 'hotel_barcode_scanner',
+  'hotel_card_payment_machine', 'hotel_inventory_mgmt_software', 'hotel_cctv_monitoring',
+  // Essential Licenses (7)
+  'hotel_fssai_license', 'hotel_gst_registration', 'hotel_shop_establishment_reg',
+  'hotel_trade_license', 'hotel_fire_noc', 'hotel_pollution_approvals',
+  'hotel_music_playing_license',
+  // Checklist Before Buying (5)
+  'hotel_commercial_use_permission', 'hotel_adequate_water_supply',
+  'hotel_3phase_electricity', 'hotel_kitchen_exhaust_route',
+  'hotel_high_footfall_location',
 ]);
 
 const MASTER_TABLES = Object.freeze({
@@ -460,6 +482,37 @@ const MASTER_LABELS = Object.freeze({
   website_property_type:     'Website / Property Type',
   website_transaction_type:  'Website / Transaction Type',
   website_property_variety:  'Website / Property Variety',
+  // Hotel / X — hierarchical labels so they group in the Admin sidebar. All
+  // seeded by migration 085. `hotel_type` is the only expandable master;
+  // every other Hotel master is a fixed Available / Not Available pair.
+  hotel_type:                          'Hotel / Hotel Type',
+  hotel_generator_power_backup:        'Hotel / Generator or Power Backup',
+  hotel_inverter_ups_support:          'Hotel / Inverter or UPS Support',
+  hotel_water_tanks:                   'Hotel / Water Tanks',
+  hotel_water_pumps:                   'Hotel / Water Pumps',
+  hotel_lift_facility:                 'Hotel / Lift Facility',
+  hotel_parking_facility:              'Hotel / Parking Facility',
+  hotel_billing_computer:              'Hotel / Billing Computer or Tablet',
+  hotel_pos_software:                  'Hotel / POS Software',
+  hotel_online_ordering_system:        'Hotel / Online Ordering System',
+  hotel_receipt_printer:               'Hotel / Receipt Printer',
+  hotel_qr_menu:                       'Hotel / QR Menu',
+  hotel_barcode_scanner:               'Hotel / Barcode Scanner',
+  hotel_card_payment_machine:          'Hotel / Card Payment Machine',
+  hotel_inventory_mgmt_software:       'Hotel / Inventory Management Software',
+  hotel_cctv_monitoring:               'Hotel / CCTV Monitoring System',
+  hotel_fssai_license:                 'Hotel / FSSAI License',
+  hotel_gst_registration:              'Hotel / GST Registration',
+  hotel_shop_establishment_reg:        'Hotel / Shop & Establishment Registration',
+  hotel_trade_license:                 'Hotel / Trade License (Local Authority)',
+  hotel_fire_noc:                      'Hotel / Fire NOC',
+  hotel_pollution_approvals:           'Hotel / Pollution Related Approvals',
+  hotel_music_playing_license:         'Hotel / Music Playing License',
+  hotel_commercial_use_permission:     'Hotel / Commercial Use Permission',
+  hotel_adequate_water_supply:         'Hotel / Adequate Water Supply',
+  hotel_3phase_electricity:            'Hotel / 3-Phase Electricity Connection',
+  hotel_kitchen_exhaust_route:         'Hotel / Kitchen Exhaust Route',
+  hotel_high_footfall_location:        'Hotel / High Footfall Location',
 });
 
 // True for keys that live in master_lookups — drives the discriminator

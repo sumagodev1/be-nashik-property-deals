@@ -18,15 +18,19 @@
  *     sourceLabel: 'Inventory' | 'Enquiry' | 'Business Associate'
  *     recordId:    number    — id in the source table (of the primary usage)
  *     propertyCode: string?  — e.g. "INV-2507-0005" (property sources only)
+ *     title:       string?   — property title (property sources only)
+ *     status:      string?   — property status (property sources only)
  *     propertyType: string?
  *     transactionType: string?
  *     transactionVariant: string?
  *     location:    string?
+ *     district:    string?   — property district (property sources only)
  *     designation: string?   — BA only
  *     cityCode:    string?   — BA only
  *     usages: Array<{
  *       source, sourceLabel, recordId,
- *       propertyCode?, propertyType?, transactionType?, location?,
+ *       propertyCode?, title?, status?, propertyType?, transactionType?,
+ *       transactionVariant?, location?, district?,
  *       designation?, cityCode?
  *     }>
  *   }
@@ -82,10 +86,13 @@ function extractPropertyCandidates(row, source) {
     sourceLabel: SOURCE_LABELS[source],
     recordId: row.id,
     propertyCode: row.property_code || '',
+    title: row.title || '',
+    status: row.status || '',
     propertyType: row.property_type || '',
     transactionType: row.transaction_type || '',
     transactionVariant: row.transaction_variant || '',
     location: row.location || '',
+    district: row.district || '',
   };
 
   // Top-level columns.
@@ -270,10 +277,13 @@ async function search(q, sources = ['inventory', 'enquiry', 'ba'], limit = 15, o
       sourceLabel: cand.sourceLabel,
       recordId: cand.recordId,
       propertyCode: cand.propertyCode,
+      title: cand.title,
+      status: cand.status,
       propertyType: cand.propertyType,
       transactionType: cand.transactionType,
       transactionVariant: cand.transactionVariant,
       location: cand.location,
+      district: cand.district,
       designation: cand.designation,
       cityCode: cand.cityCode,
     });
@@ -310,10 +320,13 @@ async function search(q, sources = ['inventory', 'enquiry', 'ba'], limit = 15, o
       sourceLabel: primary.sourceLabel,
       recordId: primary.recordId,
       propertyCode: primary.propertyCode || '',
+      title: primary.title || '',
+      status: primary.status || '',
       propertyType: primary.propertyType || '',
       transactionType: primary.transactionType || '',
       transactionVariant: primary.transactionVariant || '',
       location: primary.location || '',
+      district: primary.district || '',
       designation: primary.designation || '',
       cityCode: primary.cityCode || '',
       usages: dedupedUsages,

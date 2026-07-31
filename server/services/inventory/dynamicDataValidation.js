@@ -351,7 +351,11 @@ const dynamicDataSchema = Joi.object({
   referenceSourceOfLead: longText,
 })
   .unknown(true)
-  .max(200);
+  // Hospital's full section tree (clinical, emergency, ICU, OT, diagnostic,
+  // support, equipments, utilities, IT, HR, assets, licenses, safety) pushes
+  // a single record's key count close to 150. Cap at 300 to leave headroom
+  // for future variants without letting a client bug flood the JSON column.
+  .max(300);
 
 // Cross-field checks: Any `*Min` / `*Max` numeric pair must satisfy Max >= Min.
 // Runs after Joi validation of individual fields — inside a `.custom()` on

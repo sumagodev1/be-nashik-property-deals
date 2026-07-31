@@ -30,7 +30,7 @@ const PER_SOURCE_CAP = 25;
 // clause already touched it, but SELECT'ing it into the result set for
 // every match would balloon the payload).
 const PROP_COLUMNS = `
-  id, property_code, property_type, transaction_type, transaction_variant,
+  id, property_code, title, status, property_type, transaction_type, transaction_variant,
   location, district, taluka, shivar, owner_name, owner_contact, details
 `;
 

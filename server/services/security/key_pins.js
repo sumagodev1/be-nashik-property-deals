@@ -181,7 +181,13 @@ async function verifyPlaintext(pin) {
 async function verify({ pin }) {
   assertPinShape(pin);
   const { matched } = await verifyPlaintext(pin);
-  if (!matched) throw new HttpError(401, 'INVALID_PIN', 'Invalid PIN.');
+  if (!matched) {
+    throw new HttpError(
+      401,
+      'INVALID_PIN',
+      'Invalid Security PIN. Please enter a valid 6-digit PIN.',
+    );
+  }
   return { ok: true };
 }
 
