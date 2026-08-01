@@ -7,7 +7,8 @@
  *    mutations (create / update / delete).
  *  - Bcrypt-hashing of every stored PIN (plaintext PINs never touch
  *    the DB layer).
- *  - The max-5-active-PIN business rule.
+ *  - The max-2-active-PIN business rule (enforced server-side; the
+ *    frontend also renders it, but the DB write is the source of truth).
  *  - The verify() call: bcrypt-compares an incoming plaintext PIN
  *    against every active hash.
  *
@@ -23,8 +24,11 @@
 const bcrypt = require('bcrypt');
 const { HttpError } = require('../../middleware/errors');
 const keyPins = require('../../db/queries/key_pins');
+const admins = require('../../db/queries/admins');
+const subAdmins = require('../../db/queries/sub_admins');
 
-const MAX_ACTIVE_PINS = 5;
+const MAX_ACTIVE_PINS = 2;
+const PIN_LIMIT_MESSAGE = `Maximum of ${MAX_ACTIVE_PINS} active Key PINs are allowed. Please deactivate or delete an existing PIN before creating a new one.`;
 const BCRYPT_ROUNDS = 12;
 const PIN_REGEX = /^[0-9]{6}$/;
 
@@ -48,15 +52,54 @@ function normalizeStatus(raw) {
 /**
  * Shape the row for API responses. `hashed_pin` is stripped defensively
  * even though the queries layer already omits it, and a masked display
- * value is added for convenience of the frontend.
+ * value is added for convenience of the frontend. A camelCase alias
+ * (`createdByName`) is added alongside `created_by_name` so React
+ * components can read either style.
  */
 function toApi(row) {
   if (!row) return null;
   const { hashed_pin, ...safe } = row;
   return {
     ...safe,
+    createdByName: safe.created_by_name || null,
+    updatedByName: safe.updated_by_name || null,
     pinMasked: '••••••',
   };
+}
+
+/**
+ * Resolve the acting user's display name + admin FK from an authenticated
+ * request. The JWT carries only `{ sub, role }`; we look up the real name
+ * in the appropriate table so the value stored is human-readable at the
+ * moment of write (and survives later account deletion).
+ *
+ * - role === 'admin':     adminId = admins.id,      name = admins.full_name
+ * - role === 'sub_admin': adminId = null (FK on key_pins.created_by_admin_id
+ *                                          references admins only),
+ *                         name = sub_admins.full_name
+ * - anything else:        both null.
+ *
+ * NOTE: the name is derived server-side ONLY. Any `created_by`/`createdBy`
+ * value in the request body is ignored (Joi schema doesn't accept it, and
+ * this function never reads req.body).
+ */
+async function resolveActor(req) {
+  const role = req?.auth?.role || null;
+  const rawSub = req?.auth?.sub;
+  const subjectId = rawSub != null ? Number(rawSub) : null;
+  if (!subjectId || Number.isNaN(subjectId)) {
+    return { adminId: null, actorName: null };
+  }
+
+  if (role === 'admin') {
+    const found = await admins.findActiveById(subjectId);
+    return { adminId: subjectId, actorName: found?.full_name || null };
+  }
+  if (role === 'sub_admin') {
+    const found = await subAdmins.findById(subjectId);
+    return { adminId: null, actorName: found?.full_name || null };
+  }
+  return { adminId: null, actorName: null };
 }
 
 async function list(params = {}) {
@@ -77,11 +120,7 @@ async function create({ pin, status = 'active' }, req) {
   if (targetStatus === 'active') {
     const activeCount = await keyPins.countActive();
     if (activeCount >= MAX_ACTIVE_PINS) {
-      throw new HttpError(
-        409,
-        'PIN_LIMIT_REACHED',
-        `Maximum of ${MAX_ACTIVE_PINS} active PINs allowed.`,
-      );
+      throw new HttpError(409, 'PIN_LIMIT_REACHED', PIN_LIMIT_MESSAGE);
     }
   }
 
@@ -95,8 +134,8 @@ async function create({ pin, status = 'active' }, req) {
   }
 
   const hashedPin = await bcrypt.hash(pin, BCRYPT_ROUNDS);
-  const adminId = req?.auth?.sub ? Number(req.auth.sub) : null;
-  const created = await keyPins.create({ hashedPin, status: targetStatus, adminId });
+  const { adminId, actorName } = await resolveActor(req);
+  const created = await keyPins.create({ hashedPin, status: targetStatus, adminId, actorName });
   return toApi(created);
 }
 
@@ -109,15 +148,11 @@ async function update(id, { pin = null, status = null }, req) {
     throw new HttpError(400, 'VALIDATION_ERROR', 'status must be "active" or "inactive".');
   }
 
-  // Enabling an inactive PIN counts against the max-5-active limit.
+  // Enabling an inactive PIN counts against the max-active limit.
   if (targetStatus === 'active' && existing.status !== 'active') {
     const activeCount = await keyPins.countActive();
     if (activeCount >= MAX_ACTIVE_PINS) {
-      throw new HttpError(
-        409,
-        'PIN_LIMIT_REACHED',
-        `Maximum of ${MAX_ACTIVE_PINS} active PINs allowed.`,
-      );
+      throw new HttpError(409, 'PIN_LIMIT_REACHED', PIN_LIMIT_MESSAGE);
     }
   }
 
@@ -132,11 +167,12 @@ async function update(id, { pin = null, status = null }, req) {
     hashedPin = await bcrypt.hash(pin, BCRYPT_ROUNDS);
   }
 
-  const adminId = req?.auth?.sub ? Number(req.auth.sub) : null;
+  const { adminId, actorName } = await resolveActor(req);
   const updated = await keyPins.update(id, {
     hashedPin,
     status: targetStatus,
     adminId,
+    actorName,
   });
   return toApi(updated);
 }

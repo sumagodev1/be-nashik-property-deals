@@ -331,9 +331,10 @@ router.post('/', idempotency(), validate(propertyBody), validateDynamicDataMiddl
     const created = await management.createProperty({
       ...req.body,
       price: req.body.price ?? 0,
-      // Posting Date is optional on the API; the DB column is NOT NULL, so
-      // backfill today's date when the client omits it.
-      postingDate: req.body.postingDate || new Date().toISOString().slice(0, 10),
+      // Posting Date is user-supplied. DB column is nullable — pass the
+      // client value through untouched (no today() backfill), so an unset
+      // field lands NULL and a picked date lands exactly as chosen.
+      postingDate: req.body.postingDate || null,
       // T-2026-067: no default injection for the two classification
       // fields — the chooser is the source of truth. A request that
       // omits propertyType / transactionType must fail loudly, not
@@ -354,8 +355,9 @@ router.put('/:id', validate(idParam, 'params'), validate(propertyBody), validate
     res.json(await management.updateProperty(req.params.id, {
       ...req.body,
       price: req.body.price ?? 0,
-      // Same postingDate backfill as create — the DB column is NOT NULL.
-      postingDate: req.body.postingDate || new Date().toISOString().slice(0, 10),
+      // Posting Date is user-supplied — pass through untouched (nullable
+      // DB column). Same rationale as the create handler above.
+      postingDate: req.body.postingDate || null,
       // T-2026-067: no default injection for the two classification
       // fields — the chooser is the source of truth. A request that
       // omits propertyType / transactionType must fail loudly, not

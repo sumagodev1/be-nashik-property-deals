@@ -46,6 +46,11 @@ const LOOKUP_KEYS = Object.freeze([
   'hospital_type', 'industrial_shed_type', 'allotted_area_to_owner',
   // contacts
   'contact_relation', 'contact_type', 'lead_source',
+  // Enquiry / Relation — dedicated vocabulary for the Relation dropdown on
+  // Enquiry forms (Owner Details + Key Person Details). Fully separate from
+  // `contact_relation` (Inventory) so the two workflows evolve independently.
+  // Seeded in migration 087.
+  'enquiry_relation',
   // hierarchical location (parent_code drives the cascade)
   'district', 'taluka', 'shivar',
   // Phase-2 — added in migration 029. Each gets a sub-section in the new
@@ -236,6 +241,7 @@ const MASTER_LABELS = Object.freeze({
   transaction_type: 'Global / Transaction Type',
   status_type:      'Inventory / Property Status',
   enquiry_status:   'Enquiry / Property Status',
+  enquiry_relation: 'Enquiry / Relation',
   contact_relation: 'Global / Contact Relation',
   contact_type:     'Global / Contact Type',
   lead_source:      'Global / Lead Source',

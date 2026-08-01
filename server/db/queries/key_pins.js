@@ -13,7 +13,8 @@ const { pool } = require('../pool');
 // Safe projection — omits `hashed_pin` so it can never leak via list/getById.
 const PUBLIC_COLUMNS = `
   id, status,
-  created_by_admin_id, updated_by_admin_id,
+  created_by_admin_id, created_by_name,
+  updated_by_admin_id, updated_by_name,
   created_at, updated_at
 `;
 
@@ -54,16 +55,19 @@ async function countActive() {
   return Number(total);
 }
 
-async function create({ hashedPin, status = 'active', adminId = null }) {
+async function create({ hashedPin, status = 'active', adminId = null, actorName = null }) {
   const [r] = await pool.query(
-    `INSERT INTO key_pins (hashed_pin, status, created_by_admin_id, updated_by_admin_id)
-     VALUES (?, ?, ?, ?)`,
-    [hashedPin, status, adminId, adminId],
+    `INSERT INTO key_pins
+       (hashed_pin, status,
+        created_by_admin_id, created_by_name,
+        updated_by_admin_id, updated_by_name)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [hashedPin, status, adminId, actorName, adminId, actorName],
   );
   return getById(r.insertId);
 }
 
-async function update(id, { hashedPin = null, status = null, adminId = null } = {}) {
+async function update(id, { hashedPin = null, status = null, adminId = null, actorName = null } = {}) {
   const sets = [];
   const args = [];
   if (hashedPin !== null) {
@@ -76,6 +80,8 @@ async function update(id, { hashedPin = null, status = null, adminId = null } = 
   }
   sets.push('updated_by_admin_id = ?');
   args.push(adminId);
+  sets.push('updated_by_name = ?');
+  args.push(actorName);
   args.push(id);
 
   await pool.query(

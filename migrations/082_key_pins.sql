@@ -6,9 +6,10 @@
 -- property mutations (create / edit / delete).
 --
 -- PINs are NEVER stored in plaintext. bcrypt is used for
--- hashing at the service layer. The application enforces
--- max 5 ACTIVE PINs and 6-digit-numeric-only input; the
--- table itself just persists the hash + status.
+-- hashing at the service layer. The application enforces a
+-- max ACTIVE PIN count (see MAX_ACTIVE_PINS in
+-- services/security/key_pins.js) and 6-digit-numeric-only
+-- input; the table itself just persists the hash + status.
 --
 -- Soft-delete via deleted_at so audit trails are preserved
 -- even after a PIN is removed.

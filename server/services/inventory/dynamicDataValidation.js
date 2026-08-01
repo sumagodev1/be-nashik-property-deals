@@ -109,7 +109,16 @@ const emailItem = Joi.string().trim().email({ tlds: { allow: false } }).max(120)
   .messages({ 'string.email': 'Enter a valid email address' });
 const contactShape = Joi.object({
   name: nameField,
-  relation: Joi.string().trim().max(50).allow('', null),
+  // `relation` holds either:
+  //   • an enquiry relation label (max 100 chars — the enquiry surface stores
+  //     the master LABEL via TextMasterSelect), OR
+  //   • a business_associate_designation master CODE (up to 64 chars — the
+  //     inventory surface now stores a Designation code via
+  //     DesignationMasterSelect), OR
+  //   • a legacy free-text relation string from records saved before the
+  //     designation migration.
+  // The 100-char cap covers all three shapes without further branching.
+  relation: Joi.string().trim().max(100).allow('', null),
   phones: Joi.array().items(phoneItem).max(10).default([]),
   mobiles: Joi.array().items(phoneItem).max(10).default([]),
   emails: Joi.array().items(emailItem).max(10).default([]),

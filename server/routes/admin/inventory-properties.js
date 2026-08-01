@@ -333,9 +333,10 @@ router.post('/', idempotency(), validate(propertyBody), validateDynamicDataMiddl
       ...req.body,
       // Drafts default missing fields to safe placeholders so the row is insertable.
       price: req.body.price ?? 0,
-      // Posting Date is optional on the API; the DB column is NOT NULL, so
-      // backfill today's date when the client omits it.
-      postingDate: req.body.postingDate || new Date().toISOString().slice(0, 10),
+      // Posting Date is user-supplied. DB column is nullable — pass the
+      // client value through untouched (no today() backfill), so an unset
+      // field lands NULL and a picked date lands exactly as chosen.
+      postingDate: req.body.postingDate || null,
       // T-2026-067: no `|| 'sale'` default on transactionType and no
       // `|| ''` PT injection. Both fields are user-selected via the
       // chooser; a request that omits them must fail loudly rather
@@ -356,10 +357,9 @@ router.put('/:id', validate(idParam, 'params'), validate(propertyBody), validate
     res.json(await management.updateProperty(req.params.id, {
       ...req.body,
       price: req.body.price ?? 0,
-      // Same postingDate backfill as create — the DB column is NOT NULL, so
-      // a payload without a Posting Date lands today's date rather than
-      // rejecting.
-      postingDate: req.body.postingDate || new Date().toISOString().slice(0, 10),
+      // Posting Date is user-supplied — pass through untouched (nullable
+      // DB column). Same rationale as the create handler above.
+      postingDate: req.body.postingDate || null,
       // T-2026-067: no `|| 'sale'` default on transactionType and no
       // `|| ''` PT injection. Both fields are user-selected via the
       // chooser; a request that omits them must fail loudly rather

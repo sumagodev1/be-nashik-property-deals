@@ -433,10 +433,243 @@ async function formatFieldValue(propertyKind, row, field, rawValue) {
   return stringifyPrimitive(rawValue);
 }
 
+// ── Completion pass helpers ──────────────────────────────────────────
+//
+// Purpose: after the caller-supplied `sections` (or the legacy fallback)
+// finish rendering, walk every populated top-level column and every
+// populated `details.dynamicData` leaf that wasn't already emitted and
+// append it to the email body under semantic section headers. This is
+// what turns the Share email from "a few hardcoded rows" into a full
+// property summary that automatically covers every form's fields —
+// existing forms and any future form — without a per-form mapping.
+//
+// Constraints honoured:
+//   * `isDeniedKey` (owner / contact / mobile / phone / email / aadhaar
+//     / key-person / staff / etc.) is re-applied on every leaf so the
+//     PII safety guarantee that already exists on this module is not
+//     weakened.
+//   * The caller-declared `sections` still render exactly as they do
+//     today, in the exact positions/titles chosen by the caller. The
+//     completion pass only ADDS previously-missing populated fields
+//     to the tail of the body.
+
+function camelToSnake(k) {
+  return String(k)
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/^_+/, '');
+}
+
+// "plotShape" -> "Plot Shape", "hostel_room_type" -> "Hostel Room Type".
+function labelize(k) {
+  const withSpaces = String(k)
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .trim();
+  return withSpaces
+    .split(/\s+/)
+    .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : ''))
+    .join(' ');
+}
+
+// Guess which section a dynamicData key belongs in based on its name.
+// Anything that doesn't match a specific bucket falls into "additional"
+// so no populated field is ever dropped.
+function inferBucket(key) {
+  const k = String(key).toLowerCase();
+  if (/(district|taluka|shivar|village|landmark|pincode|latitude|longitude|nearby|distance|railway|busstand|bus_stand|corporation|address|googlemap|google_map|mapurl|map_url|zone|sector|city)/.test(k)) return 'location';
+  // Size = true dimensions only (carpet / built-up / plot area / frontage /
+  // open space / terrace / balcony / plot length-width-height). Things like
+  // totalFloors, roadWidth, plotShape are property specs, not sizes — they
+  // fall through to the specs check below.
+  if (/(carpet|builtup|built_up|superbuilt|super_built|plotarea|plot_area|plotlength|plot_length|plotwidth|plot_width|plotheight|plot_height|frontage|openspace|open_space|terrace|balcony|dimension|areaunit|area_unit)/.test(k)) return 'size';
+  if (/(price|rent|deposit|brokerage|loan|tax|maintenance|gst|booking|emi|budget|negotiable|payment|token|yearlyhike|yearly_hike|monthly|whitepercent|white_percent)/.test(k)) return 'price';
+  if (/amenit/.test(k)) return 'amenities';
+  if (/(facing|age|condition|parking|lift|furnish|possession|water|electricity|road|fsi|nastatus|na_status|reservation|hotel|hostel|pg|payingguest|nature|variety|category|conversion|agriculture|defect|type|status|floor)/.test(k)) return 'specs';
+  return 'additional';
+}
+
+// Turn one dynamicData leaf into zero-or-more { label, value } rows.
+// Handles primitives, arrays (with best-effort master resolution using
+// the snake_case key as masterKey), dualMode { specific, any } objects,
+// { label } wrappers, and generic objects (walked one level deep).
+async function renderDynamicLeaves(propertyKind, key, val, depth) {
+  const out = [];
+  if (val === null || val === undefined || val === '') return out;
+  if (depth === undefined) depth = 0;
+  if (depth > 3) return out;
+
+  if (Array.isArray(val)) {
+    const items = val.filter((v) => v !== null && v !== undefined && v !== '');
+    if (items.length === 0) return out;
+    const guessedKey = camelToSnake(key);
+    const parts = [];
+    for (const item of items) {
+      if (item && typeof item === 'object') {
+        const s = stringifyPrimitive(item);
+        if (s) parts.push(s);
+      } else {
+        // eslint-disable-next-line no-await-in-loop
+        const label = await resolveMasterLabelByKey(guessedKey, String(item));
+        if (label) parts.push(String(label));
+      }
+    }
+    const value = parts.filter(Boolean).join(', ');
+    if (value) out.push({ label: labelize(key), value });
+    return out;
+  }
+
+  if (typeof val === 'object') {
+    // dualMode: `specific` (master code — resolve to label) OR `any`
+    // (free-text alternative — render as-is, never through masters, so
+    // user-typed text is not accidentally rewritten by a stray master
+    // row that happens to share the same string).
+    if ('specific' in val || 'any' in val) {
+      const specific = val.specific && String(val.specific).trim() ? String(val.specific).trim() : '';
+      const anyText  = val.any && String(val.any).trim() ? String(val.any).trim() : '';
+      if (specific) {
+        const guessedKey = camelToSnake(key);
+        const resolved = await resolveMasterLabelByKey(guessedKey, specific);
+        out.push({ label: labelize(key), value: String(resolved || specific) });
+      } else if (anyText) {
+        out.push({ label: labelize(key), value: anyText });
+      }
+      return out;
+    }
+    // { label, value } wrapper produced by some form widgets.
+    if (val.label && typeof val.label !== 'object') {
+      out.push({ label: labelize(key), value: String(val.label) });
+      return out;
+    }
+    // Generic object: walk one level of leaves, prefixing labels.
+    for (const [subKey, subVal] of Object.entries(val)) {
+      if (isDeniedKey(subKey)) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const nested = await renderDynamicLeaves(propertyKind, subKey, subVal, depth + 1);
+      for (const line of nested) {
+        out.push({ label: `${labelize(key)} — ${line.label}`, value: line.value });
+      }
+    }
+    return out;
+  }
+
+  // Primitive. Best-effort master resolution using the snake_case key as
+  // masterKey: if a matching master row exists, the label wins; otherwise
+  // `resolveMasterLabelByKey` returns the raw code so free-text (title,
+  // flatNo, unit numbers, custom strings) renders unchanged.
+  const s = stringifyPrimitive(val);
+  if (!s) return out;
+  const guessedKey = camelToSnake(key);
+  const resolved = await resolveMasterLabelByKey(guessedKey, s);
+  out.push({ label: labelize(key), value: String(resolved || s) });
+  return out;
+}
+
+// Build the completion sections after the caller's sections have run.
+// `alreadyRenderedKeys` is a Set of field keys the caller's sections
+// already emitted — we skip those to avoid duplicating rows.
+async function buildCompletionSections(propertyKind, row, dyn, details, alreadyRenderedKeys) {
+  const buckets = {
+    overview: [],
+    location: [],
+    specs: [],
+    size: [],
+    price: [],
+    amenities: [],
+    additional: [],
+  };
+  const push = (bucket, line) => {
+    if (!line) return;
+    const v = line.value === null || line.value === undefined ? '' : String(line.value).trim();
+    if (!v) return;
+    buckets[bucket].push({ label: line.label, value: v });
+  };
+
+  // 1) Known top-level columns — declared list with explicit labels and
+  //    their natural bucket. Runs through readFieldValue + formatFieldValue
+  //    so masters resolve to labels, dates format IST DD/MM/YYYY, price
+  //    formats as currency, area combines value + unit.
+  const topLevel = [
+    ['propertyCode',      'Property ID',        'overview'],
+    ['title',             'Title',              'overview'],
+    ['description',       'Description',        'overview'],
+    ['propertyType',      'Property Type',      'overview'],
+    ['transactionType',   'Transaction Type',   'overview'],
+    ['propertyVariety',   'Property Variety',   'overview'],
+    ['status',            'Status',             'overview'],
+    ['postingDate',       'Posting Date',       'overview'],
+    ['availableFromDate', 'Available From',     'overview'],
+    ['createdOn',         'Created On',         'overview'],
+    ['district',          'District',           'location'],
+    ['taluka',            'Taluka',             'location'],
+    ['shivar',            'Village',            'location'],
+    ['location',          'Location',           'location'],
+    ['formattedAddress',  'Formatted Address',  'location'],
+    ['pincode',           'Pincode',            'location'],
+    ['latitude',          'Latitude',           'location'],
+    ['longitude',         'Longitude',          'location'],
+    ['bhk',               'BHK',                'specs'],
+    ['areaValue',         'Area',               'size'],
+    ['price',             'Price',              'price'],
+  ];
+  for (const [key, label, bucket] of topLevel) {
+    if (alreadyRenderedKeys.has(key)) continue;
+    if (isDeniedKey(key)) continue;
+    const raw = readFieldValue(propertyKind, row, dyn, details, key);
+    if (raw === undefined || raw === null || raw === '') continue;
+    // eslint-disable-next-line no-await-in-loop
+    const value = await formatFieldValue(propertyKind, row, { key }, raw);
+    if (value === null || value === undefined || String(value).trim() === '') continue;
+    push(bucket, { label, value });
+    alreadyRenderedKeys.add(key);
+  }
+
+  // 2) Walk dynamicData for any populated leaf that wasn't already
+  //    rendered. Bucketing is a best-effort heuristic on the key name;
+  //    unknown keys land in "Additional Details" so nothing is dropped.
+  for (const [key, val] of Object.entries(dyn || {})) {
+    if (alreadyRenderedKeys.has(key)) continue;
+    if (isDeniedKey(key)) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const lines = await renderDynamicLeaves(propertyKind, key, val, 0);
+    if (lines.length === 0) continue;
+    const bucket = inferBucket(key);
+    for (const line of lines) push(bucket, line);
+    alreadyRenderedKeys.add(key);
+  }
+
+  return [
+    { title: 'Property Overview',       lines: buckets.overview },
+    { title: 'Location Details',        lines: buckets.location },
+    { title: 'Property Specifications', lines: buckets.specs },
+    { title: 'Size & Dimensions',       lines: buckets.size },
+    { title: 'Price & Commercial',      lines: buckets.price },
+    { title: 'Amenities',               lines: buckets.amenities },
+    { title: 'Additional Details',      lines: buckets.additional },
+  ].filter((s) => s.lines.length > 0);
+}
+
+// Build a body-visible listing for images / documents: count + filenames.
+// Attachments are still collected separately via the existing
+// collectImageAttachments / collectDocumentAttachments helpers; this
+// only adds an in-body reference so the recipient can see how many
+// files are attached and what they are called.
+function buildFileListSection(title, rows, itemLabel) {
+  const lines = [];
+  if (!Array.isArray(rows) || rows.length === 0) return { title, lines };
+  lines.push({ label: 'Count', value: String(rows.length) });
+  rows.forEach((f, i) => {
+    const name = (f && (f.original_name || f.stored_name)) || '';
+    if (name) lines.push({ label: `${itemLabel} ${i + 1}`, value: String(name) });
+  });
+  return { title, lines };
+}
+
 // ── Section rendering ────────────────────────────────────────────────
 
 async function renderSection(propertyKind, row, dyn, details, section) {
   const lines = [];
+  const keysRendered = [];
   const fields = Array.isArray(section && section.fields) ? section.fields : [];
   for (const field of fields) {
     if (!field || !field.key) continue;
@@ -447,9 +680,10 @@ async function renderSection(propertyKind, row, dyn, details, section) {
     const value = await formatFieldValue(propertyKind, row, field, raw);
     if (value !== null && value !== undefined && String(value).trim() !== '') {
       lines.push({ label: field.label || field.key, value: String(value) });
+      keysRendered.push(field.key);
     }
   }
-  return lines;
+  return { lines, keysRendered };
 }
 
 // ── Property URL builder ─────────────────────────────────────────────
@@ -586,8 +820,7 @@ async function legacyBuildDetailLines(propertyKind, row) {
       { key: 'price', label: 'Price' },
     ],
   };
-  const lines = await renderSection(propertyKind, row, dyn, details, genericSection);
-  return lines;
+  return renderSection(propertyKind, row, dyn, details, genericSection);
 }
 
 // ── Public API ───────────────────────────────────────────────────────
@@ -619,30 +852,66 @@ async function shareProperty(propertyKind, propertyId, {
   // Body assembly.
   const userMessage = message && String(message).trim() ? String(message).trim() : '';
   const renderedSections = [];
+  // Field keys already emitted by the caller-supplied sections (or the
+  // legacy fallback). The completion pass below uses this to avoid
+  // duplicating rows that were already rendered explicitly.
+  const alreadyRenderedKeys = new Set();
 
   if (Array.isArray(sections) && sections.length > 0) {
     // DYNAMIC PATH — one rendered block per section the caller passed.
     for (const section of sections) {
       if (!section || !section.title) continue;
       // eslint-disable-next-line no-await-in-loop
-      const lines = await renderSection(propertyKind, row, dyn, details, section);
+      const { lines, keysRendered } = await renderSection(propertyKind, row, dyn, details, section);
       renderedSections.push({ title: String(section.title), lines });
+      for (const k of keysRendered) alreadyRenderedKeys.add(k);
     }
   } else {
     // LEGACY PATH — respect the old boolean flags.
     if (includeDetails) {
-      const lines = await legacyBuildDetailLines(propertyKind, row);
+      const { lines, keysRendered } = await legacyBuildDetailLines(propertyKind, row);
       renderedSections.push({ title: 'Property Details', lines });
+      for (const k of keysRendered) alreadyRenderedKeys.add(k);
     }
     if (includeDescription && row.description) {
       renderedSections.push({
         title: 'Description',
         lines: [{ label: 'Description', value: String(row.description).trim() }],
       });
+      alreadyRenderedKeys.add('description');
     }
   }
 
+  // Completion pass: append every populated top-level column + populated
+  // details.dynamicData leaf that the caller-declared sections did not
+  // already emit. Grouped into semantic sections; empty sections and
+  // empty leaves are dropped. Denied keys (owner / contact / mobile /
+  // phone / email / aadhaar / key-person / staff / etc.) remain excluded
+  // by the existing DENY_SUBSTRINGS filter — the completion pass runs
+  // through isDeniedKey too.
+  const completionSections = await buildCompletionSections(
+    propertyKind, row, dyn, details, alreadyRenderedKeys,
+  );
+  for (const s of completionSections) renderedSections.push(s);
+
   const propertyUrl = includePropertyUrl ? buildPropertyUrl(propertyKind, propertyId) : null;
+
+  // Fetch image / document rows once and use them for both the in-body
+  // listing (count + filenames per the completeness requirement) and the
+  // attachment collection (unchanged from before).
+  const [imageRows, documentRows] = await Promise.all([
+    includeImages
+      ? propertyFiles.listForProperty(null, propertyKind, propertyId)
+      : Promise.resolve([]),
+    includeDocuments
+      ? documentUpload.listPropertyDocuments(propertyKind, propertyId)
+      : Promise.resolve([]),
+  ]);
+
+  const imagesBodySection = buildFileListSection('Images', imageRows, 'Image');
+  const documentsBodySection = buildFileListSection('Documents', documentRows, 'Document');
+  if (imagesBodySection.lines.length > 0) renderedSections.push(imagesBodySection);
+  if (documentsBodySection.lines.length > 0) renderedSections.push(documentsBodySection);
 
   const [images, documents] = await Promise.all([
     includeImages    ? collectImageAttachments(propertyKind, propertyId)    : Promise.resolve([]),
