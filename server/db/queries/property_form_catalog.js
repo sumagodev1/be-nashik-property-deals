@@ -36,6 +36,15 @@ async function listByMode(mode) {
   if (!MODES.has(mode)) {
     throw new Error(`Unknown property-catalog mode: ${mode}`);
   }
+  // Require the parent masters (PT / TT / PV) to be BOTH not-deleted AND
+  // is_active = 1 for the form row to surface in the tree. Previously the
+  // joins only checked `deleted_at IS NULL`, so an admin deactivating a
+  // Property Type in Global masters did not remove it from the Inventory /
+  // Enquiry filter cascade or the create-form chooser. The `mpt.id IS NOT NULL`
+  // (and equivalent) predicates promote the join to a de-facto INNER JOIN
+  // for required parents while leaving Property Variety optional (form rows
+  // with property_variety_code IS NULL are the "no variety step" case and
+  // must still surface).
   const [rows] = await pool.query(
     `SELECT
         pf.id                        AS form_id,
@@ -56,12 +65,15 @@ async function listByMode(mode) {
         mpv.label                    AS pv_label,
         mpv.sort_order               AS pv_sort_order
      FROM master_property_forms pf
-     LEFT JOIN master_property_types    mpt ON mpt.code = pf.property_type_code    AND mpt.deleted_at IS NULL
-     LEFT JOIN master_transaction_types mtt ON mtt.code = pf.transaction_type_code AND mtt.deleted_at IS NULL
-     LEFT JOIN master_lookups           mpv ON mpv.code = pf.property_variety_code AND mpv.master_key = 'property_variety' AND mpv.deleted_at IS NULL
+     LEFT JOIN master_property_types    mpt ON mpt.code = pf.property_type_code    AND mpt.deleted_at IS NULL AND mpt.is_active = 1
+     LEFT JOIN master_transaction_types mtt ON mtt.code = pf.transaction_type_code AND mtt.deleted_at IS NULL AND mtt.is_active = 1
+     LEFT JOIN master_lookups           mpv ON mpv.code = pf.property_variety_code AND mpv.master_key = 'property_variety' AND mpv.deleted_at IS NULL AND mpv.is_active = 1
      WHERE pf.mode = ?
        AND pf.is_active = 1
        AND pf.deleted_at IS NULL
+       AND mpt.id IS NOT NULL
+       AND mtt.id IS NOT NULL
+       AND (pf.property_variety_code IS NULL OR mpv.id IS NOT NULL)
      ORDER BY
         COALESCE(mpt.sort_order, 9999),
         pf.property_type_code,

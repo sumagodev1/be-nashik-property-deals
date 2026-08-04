@@ -69,9 +69,17 @@ app.use(errorHandler);
 
 const port = Number(process.env.PORT) || 4000;
 if (require.main === module) {
-  app.listen(port, () => {
-    // eslint-disable-next-line no-console
-    console.log(`API listening on :${port} (${process.env.NODE_ENV || 'development'})`);
+  // One-shot: on the first boot after Global / Email exists but has no
+  // rows, migrate the legacy SMTP_* env vars into an Active configuration
+  // so email keeps working without manual re-entry. Idempotent — every
+  // subsequent boot short-circuits after a single COUNT query. Never
+  // blocks startup: any error is logged and swallowed.
+  const envMigration = require('./server/services/email/env_migration');
+  envMigration.runIfNeeded().finally(() => {
+    app.listen(port, () => {
+      // eslint-disable-next-line no-console
+      console.log(`API listening on :${port} (${process.env.NODE_ENV || 'development'})`);
+    });
   });
 }
 

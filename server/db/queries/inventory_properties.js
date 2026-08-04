@@ -50,6 +50,22 @@ async function list({
   taluka,
   shivar,
   propertyTypeIn,
+  // Cascading Transaction Type + Property Variety filters (2026-08-03).
+  //
+  //   transactionTypeCode  — master `code` for the selected TT (e.g.
+  //                          'sale', 'rent_out', 'out').
+  //   transactionTypeLabel — canonical label ('Sale', 'Rent Out', 'Out').
+  //   propertyVarietyCode  — variety code ('flat', 'bungalow', 'new').
+  //   propertyVarietyLabel — canonical label ('Flat', 'Bungalow', 'New').
+  //
+  // Both CODE and LABEL are sent so the WHERE can OR-match against the
+  // multiple columns a record may have stored (`transaction_type` enum,
+  // `transaction_type_name` label, `transaction_variant` code,
+  // `property_variety_name` label). See the WHERE branches below.
+  transactionTypeCode,
+  transactionTypeLabel,
+  propertyVarietyCode,
+  propertyVarietyLabel,
   status,
   location,
   priceMin,
@@ -68,49 +84,46 @@ async function list({
   const where = ['ip.deleted_at IS NULL'];
   const params = [];
 
-  if (search) {
-    // Global PROPERTY search — every property-related field, but NEVER
-    // owner/contact info (that's what `ownerSearch` below is for; keeping
-    // the two disjoint avoids duplicate hits and makes "phone appears in
-    // main search" a bug we can never regress into). Covers:
+  // Trim the raw search token so a user who types "  land  " still matches
+  // "%land%" rather than "%  land  %" (which is never found in the DB).
+  // Applied here so every downstream branch (WHERE + COUNT) uses the same
+  // normalised token; the frontend also trims defensively.
+  const trimmedSearch = typeof search === 'string' ? search.trim() : search;
+  if (trimmedSearch) {
+    // Global PROPERTY search — every property-related field, and (as of
+    // this change) the owner / key-person / contact info that admins
+    // routinely look up by name / mobile / phone / email / address /
+    // pincode. Previously main search intentionally excluded owner-owned
+    // fields to keep them disjoint from the separate `ownerSearch` input.
+    // Product feedback: admins need one search box that finds a property
+    // by ANY property or owner-side field. `ownerSearch` still exists as a
+    // narrower owner-only input on the Inventory / Enquiry pages, so this
+    // change is additive — main `search` now composes with owner data too.
+    //
+    // Covers:
     //   - identity: property_code, title, description
-    //   - classification: property_type, transaction_type, transaction_variant,
-    //     status, status_note
-    //   - location: free-text location + hierarchical district / taluka /
-    //     shivar (village) master codes + pincode
-    //   - specs (columns): bhk master code, area_unit code
-    //   - numeric columns: price + area_value CAST to string so digits
-    //     match (e.g. "5000" hits any row where 5000 appears in price/area)
-    //   - dynamic-form fields: EVERY per-form field (facing, shape, layout,
-    //     gut/survey/CTS number, wing, tower, flat number, budget, deposit,
-    //     amenities, etc.) lives in the `details` JSON column — a text
-    //     LIKE against the serialised JSON blob picks all of them up
-    //     without a separate index-per-field.
-    // Owner/contact exclusion:
-    //   * The `owner_name / agent_name / owner_contact / agent_contact`
-    //     columns are deliberately absent from the OR list.
-    //   * `details` is searched via JSON_REMOVE that strips the three
-    //     contact-bearing paths (contacts[], keyPersons[], and the
-    //     referenceSourceOfLead free-text) BEFORE serialising to CHAR, so
-    //     a phone/name/email typed into a contact card never leaks into a
-    //     main-search hit. JSON_REMOVE tolerates missing paths, so rows
-    //     whose details don't have contacts/keyPersons still work.
-    // Trade-off: full-column scans (details LIKE + CAST(JSON_REMOVE(...))
-    // LIKE) are fine at the property-record scale we're operating at
-    // (thousands, not millions). If this becomes hot, promote
-    // frequently-searched details keys to dedicated columns or add a
-    // FULLTEXT / generated-column index.
-    // T-2026-081 (ER_NON_UNIQ_ERROR fix): EVERY column below is now
-    // qualified with `ip.` because this WHERE runs against the JOINed
-    // SELECT that pulls in master_lookups twice (mpv_id, mpv_code).
-    // master_lookups carries `description` (migration 075), `pincode`
-    // (migration 049), plus the standard `id / created_at / updated_at /
-    // deleted_at` columns — any of them would otherwise trip MySQL's
-    // ambiguous-column check. Same-shape COUNT query below reuses the
-    // same WHERE, so full qualification is required for both.
-    // Fix C: `description` was previously the only qualified column here
-    // (master_status_types added `description` in migration 057). We now
-    // qualify every field for the same reason at the master_lookups scale.
+    //   - classification: property_type / property_type_name /
+    //     transaction_type / transaction_type_name / transaction_variant /
+    //     property_variety_name / status / status_note
+    //   - location: free-text location, formatted_address, hierarchical
+    //     district / taluka / shivar (village) master codes + pincode
+    //   - specs: bhk master code, area_unit
+    //   - numeric: price + area_value CAST to string so digit substrings
+    //     match (e.g. "5000" hits any row where 5000 appears)
+    //   - owner columns: owner_name / owner_contact / agent_name /
+    //     agent_contact
+    //   - dynamic-form + contact JSON: full CAST(details AS CHAR) LIKE so
+    //     contacts / keyPersons (name, phones, mobiles, emails, whatsapps,
+    //     address lines) are all in scope in addition to every other
+    //     dynamic-form field (facing, shape, layout, gut/survey/CTS number,
+    //     wing, tower, flat number, budget, deposit, amenities, etc.).
+    //     The JSON_REMOVE guard is intentionally gone: main search now
+    //     covers contacts by design.
+    //
+    // Trade-off: full-column scans (details CAST LIKE) are fine at the
+    // property-record scale we're operating at (thousands, not millions).
+    // If this becomes hot, promote frequently-searched details keys to
+    // dedicated columns or add a FULLTEXT / generated-column index.
     where.push(`(
       ip.property_code LIKE ? OR ip.title LIKE ? OR ip.description LIKE ?
       OR ip.location LIKE ? OR ip.formatted_address LIKE ?
@@ -121,10 +134,12 @@ async function list({
       OR ip.district LIKE ? OR ip.taluka LIKE ? OR ip.shivar LIKE ? OR ip.pincode LIKE ?
       OR ip.bhk LIKE ? OR ip.area_unit LIKE ?
       OR CAST(ip.price AS CHAR) LIKE ? OR CAST(ip.area_value AS CHAR) LIKE ?
-      OR CAST(JSON_REMOVE(ip.details, '$.dynamicData.contacts', '$.dynamicData.keyPersons', '$.dynamicData.referenceSourceOfLead') AS CHAR) LIKE ?
+      OR ip.owner_name LIKE ? OR ip.owner_contact LIKE ?
+      OR ip.agent_name LIKE ? OR ip.agent_contact LIKE ?
+      OR CAST(ip.details AS CHAR) LIKE ?
     )`);
-    const s = `%${search}%`;
-    for (let i = 0; i < 22; i++) params.push(s);
+    const s = `%${trimmedSearch}%`;
+    for (let i = 0; i < 26; i++) params.push(s);
   }
   if (propertyType) {
     where.push('ip.property_type = ?');
@@ -168,6 +183,37 @@ async function list({
       where.push(`ip.property_type IN (${labels.map(() => '?').join(', ')})`);
       params.push(...labels);
     }
+  }
+  // Transaction Type — AND-match records whose stored TT matches EITHER
+  // the master code (against the coarse `transaction_type` enum) OR the
+  // canonical label (against `transaction_type_name`). Records saved via
+  // the fine-grained pre-form chooser have both columns populated;
+  // legacy rows may have only one. Empty inputs skip the filter entirely.
+  if (
+    (typeof transactionTypeCode === 'string' && transactionTypeCode.trim() !== '')
+    || (typeof transactionTypeLabel === 'string' && transactionTypeLabel.trim() !== '')
+  ) {
+    const code  = typeof transactionTypeCode  === 'string' ? transactionTypeCode.trim()  : '';
+    const label = typeof transactionTypeLabel === 'string' ? transactionTypeLabel.trim() : '';
+    const branches = [];
+    if (code)  { branches.push('LOWER(ip.transaction_type) = LOWER(?)');      params.push(code); }
+    if (label) { branches.push('LOWER(ip.transaction_type_name) = LOWER(?)'); params.push(label); }
+    if (branches.length) where.push(`(${branches.join(' OR ')})`);
+  }
+  // Property Variety — same OR-match pattern. The variety CODE lives in
+  // `transaction_variant` (a stored variant slug like 'flat', 'bungalow',
+  // 'new'); the canonical LABEL lives in `property_variety_name` on the
+  // subset of rows that captured a variety master reference.
+  if (
+    (typeof propertyVarietyCode === 'string' && propertyVarietyCode.trim() !== '')
+    || (typeof propertyVarietyLabel === 'string' && propertyVarietyLabel.trim() !== '')
+  ) {
+    const code  = typeof propertyVarietyCode  === 'string' ? propertyVarietyCode.trim()  : '';
+    const label = typeof propertyVarietyLabel === 'string' ? propertyVarietyLabel.trim() : '';
+    const branches = [];
+    if (code)  { branches.push('LOWER(ip.transaction_variant) = LOWER(?)');    params.push(code); }
+    if (label) { branches.push('LOWER(ip.property_variety_name) = LOWER(?)'); params.push(label); }
+    if (branches.length) where.push(`(${branches.join(' OR ')})`);
   }
   if (district) {
     where.push('ip.district = ?');

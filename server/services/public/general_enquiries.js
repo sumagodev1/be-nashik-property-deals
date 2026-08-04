@@ -13,7 +13,7 @@ const { HttpError } = require('../../middleware/errors');
 const leadsQ = require('../../db/queries/leads');
 const notificationsQ = require('../../db/queries/notifications');
 const otp = require('../auth/otp');
-const { trySendMail } = require('../email/transporter');
+const { trySendMail, getAdminEmail } = require('../email/transporter');
 const { renderEmail, sectionTitle, kvRow, kvTable, quoteBlock, BRAND } = require('../email/emailTemplate');
 const { MODULES } = require('../../constants/modules');
 
@@ -86,7 +86,8 @@ async function verify({ name, mobile, email, code, message, categories }) {
     console.warn('[general-enquiry] notification insert failed:', err.message);
   }
 
-  const adminEmail = process.env.ADMIN_NOTIFICATION_EMAIL;
+  // Admin recipient comes from the active Email Master (admin_email).
+  const adminEmail = await getAdminEmail();
   if (adminEmail) {
     void trySendMail({
       to: adminEmail,
@@ -191,7 +192,8 @@ async function submit({ name, mobile, email, message, categories }) {
     console.warn('[general-enquiry] notification insert failed:', err.message);
   }
 
-  const adminEmail = process.env.ADMIN_NOTIFICATION_EMAIL;
+  // Admin recipient comes from the active Email Master (admin_email).
+  const adminEmail = await getAdminEmail();
   if (adminEmail) {
     void trySendMail({
       to: adminEmail,

@@ -3,7 +3,7 @@ const publicProps = require('../../db/queries/public_properties');
 const leadsQ = require('../../db/queries/leads');
 const notificationsQ = require('../../db/queries/notifications');
 const otp = require('../auth/otp');
-const { trySendMail } = require('../email/transporter');
+const { trySendMail, getAdminEmail } = require('../email/transporter');
 const { renderEmail, sectionTitle, kvRow, kvTable, infoCard, quoteBlock, BRAND } = require('../email/emailTemplate');
 const { MODULES } = require('../../constants/modules');
 
@@ -86,7 +86,9 @@ async function verify({ propertyId, actionType, name, mobile, email, code, messa
     console.warn('[lead] notification insert failed:', err.message);
   }
 
-  const adminEmail = process.env.ADMIN_NOTIFICATION_EMAIL;
+  // Admin recipient now comes from the active Email Master (admin_email),
+  // not the removed ADMIN_NOTIFICATION_EMAIL env var.
+  const adminEmail = await getAdminEmail();
   if (adminEmail) {
     void trySendMail({
       to: adminEmail,

@@ -87,6 +87,13 @@ const listQuery = Joi.object({
   taluka: masterCodeField.allow('').optional(),
   shivar: masterCodeField.allow('').optional(),
   propertyTypeIn: Joi.string().max(8192).allow('').optional(),
+  // Cascading Transaction Type + Property Variety filters — additive
+  // (2026-08-03). Mirror of the inventory route field set. See
+  // routes/admin/inventory-properties.js for the full contract.
+  transactionTypeCode:  Joi.string().trim().max(255).allow('').optional(),
+  transactionTypeLabel: Joi.string().trim().max(255).allow('').optional(),
+  propertyVarietyCode:  Joi.string().trim().max(255).allow('').optional(),
+  propertyVarietyLabel: Joi.string().trim().max(255).allow('').optional(),
   status: masterCodeField.optional(),
   location: Joi.string().trim().max(255).optional(),
   priceMin: Joi.number().min(0).optional(),

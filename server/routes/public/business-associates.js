@@ -15,7 +15,14 @@ const listQuery = Joi.object({
 
 router.get('/', validate(listQuery, 'query'), async (req, res, next) => {
   try {
-    res.json(await service.list(req.query));
+    // Public homepage strip must show only actual Business Associates,
+    // not Phone Book contacts that were merged into the same table
+    // under the unified module. Hard-force the filter server-side —
+    // callers cannot override it.
+    res.json(await service.list({
+      ...req.query,
+      generalCategory: 'business_associate',
+    }));
   } catch (e) { next(e); }
 });
 

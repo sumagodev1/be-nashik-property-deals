@@ -20,6 +20,9 @@ function toDto(row) {
   if (!row) return null;
   return {
     id: row.id,
+    // Unified module: 'business_associate' | 'phone_book'. Historical
+    // rows default to 'business_associate' via migration 092.
+    generalCategory: row.general_category || 'business_associate',
     salutation: row.salutation,
     firstName: row.first_name,
     middleName: row.middle_name,
@@ -49,13 +52,20 @@ function toDto(row) {
     dateOfBirth: row.date_of_birth instanceof Date
       ? row.date_of_birth.toISOString().slice(0, 10)
       : row.date_of_birth,
+    notes: row.notes,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
+function normalizeGeneralCategoryIn(raw) {
+  const v = typeof raw === 'string' ? raw.trim().toLowerCase() : raw;
+  return (v === 'phone_book') ? 'phone_book' : 'business_associate';
+}
+
 function normalize(p) {
   return {
+    generalCategory: normalizeGeneralCategoryIn(p.generalCategory),
     salutation: p.salutation ? String(p.salutation).toLowerCase() : null,
     firstName: trimStr(p.firstName),
     middleName: trimStr(p.middleName),
@@ -81,6 +91,7 @@ function normalize(p) {
     website1: trimStr(p.website1),
     website2: trimStr(p.website2),
     dateOfBirth: p.dateOfBirth || null,
+    notes: trimStr(p.notes),
   };
 }
 

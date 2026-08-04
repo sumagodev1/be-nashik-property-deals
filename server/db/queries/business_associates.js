@@ -8,41 +8,58 @@
 const { pool } = require('../pool');
 
 const COLUMNS = `
-  id, salutation, first_name, middle_name, surname,
+  id, general_category, salutation, first_name, middle_name, surname,
   company_name, business_category,
   designation, area_wise, property_wise,
   address_line1, address_line2,
   city_code, taluka_code, district_code,
   phone1, phone2, mobile1, mobile2, mobile3, whatsapp,
   email1, email2, website1, website2, date_of_birth,
+  notes,
   created_by_admin_id, created_at, updated_at
 `;
 
-async function list({ page = 1, pageSize = 10, search = '', ownerSearch = '' } = {}) {
+async function list({
+  page = 1,
+  pageSize = 10,
+  search = '',
+  ownerSearch = '',
+  generalCategory = '',
+  businessCategory = '',
+  designation = '',
+} = {}) {
   const offset = (page - 1) * pageSize;
   const args = [];
   let where = 'WHERE deleted_at IS NULL';
+
+  // Unified `search`: single free-text query that scans every user-visible
+  // string column so admins get an Inventory-style "type anything" box.
+  // Extends the historical mobile/email/name coverage with company,
+  // notes, address, and the new general_category / business_category so
+  // "phone book" or "builder" also match. Case-insensitivity comes from
+  // the utf8mb4 collation (…_ci).
   if (search) {
     where += ` AND (
       first_name LIKE ? OR middle_name LIKE ? OR surname LIKE ?
-      OR designation LIKE ?
+      OR CONCAT_WS(' ', first_name, COALESCE(middle_name,''), COALESCE(surname,'')) LIKE ?
+      OR company_name LIKE ? OR designation LIKE ?
+      OR business_category LIKE ? OR general_category LIKE ?
+      OR area_wise LIKE ? OR property_wise LIKE ?
+      OR address_line1 LIKE ? OR address_line2 LIKE ?
+      OR city_code LIKE ? OR taluka_code LIKE ? OR district_code LIKE ?
+      OR phone1 LIKE ? OR phone2 LIKE ?
       OR mobile1 LIKE ? OR mobile2 LIKE ? OR mobile3 LIKE ? OR whatsapp LIKE ?
       OR email1 LIKE ? OR email2 LIKE ?
+      OR website1 LIKE ? OR website2 LIKE ?
+      OR notes LIKE ?
     )`;
-    const like = `%${search}%`;
-    args.push(like, like, like, like, like, like, like, like, like, like);
+    const like = `%${String(search).trim()}%`;
+    for (let i = 0; i < 26; i++) args.push(like);
   }
-  // Owner Search (T-2026-032, additive; extended in T-2026-036 to include
-  // designation + city_code + district_code so the on-page Business
-  // Associates search covers Name / Designation / Mobile / Phone /
-  // WhatsApp / Email / City / District - the field list the client
-  // asked for after the Global Owner Search was removed from the BA
-  // page. Company is NOT a stored column on business_associates, so
-  // there is nothing to match against - free-text company fragments
-  // that pass through the bulk-upload flow live inside address_line2
-  // packed extras and are intentionally NOT scanned here. CONCAT_WS
-  // still preserves the full-name mid-string hit. Composes with the
-  // existing `search` branch via AND when both are supplied.
+
+  // Owner Search (T-2026-032, T-2026-036) — retained unchanged so any
+  // caller that still passes `ownerSearch` continues to get the exact
+  // same behaviour as before the merge.
   if (typeof ownerSearch === 'string' && ownerSearch.trim() !== '') {
     where += ` AND (
       first_name LIKE ? OR middle_name LIKE ? OR surname LIKE ?
@@ -55,8 +72,29 @@ async function list({ page = 1, pageSize = 10, search = '', ownerSearch = '' } =
       OR city_code LIKE ? OR district_code LIKE ?
     )`;
     const like = `%${ownerSearch.trim()}%`;
-    args.push(like, like, like, like, like, like, like, like, like, like, like, like, like, like, like);
+    for (let i = 0; i < 15; i++) args.push(like);
   }
+
+  // Categorical filters — all optional, all composable via AND.
+  if (generalCategory === 'business_associate' || generalCategory === 'phone_book') {
+    where += ' AND general_category = ?';
+    args.push(generalCategory);
+  }
+  // Partial (LIKE) match on business_category — no master exists for
+  // this column so admins should be able to type "Builder" and match
+  // any legacy free-text variation ("Builders", "Builder / Developer").
+  if (typeof businessCategory === 'string' && businessCategory.trim() !== '') {
+    where += ' AND business_category LIKE ?';
+    args.push(`%${businessCategory.trim()}%`);
+  }
+  // Exact-code match on designation (values come from the shared
+  // business_associate_designation master). Legacy free-text rows still
+  // match because the code equals the stored value in that case.
+  if (typeof designation === 'string' && designation.trim() !== '') {
+    where += ' AND designation = ?';
+    args.push(designation.trim());
+  }
+
   const [[{ total }]] = await pool.query(
     `SELECT COUNT(*) AS total FROM business_associates ${where}`,
     args,
@@ -78,9 +116,19 @@ async function getById(id) {
   return rows[0] || null;
 }
 
+// `general_category` defaults to 'business_associate' when the caller
+// omits it — preserves the historical behaviour of the create endpoint
+// so any pre-merge script that still POSTs without the new field keeps
+// producing Business Associate rows.
+function normalizeGeneralCategory(raw) {
+  if (raw === 'business_associate' || raw === 'phone_book') return raw;
+  return 'business_associate';
+}
+
 async function create(payload, adminId) {
   const [r] = await pool.query(
     `INSERT INTO business_associates (
+      general_category,
       salutation, first_name, middle_name, surname,
       company_name, business_category,
       designation, area_wise, property_wise,
@@ -88,9 +136,11 @@ async function create(payload, adminId) {
       city_code, taluka_code, district_code,
       phone1, phone2, mobile1, mobile2, mobile3, whatsapp,
       email1, email2, website1, website2, date_of_birth,
+      notes,
       created_by_admin_id
-    ) VALUES (?,?,?,?, ?,?, ?,?,?, ?,?, ?,?,?, ?,?,?,?,?,?, ?,?,?,?,?, ?)`,
+    ) VALUES (?, ?,?,?,?, ?,?, ?,?,?, ?,?, ?,?,?, ?,?,?,?,?,?, ?,?,?,?,?, ?, ?)`,
     [
+      normalizeGeneralCategory(payload.generalCategory),
       payload.salutation,
       payload.firstName,
       payload.middleName || null,
@@ -116,6 +166,7 @@ async function create(payload, adminId) {
       payload.website1 || null,
       payload.website2 || null,
       payload.dateOfBirth || null,
+      payload.notes || null,
       adminId || null,
     ],
   );
@@ -125,15 +176,18 @@ async function create(payload, adminId) {
 async function update(id, payload) {
   await pool.query(
     `UPDATE business_associates SET
+      general_category = ?,
       salutation = ?, first_name = ?, middle_name = ?, surname = ?,
       company_name = ?, business_category = ?,
       designation = ?, area_wise = ?, property_wise = ?,
       address_line1 = ?, address_line2 = ?,
       city_code = ?, taluka_code = ?, district_code = ?,
       phone1 = ?, phone2 = ?, mobile1 = ?, mobile2 = ?, mobile3 = ?, whatsapp = ?,
-      email1 = ?, email2 = ?, website1 = ?, website2 = ?, date_of_birth = ?
+      email1 = ?, email2 = ?, website1 = ?, website2 = ?, date_of_birth = ?,
+      notes = ?
      WHERE id = ? AND deleted_at IS NULL`,
     [
+      normalizeGeneralCategory(payload.generalCategory),
       payload.salutation,
       payload.firstName,
       payload.middleName || null,
@@ -159,6 +213,7 @@ async function update(id, payload) {
       payload.website1 || null,
       payload.website2 || null,
       payload.dateOfBirth || null,
+      payload.notes || null,
       id,
     ],
   );

@@ -257,19 +257,10 @@ async function shareByEmail(id, { recipientEmail, subject, message }) {
       .replace(/>/g, '&gt;')}</p>`
     : '';
 
-  const transporter = emailer.getTransporter();
-  const from = (function buildFrom() {
-    if (process.env.SMTP_FROM) return process.env.SMTP_FROM;
-    const name = process.env.SMTP_FROM_NAME;
-    const email = process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER;
-    if (email && name) return `"${name}" <${email}>`;
-    if (email) return email;
-    return 'no-reply@example.com';
-  }());
-
   try {
-    await transporter.sendMail({
-      from,
+    // Central sender resolves From/Sender/Reply-To from the active Email
+    // Master row — no env lookup, no per-caller from-header logic.
+    await emailer.sendMail({
       to,
       subject: finalSubject,
       text: textBody || undefined,

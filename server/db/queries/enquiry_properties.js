@@ -39,6 +39,13 @@ async function list({
   taluka,
   shivar,
   propertyTypeIn,
+  // Cascading Transaction Type + Property Variety filters (2026-08-03).
+  // Mirror of the sibling block in db/queries/inventory_properties.js —
+  // see that file for the full contract.
+  transactionTypeCode,
+  transactionTypeLabel,
+  propertyVarietyCode,
+  propertyVarietyLabel,
   status,
   location,
   priceMin,
@@ -57,22 +64,16 @@ async function list({
   const where = ['ep.deleted_at IS NULL'];
   const params = [];
 
-  if (search) {
+  // Trim so leading / trailing whitespace on the incoming token doesn't
+  // silently kill matches. Frontend also trims — kept here defensively.
+  const trimmedSearch = typeof search === 'string' ? search.trim() : search;
+  if (trimmedSearch) {
     // Mirrors the Global PROPERTY Search rules on inventory_properties —
-    // see the parallel comment block there for the full field list, the
-    // owner/contact exclusion rationale, and the JSON_REMOVE strategy.
-    // Kept identical (not factored) because the SQL runs against a
-    // different table; extracting a shared string would add indirection
-    // without saving code.
-    //
-    // T-2026-081 (ER_NON_UNIQ_ERROR fix): EVERY column below is now
-    // qualified with `ep.` because this WHERE runs against the JOINed
-    // SELECT that pulls in master_lookups twice (mpv_id, mpv_code).
-    // master_lookups carries `description` (migration 075), `pincode`
-    // (migration 049), plus the standard `id / created_at / updated_at /
-    // deleted_at` columns — any of them would otherwise trip MySQL's
-    // ambiguous-column check. Same-shape COUNT query below reuses the
-    // same WHERE, so full qualification is required for both.
+    // see the parallel comment block there for the full field list and
+    // rationale. Owner / key-person / contact JSON is now in-scope for
+    // main search (previously only reachable via the narrower `ownerSearch`
+    // input); admins expect a single search box to find records by any
+    // property or owner-side field.
     where.push(`(
       ep.property_code LIKE ? OR ep.title LIKE ? OR ep.description LIKE ?
       OR ep.location LIKE ? OR ep.formatted_address LIKE ?
@@ -83,10 +84,12 @@ async function list({
       OR ep.district LIKE ? OR ep.taluka LIKE ? OR ep.shivar LIKE ? OR ep.pincode LIKE ?
       OR ep.bhk LIKE ? OR ep.area_unit LIKE ?
       OR CAST(ep.price AS CHAR) LIKE ? OR CAST(ep.area_value AS CHAR) LIKE ?
-      OR CAST(JSON_REMOVE(ep.details, '$.dynamicData.contacts', '$.dynamicData.keyPersons', '$.dynamicData.referenceSourceOfLead') AS CHAR) LIKE ?
+      OR ep.owner_name LIKE ? OR ep.owner_contact LIKE ?
+      OR ep.agent_name LIKE ? OR ep.agent_contact LIKE ?
+      OR CAST(ep.details AS CHAR) LIKE ?
     )`);
-    const s = `%${search}%`;
-    for (let i = 0; i < 22; i++) params.push(s);
+    const s = `%${trimmedSearch}%`;
+    for (let i = 0; i < 26; i++) params.push(s);
   }
   if (propertyType) {
     where.push('ep.property_type = ?');
@@ -126,6 +129,31 @@ async function list({
       where.push(`ep.property_type IN (${labels.map(() => '?').join(', ')})`);
       params.push(...labels);
     }
+  }
+  // Transaction Type — mirror of the sibling branch in
+  // db/queries/inventory_properties.js. See there for the full rationale.
+  if (
+    (typeof transactionTypeCode === 'string' && transactionTypeCode.trim() !== '')
+    || (typeof transactionTypeLabel === 'string' && transactionTypeLabel.trim() !== '')
+  ) {
+    const code  = typeof transactionTypeCode  === 'string' ? transactionTypeCode.trim()  : '';
+    const label = typeof transactionTypeLabel === 'string' ? transactionTypeLabel.trim() : '';
+    const branches = [];
+    if (code)  { branches.push('LOWER(ep.transaction_type) = LOWER(?)');      params.push(code); }
+    if (label) { branches.push('LOWER(ep.transaction_type_name) = LOWER(?)'); params.push(label); }
+    if (branches.length) where.push(`(${branches.join(' OR ')})`);
+  }
+  // Property Variety — mirror of the sibling branch.
+  if (
+    (typeof propertyVarietyCode === 'string' && propertyVarietyCode.trim() !== '')
+    || (typeof propertyVarietyLabel === 'string' && propertyVarietyLabel.trim() !== '')
+  ) {
+    const code  = typeof propertyVarietyCode  === 'string' ? propertyVarietyCode.trim()  : '';
+    const label = typeof propertyVarietyLabel === 'string' ? propertyVarietyLabel.trim() : '';
+    const branches = [];
+    if (code)  { branches.push('LOWER(ep.transaction_variant) = LOWER(?)');    params.push(code); }
+    if (label) { branches.push('LOWER(ep.property_variety_name) = LOWER(?)'); params.push(label); }
+    if (branches.length) where.push(`(${branches.join(' OR ')})`);
   }
   if (district) {
     where.push('ep.district = ?');

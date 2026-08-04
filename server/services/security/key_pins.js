@@ -31,6 +31,8 @@ const MAX_ACTIVE_PINS = 2;
 const PIN_LIMIT_MESSAGE = `Maximum of ${MAX_ACTIVE_PINS} active Key PINs are allowed. Please deactivate or delete an existing PIN before creating a new one.`;
 const BCRYPT_ROUNDS = 12;
 const PIN_REGEX = /^[0-9]{6}$/;
+const USERNAME_MAX_LEN = 100;
+const USERNAME_REGEX = /^[A-Za-z0-9 ._-]+$/;
 
 // Dummy hash used to burn a bcrypt.compare cycle when there are zero
 // active PINs, so verify() response time is not obviously different in
@@ -41,6 +43,32 @@ function assertPinShape(pin) {
   if (typeof pin !== 'string' || !PIN_REGEX.test(pin)) {
     throw new HttpError(400, 'INVALID_PIN', 'PIN must be exactly 6 numeric digits.');
   }
+}
+
+/**
+ * Normalize + validate the optional Username field.
+ * Returns a trimmed string, or `null` if the caller sent nothing (empty
+ * string, whitespace-only, null, undefined) — username is optional.
+ * Throws VALIDATION_ERROR on length or character-set violation.
+ */
+function normalizeUsername(raw) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'string') {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Username must be a text value.');
+  }
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > USERNAME_MAX_LEN) {
+    throw new HttpError(400, 'VALIDATION_ERROR', `Username must be at most ${USERNAME_MAX_LEN} characters.`);
+  }
+  if (!USERNAME_REGEX.test(trimmed)) {
+    throw new HttpError(
+      400,
+      'VALIDATION_ERROR',
+      'Username can contain only letters, numbers, spaces, dots (.), underscores (_) and hyphens (-).',
+    );
+  }
+  return trimmed;
 }
 
 function normalizeStatus(raw) {
@@ -113,8 +141,10 @@ async function getOne(id) {
   return toApi(row);
 }
 
-async function create({ pin, status = 'active' }, req) {
+async function create(body, req) {
+  const { pin, status = 'active' } = body || {};
   assertPinShape(pin);
+  const username = normalizeUsername(body?.username);
   const targetStatus = normalizeStatus(status) || 'active';
 
   if (targetStatus === 'active') {
@@ -135,11 +165,12 @@ async function create({ pin, status = 'active' }, req) {
 
   const hashedPin = await bcrypt.hash(pin, BCRYPT_ROUNDS);
   const { adminId, actorName } = await resolveActor(req);
-  const created = await keyPins.create({ hashedPin, status: targetStatus, adminId, actorName });
+  const created = await keyPins.create({ hashedPin, username, status: targetStatus, adminId, actorName });
   return toApi(created);
 }
 
-async function update(id, { pin = null, status = null }, req) {
+async function update(id, body, req) {
+  const { pin = null, status = null } = body || {};
   const existing = await keyPins.getById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Key PIN not found');
 
@@ -167,9 +198,16 @@ async function update(id, { pin = null, status = null }, req) {
     hashedPin = await bcrypt.hash(pin, BCRYPT_ROUNDS);
   }
 
+  // `undefined` = caller did not send the field, keep existing value.
+  // Any other value (including empty string) is normalized and applied.
+  const usernameUpdate = Object.prototype.hasOwnProperty.call(body || {}, 'username')
+    ? normalizeUsername(body.username)
+    : undefined;
+
   const { adminId, actorName } = await resolveActor(req);
   const updated = await keyPins.update(id, {
     hashedPin,
+    username: usernameUpdate,
     status: targetStatus,
     adminId,
     actorName,

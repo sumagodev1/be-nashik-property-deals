@@ -15,11 +15,17 @@ const idParam = Joi.object({ id: Joi.number().integer().positive().required() })
 const listQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   pageSize: Joi.number().integer().min(1).max(100).default(10),
+  // Unified global search — scans every user-visible text column
+  // (name, company, designation, address, phone/mobile/whatsapp,
+  // email, website, notes, business_category, general_category, …).
   search: Joi.string().trim().max(255).allow('').optional(),
-  // Owner Search filter (T-2026-032, additive). Narrows to associates
-  // whose name / phone / mobile / whatsapp / email matches. Disjoint
-  // from the existing global `search` param.
+  // Legacy owner-only search (T-2026-032, T-2026-036). Retained so
+  // any pre-merge caller that still passes it gets the same behaviour.
   ownerSearch: Joi.string().trim().max(255).allow('').optional(),
+  // Unified module filters. All optional / composable.
+  generalCategory: Joi.string().valid('business_associate', 'phone_book').allow('').optional(),
+  businessCategory: Joi.string().trim().max(255).allow('').optional(),
+  designation: Joi.string().trim().max(200).allow('').optional(),
 });
 
 const optText = (max = 255) => Joi.string().trim().max(max).allow('', null).optional();
@@ -34,6 +40,10 @@ const emailField = Joi.string().trim().max(255).allow('', null)
   .pattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/).optional();
 
 const body = Joi.object({
+  // Unified module: 'business_associate' | 'phone_book'. Optional on the
+  // wire (defaults to 'business_associate' in the service) so any
+  // pre-merge script that still POSTs without the field keeps working.
+  generalCategory: Joi.string().valid('business_associate', 'phone_book').optional(),
   salutation: Joi.string().valid('mr', 'mrs', 'miss', 'smt').allow('', null).optional(),
   firstName: Joi.string().trim().min(1).max(100).required(),
   middleName: optText(100),
@@ -69,6 +79,9 @@ const body = Joi.object({
   website2: optText(255),
   // ISO date — the frontend datepicker emits YYYY-MM-DD.
   dateOfBirth: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).allow('', null).optional(),
+  // Notes textarea — mirrors the Phone Book column so migrated PB rows
+  // keep their existing text and the unified form can capture it.
+  notes: Joi.string().trim().max(500).allow('', null).optional(),
   // T-2026-040: Owner-duplicate confirmation bypass flag. Frontend sets
   // this to true after the operator confirms the "Duplicate Owner Found"
   // dialog so any (optional) backend duplicate check can be skipped on the

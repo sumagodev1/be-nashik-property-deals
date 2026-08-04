@@ -96,6 +96,21 @@ const listQuery = Joi.object({
   //     even if the user selects the entire top-level Property Type
   //     (all txns × all varieties).
   propertyTypeIn: Joi.string().max(8192).allow('').optional(),
+  // Cascading Transaction Type + Property Variety filters — additive
+  // (2026-08-03). The FE derives these from the chooser tree selection
+  // and sends BOTH the master `code` and canonical `label` so the query
+  // can OR-match against records that stored either shape.
+  //
+  //   transactionTypeCode / transactionTypeLabel
+  //     Match against ip.transaction_type (enum) OR ip.transaction_type_name.
+  //   propertyVarietyCode / propertyVarietyLabel
+  //     Match against ip.transaction_variant OR ip.property_variety_name.
+  //
+  // See db/queries/inventory_properties.js#list for the WHERE construction.
+  transactionTypeCode:  Joi.string().trim().max(255).allow('').optional(),
+  transactionTypeLabel: Joi.string().trim().max(255).allow('').optional(),
+  propertyVarietyCode:  Joi.string().trim().max(255).allow('').optional(),
+  propertyVarietyLabel: Joi.string().trim().max(255).allow('').optional(),
   status: masterCodeField.optional(),
   location: Joi.string().trim().max(255).optional(),
   priceMin: Joi.number().min(0).optional(),

@@ -12,19 +12,27 @@ const { pool } = require('../pool');
 
 // Safe projection — omits `hashed_pin` so it can never leak via list/getById.
 const PUBLIC_COLUMNS = `
-  id, status,
+  id, username, status,
   created_by_admin_id, created_by_name,
   updated_by_admin_id, updated_by_name,
   created_at, updated_at
 `;
 
-async function list({ page = 1, pageSize = 10, status = null } = {}) {
+async function list({ page = 1, pageSize = 10, status = null, search = null } = {}) {
   const offset = (page - 1) * pageSize;
   const args = [];
   let where = 'WHERE deleted_at IS NULL';
   if (status === 'active' || status === 'inactive') {
     where += ' AND status = ?';
     args.push(status);
+  }
+  const term = typeof search === 'string' ? search.trim() : '';
+  if (term) {
+    // PIN is bcrypt-hashed so it cannot be searched. We search only the
+    // identification fields exposed on the listing (username + creator name).
+    where += ' AND (username LIKE ? OR created_by_name LIKE ?)';
+    const like = `%${term}%`;
+    args.push(like, like);
   }
   const [[{ total }]] = await pool.query(
     `SELECT COUNT(*) AS total FROM key_pins ${where}`,
@@ -55,24 +63,30 @@ async function countActive() {
   return Number(total);
 }
 
-async function create({ hashedPin, status = 'active', adminId = null, actorName = null }) {
+async function create({ hashedPin, username = null, status = 'active', adminId = null, actorName = null }) {
   const [r] = await pool.query(
     `INSERT INTO key_pins
-       (hashed_pin, status,
+       (username, hashed_pin, status,
         created_by_admin_id, created_by_name,
         updated_by_admin_id, updated_by_name)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [hashedPin, status, adminId, actorName, adminId, actorName],
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [username, hashedPin, status, adminId, actorName, adminId, actorName],
   );
   return getById(r.insertId);
 }
 
-async function update(id, { hashedPin = null, status = null, adminId = null, actorName = null } = {}) {
+async function update(id, { hashedPin = null, username, status = null, adminId = null, actorName = null } = {}) {
   const sets = [];
   const args = [];
   if (hashedPin !== null) {
     sets.push('hashed_pin = ?');
     args.push(hashedPin);
+  }
+  // `username` uses `undefined` as the sentinel for "unchanged" so callers
+  // can explicitly pass `null` to clear the field.
+  if (username !== undefined) {
+    sets.push('username = ?');
+    args.push(username);
   }
   if (status !== null) {
     sets.push('status = ?');
