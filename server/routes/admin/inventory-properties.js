@@ -8,6 +8,7 @@ const idempotency = require('../../middleware/idempotency');
 const management = require('../../services/inventory/management');
 const { shareProperty } = require('../../services/properties/shareProperty');
 const { validateDynamicData } = require('../../services/inventory/dynamicDataValidation');
+const { computeLandPricing } = require('../../services/inventory/landPricingCompute');
 const {
   AREA_UNITS,
 } = require('../../constants/property');
@@ -268,8 +269,14 @@ function validateDynamicDataMiddleware(req, res, next) {
       ];
       return next(new HttpError(400, 'VALIDATION_ERROR', 'Validation failed.', details));
     }
-    // Write the sanitized value back so the DB stores trimmed / coerced data.
-    req.body.details.dynamicData = value;
+    // Advanced Land Pricing recompute (2026-08-05): recompute the
+    // derived-value fields on Land Sale / Purchase and SEZ Land Sale /
+    // Purchase records so the DB row matches what the FE calculator
+    // would produce. Idempotent on any input; no-op for other property
+    // types. Runs AFTER Joi so we compute from the already-coerced
+    // numeric values instead of raw strings.
+    const propertyType = req.body.propertyType || req.body.property_type;
+    req.body.details.dynamicData = computeLandPricing(value, propertyType);
     return next();
   } catch (err) {
     return next(err);

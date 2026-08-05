@@ -34,6 +34,13 @@ const LOOKUP_KEYS = Object.freeze([
   // financial / sale terms
   'bank_name', 'payment_mode', 'payment_period', 'payment_white_percent',
   'token_amount', 'booking_amount_percent', 'yearly_hike_percent', 'bunglow_age_range',
+  // Global / Sale Forms / GST — added for the Advanced Land Pricing module
+  // (migration 094). Populates the master-backed GST dropdown in the Financial
+  // subsection of Land + SEZ Land Sale / Purchase forms. Codes encode the
+  // numeric percentage (`5-pct`, `1-pct`, `0-pct`); labels are user-friendly
+  // ("5%", "1%", "0%"). Admins extend the vocabulary inline via the standard
+  // "Other → Save → Refresh" flow.
+  'gst',
   // construction / project
   'phase', 'wing', 'possession_month', 'possession_year', 'tdr_floor',
   // amenities
@@ -264,6 +271,7 @@ const MASTER_LABELS = Object.freeze({
   // Global / Lease Forms — rendered on every lease-transaction form.
   lease_period:        'Global / Lease Forms / Lease Period',
   yearly_hike_percent: 'Global / Lease Forms / Yearly Hike %',
+  gst:                 'Global / Sale Forms / GST',
   // Global / <family list> — shared across a specific set of families.
   floor_level:            'Global / Flat / Bunglow / Hostel / Floor Level',
   amenities_residential:  'Global / Flat / Bunglow / Residential Amenities',
@@ -722,6 +730,8 @@ const AMOUNT_MASTER_KEYS = new Set([
   'payment_white_percent',
   'yearly_hike_percent',
   'plot_emi_booking_percent',
+  // GST percentages — seeded 5% / 1% / 0%, admins extend inline.
+  'gst',
 ]);
 
 function isAmountMasterKey(masterKey) {

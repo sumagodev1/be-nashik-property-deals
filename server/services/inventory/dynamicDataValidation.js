@@ -240,6 +240,88 @@ const dynamicDataSchema = Joi.object({
   landVariety: dualModeOrScalar,
   landType: dualModeOrScalar,
   landAreaUnit: masterCodeField,
+
+  // ─── Advanced Land Pricing & Government Valuation module ────────────
+  // Land + SEZ Land Sale / Purchase forms only. Every field below is
+  // computed or entered client-side by the DynamicPropertyForm's
+  // patchField interceptor (see landPricingCalc.js) and rides through
+  // the dynamicData JSON blob. Numbers arrive as strings (the FE
+  // interceptor writes 2-dp trimmed strings) — Joi's default `convert`
+  // coerces them back to numbers.
+
+  // Source-unit stamp — set by the DynamicPropertyForm patchField
+  // interceptor whenever the user edits a rate field (Family A rate* on
+  // Land, Family B budgetPer* on SEZ Land). One of six canonical unit
+  // labels (`sqm`, `sqft`, `guntha`, `acre`, `hectare`, `yard`) or empty
+  // when no rate has been entered yet. Backend + FE agree on this key
+  // so `actualCalculatedPropertyPrice` = source_rate × source_area
+  // computes to identical values in both places.
+  lastEditedRateUnit: Joi.string().trim().valid('', 'sqm', 'sqft', 'guntha', 'acre', 'hectare', 'yard').allow(null),
+  // Source-unit stamp for the Government Valuation subsection — same
+  // six-unit vocabulary. Independent from the Actual Pricing source
+  // (`lastEditedRateUnit`) so the user can pick differently for each.
+  lastEditedGovRateUnit: Joi.string().trim().valid('', 'sqm', 'sqft', 'guntha', 'acre', 'hectare', 'yard').allow(null),
+
+  // Area — 6 canonical land-unit fields. `areaSqft`, `areaGuntha`,
+  // `areaAcre`, `areaHectare` are legacy keys (pre-module records used
+  // them) and stay verbatim. `areaSqMeter` + `areaVarYard` are new.
+  areaSqMeter: nonNegArea.allow('', null),
+  areaSqft:    nonNegArea.allow('', null),
+  areaGuntha:  nonNegArea.allow('', null),
+  areaAcre:    nonNegArea.allow('', null),
+  areaHectare: nonNegArea.allow('', null),
+  areaVarYard: nonNegArea.allow('', null),
+
+  // Actual Pricing rate fields (Family A — Land forms). 6 canonical
+  // units + the auto-computed actualCalculatedPropertyPrice (Row 4
+  // read-only) + Lumpsum (Row 4 manual entry).
+  rateSqMeter:                  priceLike.allow('', null),
+  rateSqft:                     priceLike.allow('', null),
+  rateGuntha:                   priceLike.allow('', null),
+  rateAcre:                     priceLike.allow('', null),
+  rateHectare:                  priceLike.allow('', null),
+  rateVarYard:                  priceLike.allow('', null),
+  actualCalculatedPropertyPrice: priceLike.allow('', null),
+  lumpsum:                      priceLike.allow('', null),
+
+  // Actual Pricing rate fields (Family B — SEZ Land forms). Same 6 units
+  // as Family A but under the historic `budgetPer*` naming.
+  budgetPerSqMeter: priceLike.allow('', null),
+  budgetPerSqft:    priceLike.allow('', null),
+  budgetPerGuntha:  priceLike.allow('', null),
+  budgetPerAcre:    priceLike.allow('', null),
+  budgetPerHectare: priceLike.allow('', null),
+  budgetPerVarYard: priceLike.allow('', null),
+
+  // Government Valuation rate fields (Family D). Independent from
+  // Actual Pricing families A/B/C. Same 6-unit shape.
+  govRateSqMeter: priceLike.allow('', null),
+  govRateSqft:    priceLike.allow('', null),
+  govRateGuntha:  priceLike.allow('', null),
+  govRateAcre:    priceLike.allow('', null),
+  govRateHectare: priceLike.allow('', null),
+  govRateVarYard: priceLike.allow('', null),
+  // Row 4 of Government Valuation — mirrors actualCalculatedPropertyPrice.
+  // Auto-computed as `source_gov_rate × source_area` where the source
+  // unit lives on `lastEditedGovRateUnit`.
+  governmentCalculatedPropertyPrice: priceLike.allow('', null),
+
+  // Financial subsection. Consideration Value + auto-derived Government
+  // charges (stampDuty 5% / registrationCharges 1% / lbt 1% / gstAmount
+  // via master-backed gstId → gstPercentage lookup) + manual entry
+  // lines + live-sum costToCustomer read-only total.
+  considerationValue:     priceLike.allow('', null),
+  stampDuty:              priceLike.allow('', null),
+  registrationCharges:    priceLike.allow('', null),
+  lbt:                    priceLike.allow('', null),
+  gstId:                  masterCodeField,
+  gstPercentage:          percent.allow('', null),
+  gstAmount:              priceLike.allow('', null),
+  paperNotice:            priceLike.allow('', null),
+  documentTypingCharges:  priceLike.allow('', null),
+  amountOfStampPaper:     priceLike.allow('', null),
+  undertableFees:         priceLike.allow('', null),
+  costToCustomer:         priceLike.allow('', null),
   // hostelStatus: masterCodeField, — DISABLED (T-2026-081)
   hostelCategory: masterCodeField,
   hostelRoomsCount: masterCodeField,

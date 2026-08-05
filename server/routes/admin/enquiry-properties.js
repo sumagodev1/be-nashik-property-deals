@@ -12,6 +12,7 @@ const { shareProperty } = require('../../services/properties/shareProperty');
 // authored in one place. Enquiry rows use the same DynamicPropertyForm
 // engine on the frontend, so the payload shape is identical.
 const { validateDynamicData } = require('../../services/inventory/dynamicDataValidation');
+const { computeLandPricing } = require('../../services/inventory/landPricingCompute');
 const {
   AREA_UNITS,
 } = require('../../constants/property');
@@ -260,7 +261,14 @@ function validateDynamicDataMiddleware(req, res, next) {
       ];
       return next(new HttpError(400, 'VALIDATION_ERROR', 'Validation failed.', details));
     }
-    req.body.details.dynamicData = value;
+    // Advanced Land Pricing recompute (2026-08-05): recompute the
+    // derived-value fields on Land Sale / Purchase and SEZ Land Sale /
+    // Purchase records so the DB row matches what the FE calculator
+    // would produce. Idempotent on any input; no-op for other property
+    // types. Enquiry forms share the same dynamicData layout as
+    // Inventory forms, so the same helper applies unchanged.
+    const propertyType = req.body.propertyType || req.body.property_type;
+    req.body.details.dynamicData = computeLandPricing(value, propertyType);
     // The shared validator preserves unknown keys (stripUnknown:false) and
     // never touches `nature`, but re-assert the array shape defensively in
     // case any coercion pass reshaped it.
