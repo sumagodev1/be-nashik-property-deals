@@ -748,7 +748,7 @@ function renderHtmlBody({ userMessage, renderedSections, propertyUrl }) {
   }
   if (propertyUrl) {
     parts.push(
-      `<p style="margin:16px 0 0;"><a href="${esc(propertyUrl)}" style="color:#1A5E90;">View property online</a></p>`,
+      `<p style="margin:16px 0 0;"><a href="${esc(propertyUrl)}" style="color:#C62828;">View property online</a></p>`,
     );
   }
   parts.push('</div>');

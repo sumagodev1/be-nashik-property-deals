@@ -181,7 +181,7 @@ function buildHtmlBody(code, label) {
   const otpBlock = `
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:8px 0 0 0;">
       <tr>
-        <td align="center" style="background:#f0f7ff;border:1px solid #d0e4f7;border-radius:10px;padding:22px 16px;">
+        <td align="center" style="background:#FDECEC;border:1px solid #F6B8B8;border-radius:10px;padding:22px 16px;">
           <div style="font-size:11px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:${BRAND.muted};margin-bottom:8px;">
             Your ${label} code
           </div>

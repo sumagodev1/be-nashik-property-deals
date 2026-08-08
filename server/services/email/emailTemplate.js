@@ -25,10 +25,15 @@
  *   });
  */
 
+// T-2026-108 Global Red Theme Redesign — email brand tokens flip from
+// the former navy palette to the professional red palette used across
+// the FE. Header bar uses Primary Red; CTA / links use the darker Hover
+// Red so they read as active elements against the header. Neutrals
+// (bg / card / border / text / muted / faint) preserved.
 const BRAND = {
   name: 'Nashik Property Deals',
-  primary: '#001A2E',   // deep navy — header bar
-  brand:   '#175a96',   // accent / links
+  primary: '#C62828',   // header bar (Primary Red)
+  brand:   '#A61E1E',   // accent / links (Dark Red)
   amber:   '#f59e0b',
   bg:      '#f3f4f6',
   card:    '#ffffff',

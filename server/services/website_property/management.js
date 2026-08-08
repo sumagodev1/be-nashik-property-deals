@@ -433,12 +433,51 @@ function extractPropertyVariety(raw) {
   return obj && obj.property_variety ? String(obj.property_variety) : null;
 }
 
+// MySQL's JSON column comes back as either a string (older drivers) or a
+// parsed object (newer drivers). Normalise to a plain object so the
+// frontend always sees the same shape. Mirrors the same helper used by
+// services/inventory/management.js + services/enquiry/management.js so
+// the three surfaces produce structurally identical `details` payloads.
+function parseDetailsField(raw) {
+  if (raw === null || raw === undefined) return {};
+  if (typeof raw === 'object') return raw;
+  try { return JSON.parse(raw) || {}; } catch { return {}; }
+}
+
 function toDetail(row, images, documents = []) {
   return {
     ...toListItem(row),
     description: row.description,
     latitude: row.latitude !== null ? Number(row.latitude) : null,
     longitude: row.longitude !== null ? Number(row.longitude) : null,
+    // T-2026-103: additive passthrough of columns the Individual Property
+    // PDF Download modal (T-2026-102) walks. Every one of these already
+    // exists on the underlying row via `wp.*` in db/queries/website_
+    // properties.js#findById — this block simply surfaces them on the
+    // response DTO so the FE catalog builder finds them. No schema
+    // change, no destructive rename; all additive fields default to
+    // `null` when the DB row is a legacy record without that column set.
+    //
+    //   * postingDate           — aliased from `registration_date` because
+    //                              website_properties.registration_date was
+    //                              intentionally left unrenamed by
+    //                              migration 081 (see the header comment
+    //                              of that migration). The FE PDF catalog
+    //                              reads `property.postingDate` uniformly
+    //                              across all three surfaces.
+    //   * availableFromDate     — column added by migration 080; not
+    //                              previously exposed on website toDetail.
+    //   * details               — JSON blob from migration 013; the FE
+    //                              catalog walks `details.dynamicData.*`
+    //                              for form-config fields, contacts,
+    //                              keyPersons, and the Property Video URL
+    //                              (`details.dynamicData.propertyLink`).
+    //                              Parsed defensively so both mysql2
+    //                              driver shapes (string vs object) yield
+    //                              the same object.
+    postingDate: row.registration_date ?? null,
+    availableFromDate: row.available_from_date ?? null,
+    details: row.details !== undefined ? parseDetailsField(row.details) : {},
     seller: {
       id: row.seller_id,
       name: row.seller_name,
@@ -494,7 +533,7 @@ const WEBSITE_PDF_COLUMNS = [
   { key: 'approval_status', label: 'Approval',    weight: 1.3, noWrap: true, align: 'center', headerAlign: 'center' },
   { key: 'visibility',      label: 'Visibility',  weight: 1.3, noWrap: true, align: 'center', headerAlign: 'center' },
   { key: 'seller_name',     label: 'Seller',      weight: 1.8 },
-  { key: 'leads_count',     label: 'Leads',       weight: 0.8, align: 'right', headerAlign: 'right', noWrap: true },
+  { key: 'leads_count',     label: 'Website Enquiry', weight: 0.8, align: 'right', headerAlign: 'right', noWrap: true },
   { key: 'created_at',      label: 'Created',     weight: 1.5, noWrap: true },
 ];
 

@@ -408,7 +408,7 @@ async function exportXlsx(filters) {
   const rows = await leadsRepo.listForExport(filters);
   const data = prepareLeadReport(rows);
   return excel.buildWorkbookFromColumns({
-    sheetName: 'Leads',
+    sheetName: 'Website Enquiry',
     columns: LEAD_COLUMNS.map((c) => ({
       label: c.label,
       key: c.key,
@@ -429,7 +429,7 @@ async function exportPdf(filters) {
   const rows = await leadsRepo.listForExport(filters);
   const data = prepareLeadReport(rows);
   return pdf.buildTablePdf({
-    title: 'Leads',
+    title: 'Website Enquiry',
     subtitle: `${rows.length} enquiry record${rows.length === 1 ? '' : 's'}`,
     columns: LEAD_PDF_COLUMNS,
     rows: data,

@@ -50,6 +50,15 @@ async function list({
   location,
   priceMin,
   priceMax,
+  // T-2026-109: Budget Range filter (Min / Max, Rs.). Mirror of the
+  // sibling block in db/queries/inventory_properties.js — see the full
+  // contract there. Uses the SAME COALESCE priority across
+  // dynamicData.actualCalculatedPropertyPrice / totalAmount / totalCost /
+  // top-level `ep.price` so Inventory and Enquiry filter behaviour stays
+  // byte-identical. NOT compared against govValuation / lumpsum /
+  // rate / budgetAmount / considerationValue by design.
+  minBudget,
+  maxBudget,
   dateFrom,
   dateTo,
   sort,
@@ -183,6 +192,27 @@ async function list({
     where.push('ep.price <= ?');
     params.push(priceMax);
   }
+  // T-2026-109: Budget Range filter — mirror of the sibling block in
+  // db/queries/inventory_properties.js. See there for the full contract
+  // (COALESCE priority, NULLIF-on-empty/'null'/zero to skip unset
+  // candidates, NULL-safe fallthrough when no candidate has real pricing).
+  // Priority order preserved: actualCalculatedPropertyPrice (Land / SEZ) →
+  // totalAmount (most md-engine forms) → totalCost (some flat variants) →
+  // ep.price (legacy Headline Price fallback).
+  const BUDGET_EXPR = `COALESCE(
+    NULLIF(CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(ep.details, '$.dynamicData.actualCalculatedPropertyPrice')), ''), 'null') AS DECIMAL(20,2)), 0),
+    NULLIF(CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(ep.details, '$.dynamicData.totalAmount')), ''), 'null') AS DECIMAL(20,2)), 0),
+    NULLIF(CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(ep.details, '$.dynamicData.totalCost')), ''), 'null') AS DECIMAL(20,2)), 0),
+    NULLIF(ep.price, 0)
+  )`;
+  if (minBudget !== undefined && minBudget !== null && minBudget !== '') {
+    where.push(`${BUDGET_EXPR} >= ?`);
+    params.push(minBudget);
+  }
+  if (maxBudget !== undefined && maxBudget !== null && maxBudget !== '') {
+    where.push(`${BUDGET_EXPR} <= ?`);
+    params.push(maxBudget);
+  }
   if (dateFrom) {
     where.push('ep.created_at >= ?');
     params.push(dateFrom);
@@ -215,6 +245,7 @@ async function list({
             ep.area_value, ep.area_unit, ep.bhk, ep.price, ep.status, ep.status_note, ep.status_changed_at,
             ep.is_draft, ep.owner_name, ep.owner_contact,
             ep.agent_name, ep.agent_contact, ep.details, ep.created_at, ep.updated_at,
+            ep.agreement_start_date, ep.agreement_end_date,
             COALESCE(ep.property_type_name, mpt_id.label, mpt_code.label) AS resolved_property_type_name,
             COALESCE(ep.transaction_type_name, mtt_id.label, mtt_code.label) AS resolved_transaction_type_name,
             COALESCE(ep.property_variety_name, mpv_id.label, mpv_code.label) AS resolved_property_variety_name
@@ -279,8 +310,9 @@ async function create(payload) {
       location, district, taluka, shivar,
       latitude, longitude, formatted_address, pincode,
       area_value, area_unit, bhk, price, status, is_draft,
-      owner_name, owner_contact, agent_name, agent_contact, details, created_by_admin_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      owner_name, owner_contact, agent_name, agent_contact, details, created_by_admin_id,
+      agreement_start_date, agreement_end_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.propertyCode,
       payload.postingDate || null,
@@ -325,6 +357,11 @@ async function create(payload) {
       payload.agentContact || null,
       detailsJson,
       payload.createdByAdminId || null,
+      // T-2026-112: Agreement Tracking & Reminder System — top-level dates
+      // for fast reminder-list scans. Rent Out / Lease Out only; every other
+      // form leaves these NULL.
+      payload.agreementStartDate || null,
+      payload.agreementEndDate || null,
     ],
   );
   return result.insertId;
@@ -347,7 +384,8 @@ async function update(id, payload) {
        location = ?, district = ?, taluka = ?, shivar = ?,
        latitude = ?, longitude = ?, formatted_address = ?, pincode = ?,
        area_value = ?, area_unit = ?, bhk = ?, price = ?, status = ?, is_draft = ?,
-       owner_name = ?, owner_contact = ?, agent_name = ?, agent_contact = ?, details = ?
+       owner_name = ?, owner_contact = ?, agent_name = ?, agent_contact = ?, details = ?,
+       agreement_start_date = ?, agreement_end_date = ?
      WHERE id = ? AND deleted_at IS NULL`,
     [
       payload.postingDate || null,
@@ -383,6 +421,10 @@ async function update(id, payload) {
       payload.agentName || null,
       payload.agentContact || null,
       detailsJson,
+      // T-2026-112: Agreement dates. Empty string coerces to NULL so the
+      // FE can clear the field simply by not setting it.
+      payload.agreementStartDate || null,
+      payload.agreementEndDate || null,
       id,
     ],
   );

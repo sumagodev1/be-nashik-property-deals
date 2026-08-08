@@ -19,6 +19,12 @@ const businessAssociates = require('./business-associates');
 const phoneBook = require('./phone-book');
 const documents = require('./documents');
 const ownerSearch = require('./owner-search');
+// T-2026-112: Agreement Tracking & Reminder System — new admin surface
+// that lists Rent Out / Lease Out records with an agreement window,
+// computes remaining/overdue days on the server, and powers the topbar
+// notification badge + dashboard summary card. Reuses INVENTORY_MANAGEMENT
+// permission (same gate as the underlying Inventory + Enquiry lists).
+const agreementReminders = require('./agreement-reminders');
 const { MODULE_KEYS } = require('../../constants/modules');
 const { requireAuth, requireRole } = require('../../middleware/auth');
 
@@ -44,6 +50,7 @@ router.use('/business-associates', businessAssociates);
 router.use('/phone-book', phoneBook);
 router.use('/documents', documents);
 router.use('/owner-search', ownerSearch);
+router.use('/agreement-reminders', agreementReminders);
 
 router.get('/modules', requireAuth, requireRole('admin'), (req, res) => {
   res.json({ modules: MODULE_KEYS });

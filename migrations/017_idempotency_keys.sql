@@ -14,7 +14,12 @@
 -- Rows older than the TTL are purged by a cron-driven endpoint — see
 -- Deployment notes in CLAUDE.md (no setInterval / setTimeout in the app).
 
-CREATE TABLE idempotency_keys (
+-- T-2026-110: added `IF NOT EXISTS` so the migration is idempotent at the
+-- SQL level as well as at the runner level (scripts/migrate.js already
+-- gates on schema_migrations). Re-running this file on a DB where the
+-- table exists is now a no-op instead of an error. Additive-only edit,
+-- backwards-compatible.
+CREATE TABLE IF NOT EXISTS idempotency_keys (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   idempotency_key VARCHAR(128)  NOT NULL,
   scope         VARCHAR(255)    NOT NULL,            -- method + path + actor

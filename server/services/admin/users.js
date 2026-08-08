@@ -143,7 +143,7 @@ async function exportSellersXlsx(filters) {
   const rows = await sellersRepo.listForExport(filters);
   const data = prepareSellerReport(rows);
   return excel.buildWorkbookFromColumns({
-    sheetName: 'Sellers',
+    sheetName: 'Website Seller',
     columns: SELLER_COLUMNS.map((c) => ({
       label: c.label,
       key: c.key,
@@ -163,7 +163,7 @@ async function exportSellersPdf(filters) {
   const rows = await sellersRepo.listForExport(filters);
   const data = prepareSellerReport(rows);
   return pdf.buildTablePdf({
-    title: 'Sellers',
+    title: 'Website Seller',
     subtitle: `${rows.length} seller record${rows.length === 1 ? '' : 's'}`,
     columns: SELLER_PDF_COLUMNS,
     rows: data,

@@ -182,6 +182,37 @@ const dynamicDataSchema = Joi.object({
   // Radios that are stored as plain strings
   parkingFacility: shortText,
 
+  // T-2026-121: Parking Type is dependent on Parking Facility (mirrors
+  // T-2026-120 EMI pattern).
+  //   • parkingFacility control values seen in the wild:
+  //       - 'Available' / 'Not Available'   (owner-side New/Purchase)
+  //       - 'Essential' / 'Not Essential'   (enquiry-side Rent/Lease)
+  //       - 'Required'  / 'Not Required'    (hostel)
+  //       - 'Allotted'  / 'Common'          (flat JV MD-verbatim outlier)
+  //     Any AFFIRMATIVE value (Available / Essential / Required) keeps
+  //     parkingType. Anything else strips it.
+  //   • parkingType is a bounded scalar string (max 64) in the `then`
+  //     branch. We DO NOT enforce Joi.valid('Allotted','Common') at the
+  //     validator layer — the FE dropdown constrains new saves to the
+  //     two canonical values, and legacy rows with non-canonical values
+  //     (Open, Covered, Basement, Stilt) must not be rejected on
+  //     re-save. This mirrors T-2026-120 EMI's `then: masterCodeField`
+  //     shape (no explicit enum) and stays additive-only.
+  //   • parent schema is `.unknown(true)` so the strip is safe.
+  //   • Shared by inventory + enquiry routes (single validator).
+  parkingType: Joi.when('parkingFacility', {
+    // Note: `is:` sibling must be `.required()` in this branch —
+    // without `.required()`, Joi treats missing/undefined values as
+    // matching the schema (because absence is legal for any un-required
+    // schema), which would route through `then` instead of `otherwise`
+    // and leak parkingType past the strip. Making the branch required
+    // forces `undefined`/missing parkingFacility to flow through
+    // `otherwise` and get stripped, matching FE sanitizer semantics.
+    is: Joi.string().valid('Available', 'Essential', 'Required').required(),
+    then: Joi.string().trim().max(64).allow('', null),
+    otherwise: Joi.any().strip(),
+  }),
+
   // Area (repeated Min/Max pairs — cross-checked below)
   builtUpMin: nonNegArea.allow('', null),
   builtUpMax: nonNegArea.allow('', null),
@@ -193,6 +224,33 @@ const dynamicDataSchema = Joi.object({
   plotAreaMax: nonNegArea.allow('', null),
   landAreaMin: nonNegArea.allow('', null),
   landAreaMax: nonNegArea.allow('', null),
+
+  // T-2026-116: Standardized Size & Configurations. Every Inventory/Enquiry
+  // form that carries plot-area or plot-dimension concepts (Plot / Flat's
+  // Bunglow Row / SEZ Plot / TDR / Industrial Plot) now uses these 11
+  // canonical keys, wired to bidirectional auto-conversion (2dp rounding,
+  // loop-guarded) via the FE plotAreaSizeConversion.js utility invoked from
+  // DynamicPropertyForm.patchField. Numbers arrive as strings from the FE
+  // interceptor — Joi's default `convert` coerces back to numbers.
+  //
+  // Legacy keys (areaSqYard/areaSqMt/areaSqFt on Plot; plotAreaSqm/
+  // plotAreaSqyd on Flat/TDR; areaSqMeter on SEZ Plot; plotAreaSqMtr on
+  // Industrial Plot) continue to flow through `.unknown(true)` on the
+  // parent schema — historical rows read verbatim. FE hydration
+  // (coerceLegacyPlotAreaKeys / coerceLegacyPlotSizeKeys) promotes legacy
+  // values to the canonical keys on Edit / Draft-Restore without dropping
+  // the legacy ones.
+  plotAreaSqYard:     nonNegArea.allow('', null),
+  plotAreaSqMt:       nonNegArea.allow('', null),
+  plotAreaSqFt:       nonNegArea.allow('', null),
+  sizeFrontMtr:       nonNegDistance.allow('', null),
+  sizeFrontFt:        nonNegDistance.allow('', null),
+  sizeBackMtr:        nonNegDistance.allow('', null),
+  sizeBackFt:         nonNegDistance.allow('', null),
+  sizeDepthLeftMtr:   nonNegDistance.allow('', null),
+  sizeDepthLeftFt:    nonNegDistance.allow('', null),
+  sizeDepthRightMtr:  nonNegDistance.allow('', null),
+  sizeDepthRightFt:   nonNegDistance.allow('', null),
 
   // Distances
   distanceBusStandKm: nonNegDistance.allow('', null),
@@ -206,7 +264,73 @@ const dynamicDataSchema = Joi.object({
   tdrPurchase: masterCodeField,
   bookingAmountPercent: masterCodeField,
   paymentWhitePercent: masterCodeField,
-  numberOfEmis: count,
+  // T-2026-120: EMI trio (Plot forms today; opt-in-per-config elsewhere).
+  //   • `emiOption` is the control. Values are stored as human labels
+  //     ('Available' / 'Not Available') for backward-compat with the
+  //     FE radio field. Empty / null (draft) allowed. Legacy Yes/No
+  //     ('yes'/'no') from older payloads accepted verbatim via the same
+  //     alternatives — never rejected.
+  //   • `emiCount` (No. of EMIs — a master-code select on the FE) and
+  //     `emiAmount` (rupees) are STRIPPED from the payload whenever
+  //     `emiOption` is anything other than 'Available'. This mirrors the
+  //     FE sanitizer (T-2026-120 clearOnHide flag) and closes the loop
+  //     for older FE bundles / direct API scripts / stale drafts. The
+  //     parent schema is `.unknown(true)` so the strip is safe (no
+  //     rejection on the whole payload) and the persisted JSON blob
+  //     stays clean.
+  //
+  // Legacy `numberOfEmis` (previous stale entry with no FE consumer) has
+  // been removed — it never matched any FE key. Any historical payload
+  // still carrying it rides through `.unknown(true)` unchanged.
+  emiOption: Joi.string().trim().max(64).allow('', null),
+  emiCount: Joi.when('emiOption', {
+    is: 'Available',
+    then: masterCodeField,
+    otherwise: Joi.any().strip(),
+  }),
+  emiAmount: Joi.when('emiOption', {
+    is: 'Available',
+    then: priceLike.allow('', null),
+    otherwise: Joi.any().strip(),
+  }),
+
+  // T-2026-125: Monthly Maintenance (Rs. / month) is gated by
+  // `stageOfConstruction`. Rule:
+  //   • stageOfConstruction === 'Under Construction' -> strip
+  //     `maintenanceMonthly` from the payload entirely (never validated,
+  //     never persisted). Mirrors FE sanitizer (clearOnHide flag on
+  //     flat / shop / commercial / bungalow / rowhouse configs).
+  //   • stageOfConstruction === 'Ready Possession' OR absent (Resale /
+  //     Rent / Lease variants that don't carry the field) -> validate
+  //     as a bounded price (accepts blank / null for drafts). This
+  //     preserves the historical always-accepted behaviour on every
+  //     variant without stageOfConstruction.
+  //   • `maintenanceYearly` is INTENTIONALLY un-gated per task rule
+  //     (only the /month variant is stage-dependent; /year is preserved
+  //     across construction stages). No explicit entry needed — it
+  //     rides through parent .unknown(true).
+  //   • `oneTimeMaintenance` is also un-gated per task rule ("keep
+  //     One-Time Maintenance if the form already has them").
+  //   • T-2026-130: The '/Sq. Ft.' variant of Monthly Maintenance
+  //     (rate-per-area) on flat / bungalow / rowhouse / commercial
+  //     newSale ALSO gates on stage now. The Joi.when block keys off the
+  //     field name (`maintenanceMonthly`), which is polymorphic across
+  //     both unit variants — so no code change is needed here; the strip
+  //     covers the /Sq. Ft. variant automatically. Prior T-2026-125
+  //     comment ("never emitted alongside stageOfConstruction") is now
+  //     factually stale and superseded.
+  //   • .required() on `is:` is CRITICAL — without it, missing/undefined
+  //     stageOfConstruction spuriously matches the `is` branch and
+  //     leaks maintenanceMonthly past the strip. Documented in the
+  //     T-2026-121 parkingType block above.
+  //   • Belt-and-suspenders with FE sanitizer: legacy callers, older
+  //     FE bundles, direct API scripts, and stale drafts are all
+  //     cleaned at the BE boundary.
+  maintenanceMonthly: Joi.when('stageOfConstruction', {
+    is: Joi.string().valid('Under Construction').required(),
+    then: Joi.any().strip(),
+    otherwise: priceLike.allow('', null),
+  }),
 
   // Prices (rarely stored raw here — most price fields are master-code
   // budget buckets — but if free-form, we cap them like the top-level price)
@@ -221,12 +345,80 @@ const dynamicDataSchema = Joi.object({
   flatSize: masterCodeField,
   // flatStatus: masterCodeField, — DISABLED (T-2026-081)
   flatNature: masterCodeField,
+
+  // T-2026-122: Canonical Property Specifications block for every FLAT
+  // variant (see FE src/admin/pages/Inventory/dynamic/flatSpecificationsSection.js).
+  // Every Flat variant (Sale New/Resale, Purchase Resale/New, Rent Out
+  // Resale/New, Rent In Resale/New, Lease Out Resale/New, Lease In Resale/
+  // New — 12 non-JV variants + Enquiry surface) emits these 9 fields in
+  // exact order with exact labels.
+  //
+  //   flatSize            — already declared above (masterCodeField).
+  //   facing              — already declared at L178 (dualModeOrScalar);
+  //                         reused verbatim by the canonical helper.
+  //   wing                — dualModeOrScalar: plain `select` on the short-
+  //                         spec Sale / Rent Out / Lease Out family;
+  //                         `dualMode` on the long-spec Purchase / Rent In /
+  //                         Lease In family. JSON key `wing` unchanged from
+  //                         its pre-T-2026-122 storage (some variants stored
+  //                         it inside the `location` group; only the visual
+  //                         section moved — payload wire is byte-identical).
+  //   floor               — dualModeOrScalar: same polymorphism as facing/wing.
+  //   outOfFloor          — masterCodeField (`floor_level` master; always a
+  //                         plain select on every Flat variant).
+  //   totalFlatsOnFloor   — nonNegDistance (0..10_000; accepts blank/null).
+  //   totalFlatsInWing    — nonNegDistance (was on short-spec variants pre-
+  //                         T-2026-122; becomes universal via the canonical
+  //                         helper. `.unknown(true)` on parent meant the key
+  //                         already flowed through today — this tightens the
+  //                         shape without changing behaviour).
+  //   totalFlatsInPhase   — nonNegDistance (new key; blank on legacy records).
+  //   totalFlatsInProject — nonNegDistance (was on short-spec variants pre-
+  //                         T-2026-122; becomes universal).
+  //
+  // Parent schema is `.unknown(true)` — legacy records that never carried
+  // any of these keys pass through unchanged (fields render blank on hydrate).
+  wing:                dualModeOrScalar,
+  floor:               dualModeOrScalar,
+  outOfFloor:          masterCodeField,
+  totalFlatsOnFloor:   nonNegDistance.allow('', null),
+  totalFlatsInWing:    nonNegDistance.allow('', null),
+  totalFlatsInPhase:   nonNegDistance.allow('', null),
+  totalFlatsInProject: nonNegDistance.allow('', null),
   // plotType / plotShape are `select` in single-mode plot variants and
   // `dualMode` in dual-mode purchase / rent-in / lease-in variants.
   plotType: dualModeOrScalar,
   // plotStatus: masterCodeField, — DISABLED (T-2026-081)
   plotShape: dualModeOrScalar,
   plotCorner: masterCodeField,
+
+  // T-2026-118: Plot Corner + dynamic Plot Facing / Road Approach pairs.
+  // Corner drives how many Plot Facing + Road Approach input pairs the
+  // Plot Registration form surfaces (N ∈ {1..4} corresponding to Corner
+  // codes 1_road..4_road). Single-mode variants (leaseIn / leaseOut /
+  // rentIn / rentOut / sale) render `corner` as a scalar master code;
+  // the Purchase variant renders it as a dualMode `{ specific, any }`.
+  // Same polymorphism applies to every plotFacing / roadApproach slot.
+  // dualModeOrScalar accepts both shapes and coerces scalars to the
+  // dualMode object form for storage — matches the pattern already used
+  // by plotType / plotShape / landType etc.
+  //
+  // Pair-1 slots use the legacy unsuffixed keys (`plotFacing` /
+  // `roadApproach`) so records saved before T-2026-118 stay byte-identical
+  // in storage. Pair-2..4 slots use suffixed keys. The FE renderer honours
+  // the visibility gate (only pairs 1..N are surfaced) but hidden pair
+  // values may still ride through the payload — Joi accepts all 4 slots
+  // and the server stores whatever the client sends. Cleaning is a client
+  // responsibility (rule 5: in-memory recovery when N shrinks and grows).
+  corner:         dualModeOrScalar,
+  plotFacing:     dualModeOrScalar,
+  plotFacing2:    dualModeOrScalar,
+  plotFacing3:    dualModeOrScalar,
+  plotFacing4:    dualModeOrScalar,
+  roadApproach:   dualModeOrScalar,
+  roadApproach2:  dualModeOrScalar,
+  roadApproach3:  dualModeOrScalar,
+  roadApproach4:  dualModeOrScalar,
   plotAreaUnit: masterCodeField,
   plotRateUnit: masterCodeField,
   plotLayoutStatus: masterCodeField,
@@ -305,6 +497,23 @@ const dynamicDataSchema = Joi.object({
   // Auto-computed as `source_gov_rate × source_area` where the source
   // unit lives on `lastEditedGovRateUnit`.
   governmentCalculatedPropertyPrice: priceLike.allow('', null),
+
+  // T-2026-119 — Automatic Property Price Calculation for the built-up
+  // Sale family (Flat / Bungalow / Rowhouse Sale variants). Two NEW
+  // canonical rate keys drive the calc:
+  //   • ratePerSqFt           — Actual rate (user editable)
+  //   • governmentRatePerSqFt — Government rate (user editable)
+  // Both are typed as priceLike (0..1000 crore). The calculator
+  // (landPricingCalc.js) reads these × `builtUpArea` (already validated
+  // above as nonNegArea) to produce actualCalculatedPropertyPrice /
+  // governmentCalculatedPropertyPrice (both already validated above).
+  // Financial derivations (stampDuty / registrationCharges / lbt /
+  // gstAmount / costToCustomer) follow the Maharashtra registration
+  // rule (baseValue = max(considerationValue,
+  // governmentCalculatedPropertyPrice)) — the numeric keys themselves
+  // already exist above; only the FE math changes.
+  ratePerSqFt:           priceLike.allow('', null),
+  governmentRatePerSqFt: priceLike.allow('', null),
 
   // Financial subsection. Consideration Value + auto-derived Government
   // charges (stampDuty 5% / registrationCharges 1% / lbt 1% / gstAmount

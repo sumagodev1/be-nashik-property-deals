@@ -353,10 +353,35 @@ function toListItem(row) {
     ownerContact: row.owner_contact,
     agentName: row.agent_name,
     agentContact: row.agent_contact,
+    // T-2026-112: Agreement Tracking & Reminder System. See inventory
+    // management.js#toListItem for the full rationale — dual-write with
+    // top-level columns authoritative, ISO-string normalisation.
+    agreementStartDate: formatIsoDate(row.agreement_start_date),
+    agreementEndDate: formatIsoDate(row.agreement_end_date),
     details: row.details !== undefined ? parseDetailsField(row.details) : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+// T-2026-112: Normalise DATE-typed columns into 'YYYY-MM-DD' strings.
+// Kept as a private helper (identical to the one in inventory/management.js)
+// so this module stays independent — no cross-module import between the
+// two management surfaces.
+function formatIsoDate(d) {
+  if (!d) return null;
+  if (d instanceof Date) {
+    if (Number.isNaN(d.getTime())) return null;
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  if (typeof d === 'string') {
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(d.trim());
+    return m ? m[1] : null;
+  }
+  return null;
 }
 
 async function suggest({ q, limit = 8, includeDrafts = false }) {

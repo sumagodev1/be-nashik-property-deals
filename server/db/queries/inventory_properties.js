@@ -70,6 +70,34 @@ async function list({
   location,
   priceMin,
   priceMax,
+  // T-2026-109: Budget Range filter (Min / Max, Rs.). Compares against the
+  // "Actual Property Cost" concept entered in the Pricing & Commercial
+  // section of the dynamic form. Unlike `priceMin`/`priceMax` which target
+  // the top-level `ip.price` column (populated only via the legacy Headline
+  // Price input rendered when !useMdEngine), the Budget Range walks the
+  // polymorphic dynamicData JSON so it also matches records saved via the
+  // md-engine forms (flat / bungalow / rowhouse / commercial / shop / land /
+  // sez / plot / project / rate-finder). The DB has NO single unified column
+  // for "Actual Property Cost" because different property types name the
+  // pricing field differently:
+  //   * Land + SEZ Land            → dynamicData.actualCalculatedPropertyPrice
+  //     (auto-computed area × selected rate)
+  //   * Flat + Bungalow + Row House + Commercial + Shop + Project + Plot +
+  //     Rate Finder               → dynamicData.totalAmount (Sq.Ft. × Rate)
+  //   * Flat purchase-side variants → dynamicData.totalCost (Basic Cost /
+  //     Total Cost hinted in the form)
+  //   * Legacy (pre-md-engine) rows → top-level `ip.price` (Headline Price)
+  // The WHERE clause COALESCEs across these candidates in priority order so
+  // whichever value the property actually captured for "Actual Property Cost"
+  // is what the filter compares. NOT included in the COALESCE by design:
+  //   * govValuationTotal / govValuationRate (Government Valuation)
+  //   * lumpsum (Lumpsum override)
+  //   * rate (Rate / Sq.Ft.)
+  //   * budgetAmount (buyer-side budget, not cost)
+  //   * considerationValue
+  // See the spec header at InventoryListFilterBar.jsx for the client rule.
+  minBudget,
+  maxBudget,
   dateFrom,
   dateTo,
   sort,
@@ -243,6 +271,63 @@ async function list({
     where.push('ip.price <= ?');
     params.push(priceMax);
   }
+  // T-2026-109: Budget Range filter — see the signature comment above for
+  // the full contract. Uses a COALESCE across the polymorphic pricing keys
+  // so the filter matches whichever pricing field the property type actually
+  // stores. Wrapped as `BUDGET_EXPR` here so the expression stays in one
+  // place across the Min and Max branches below.
+  //
+  // Behaviour with NULL/missing/empty/zero pricing:
+  //   * COALESCE picks the first candidate whose parsed numeric value is
+  //     both non-empty AND greater than zero. Each candidate goes through:
+  //       NULLIF(CAST(NULLIF(NULLIF(JSON_UNQUOTE(...), ''), 'null')
+  //         AS DECIMAL(20,2)), 0)
+  //     The two inner NULLIFs turn an empty string and the JSON-null
+  //     literal (JSON_UNQUOTE renders JSON null as the STRING 'null') into
+  //     SQL NULL so CAST returns NULL rather than the misleading 0 it
+  //     otherwise produces from those inputs. The outer NULLIF turns a
+  //     literal zero into SQL NULL too — that matters because the FE
+  //     stores an empty string ("") when a pricing field is untouched,
+  //     but some auto-compute paths write "0" for the same "unset"
+  //     state. Treating those as NULL lets COALESCE fall through to the
+  //     next real candidate instead of anchoring on 0 (which would then
+  //     fail every Min>0 filter for records that DO have pricing under a
+  //     lower-priority key).
+  //   * If every candidate is NULL/empty/zero, COALESCE returns NULL. A
+  //     NULL >= X / NULL <= X predicate evaluates to UNKNOWN which SQL
+  //     treats as false — such rows are correctly excluded when a Min or
+  //     Max is set.
+  //   * Priority order:
+  //       1. dynamicData.actualCalculatedPropertyPrice (Land / SEZ Land)
+  //       2. dynamicData.totalAmount (flat / bungalow / rowhouse /
+  //          commercial / shop / project / plot / rate-finder)
+  //       3. dynamicData.totalCost (flat purchase-side variants)
+  //       4. ip.price (legacy Headline Price for pre-md-engine rows)
+  //   * `ip.price` is the last fallback because it's DECIMAL(14,2) NOT NULL
+  //     (defaults to 0 for md-engine rows). The NULLIF-on-zero on ip.price
+  //     ensures a zero here also falls through — but since ip.price is the
+  //     LAST candidate, a NULL result means the record simply has no
+  //     "Actual Property Cost" captured anywhere and is correctly filtered
+  //     out when a Min or Max is applied.
+  //
+  // JSON extraction primitives:
+  //   JSON_EXTRACT + JSON_UNQUOTE are available on MariaDB 10.2+; MariaDB
+  //   10.4 is the project baseline. Same functions already used for
+  //   JSON_SEARCH on the contacts / keyPersons paths higher in this file.
+  const BUDGET_EXPR = `COALESCE(
+    NULLIF(CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(ip.details, '$.dynamicData.actualCalculatedPropertyPrice')), ''), 'null') AS DECIMAL(20,2)), 0),
+    NULLIF(CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(ip.details, '$.dynamicData.totalAmount')), ''), 'null') AS DECIMAL(20,2)), 0),
+    NULLIF(CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(ip.details, '$.dynamicData.totalCost')), ''), 'null') AS DECIMAL(20,2)), 0),
+    NULLIF(ip.price, 0)
+  )`;
+  if (minBudget !== undefined && minBudget !== null && minBudget !== '') {
+    where.push(`${BUDGET_EXPR} >= ?`);
+    params.push(minBudget);
+  }
+  if (maxBudget !== undefined && maxBudget !== null && maxBudget !== '') {
+    where.push(`${BUDGET_EXPR} <= ?`);
+    params.push(maxBudget);
+  }
   if (dateFrom) {
     where.push('ip.created_at >= ?');
     params.push(dateFrom);
@@ -294,6 +379,7 @@ async function list({
             ip.area_value, ip.area_unit, ip.bhk, ip.price, ip.status, ip.status_note, ip.status_changed_at,
             ip.is_draft, ip.owner_name, ip.owner_contact,
             ip.agent_name, ip.agent_contact, ip.details, ip.created_at, ip.updated_at,
+            ip.agreement_start_date, ip.agreement_end_date,
             COALESCE(ip.property_type_name, mpt_id.label, mpt_code.label) AS resolved_property_type_name,
             COALESCE(ip.transaction_type_name, mtt_id.label, mtt_code.label) AS resolved_transaction_type_name,
             COALESCE(ip.property_variety_name, mpv_id.label, mpv_code.label) AS resolved_property_variety_name
@@ -363,8 +449,9 @@ async function create(payload) {
       location, district, taluka, shivar,
       latitude, longitude, formatted_address, pincode,
       area_value, area_unit, bhk, price, status, is_draft,
-      owner_name, owner_contact, agent_name, agent_contact, details, created_by_admin_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      owner_name, owner_contact, agent_name, agent_contact, details, created_by_admin_id,
+      agreement_start_date, agreement_end_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.propertyCode,
       payload.postingDate || null,
@@ -401,6 +488,11 @@ async function create(payload) {
       payload.agentContact || null,
       detailsJson,
       payload.createdByAdminId || null,
+      // T-2026-112: Agreement Tracking & Reminder System — top-level dates
+      // for fast reminder-list scans. Rent Out / Lease Out only; every other
+      // form leaves these NULL.
+      payload.agreementStartDate || null,
+      payload.agreementEndDate || null,
     ],
   );
   return result.insertId;
@@ -423,7 +515,8 @@ async function update(id, payload) {
        location = ?, district = ?, taluka = ?, shivar = ?,
        latitude = ?, longitude = ?, formatted_address = ?, pincode = ?,
        area_value = ?, area_unit = ?, bhk = ?, price = ?, status = ?, is_draft = ?,
-       owner_name = ?, owner_contact = ?, agent_name = ?, agent_contact = ?, details = ?
+       owner_name = ?, owner_contact = ?, agent_name = ?, agent_contact = ?, details = ?,
+       agreement_start_date = ?, agreement_end_date = ?
      WHERE id = ? AND deleted_at IS NULL`,
     [
       payload.postingDate || null,
@@ -459,6 +552,10 @@ async function update(id, payload) {
       payload.agentName || null,
       payload.agentContact || null,
       detailsJson,
+      // T-2026-112: Agreement dates. Empty string coerces to NULL so the
+      // FE can clear the field simply by not setting it.
+      payload.agreementStartDate || null,
+      payload.agreementEndDate || null,
       id,
     ],
   );

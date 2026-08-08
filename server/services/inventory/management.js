@@ -414,6 +414,17 @@ function toListItem(row) {
     ownerContact: row.owner_contact,
     agentName: row.agent_name,
     agentContact: row.agent_contact,
+    // T-2026-112: Agreement Tracking & Reminder System. Top-level DATE
+    // columns populated on Rent Out / Lease Out records; NULL on every
+    // other transaction type. FE also mirrors the values into
+    // details.dynamicData.agreementStartDate / agreementEndDate for
+    // form rendering — dual-write, but the top-level column is the
+    // authoritative source for cross-row queries (reminder list,
+    // dashboard summary, badge count). Normalised to 'YYYY-MM-DD'
+    // strings so JSON serialization stays predictable across the
+    // (raw Date vs ISO string) driver-shape variance.
+    agreementStartDate: formatIsoDate(row.agreement_start_date),
+    agreementEndDate: formatIsoDate(row.agreement_end_date),
     // Every field the admin filled in on the registration form — including
     // the entire dynamicData blob for MD-engine variants — is included so
     // the frontend can render or export the record without a per-row detail
@@ -513,6 +524,27 @@ function formatDate(d) {
   const date = d instanceof Date ? d : new Date(d);
   if (Number.isNaN(date.getTime())) return String(d);
   return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+// T-2026-112: Normalise DATE-typed columns (agreement_start_date /
+// agreement_end_date) into 'YYYY-MM-DD' strings. Some MariaDB drivers
+// return a Date object; others return the raw string. We want a stable
+// ISO date string on the wire so the FE date picker + backend
+// agreementCompute both consume the same shape.
+function formatIsoDate(d) {
+  if (!d) return null;
+  if (d instanceof Date) {
+    if (Number.isNaN(d.getTime())) return null;
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  if (typeof d === 'string') {
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(d.trim());
+    return m ? m[1] : null;
+  }
+  return null;
 }
 
 // DD/MM/YYYY (IST) — used for Posting Date / Available From Date export cells.

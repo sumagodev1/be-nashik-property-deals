@@ -65,7 +65,7 @@ function notifyEmail({ email, fullName, kind }) {
     </table>
     <p style="font-size:13px;color:#374151">${escapeHtml(instruction)}</p>
     <p>
-      <a href="${loginUrl}" style="display:inline-block;padding:10px 16px;background:#255593;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Open sign-in page</a>
+      <a href="${loginUrl}" style="display:inline-block;padding:10px 16px;background:#C62828;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Open sign-in page</a>
     </p>
     <hr style="border:none;border-top:1px solid #eaeef2;margin:24px 0">
     <p style="font-size:12px;color:#5d6878">If you didn't expect this email, contact your administrator immediately.</p>

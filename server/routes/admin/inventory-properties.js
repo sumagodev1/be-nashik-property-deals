@@ -9,6 +9,7 @@ const management = require('../../services/inventory/management');
 const { shareProperty } = require('../../services/properties/shareProperty');
 const { validateDynamicData } = require('../../services/inventory/dynamicDataValidation');
 const { computeLandPricing } = require('../../services/inventory/landPricingCompute');
+const { computeLandFrontage } = require('../../services/inventory/landFrontageCompute');
 const {
   AREA_UNITS,
 } = require('../../constants/property');
@@ -116,13 +117,54 @@ const listQuery = Joi.object({
   location: Joi.string().trim().max(255).optional(),
   priceMin: Joi.number().min(0).optional(),
   priceMax: Joi.number().min(0).optional(),
+  // T-2026-109: Budget Range filter — Minimum / Maximum Budget in Rs.
+  // Compares against the "Actual Property Cost" concept walked out of the
+  // dynamicData JSON by the query builder (see queries/inventory_properties.js
+  // for the COALESCE priority). Numeric, non-negative, decimals allowed
+  // because the underlying `price` column and JSON-extracted candidates are
+  // DECIMAL(14,2)-compatible. Both params optional and independently applied
+  // — see the FE spec: only-min → >=, only-max → <=, both → range, neither
+  // → no clause. FE also enforces min<=max before submit.
+  minBudget: Joi.number().min(0).optional(),
+  maxBudget: Joi.number().min(0).optional(),
   dateFrom: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateTo: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  isDraft: Joi.boolean().optional(),
+  // T-2026-117: Draft Status list filter. Two documented values plus
+  // absence — anything else returns 400 VALIDATION_ERROR with a clear
+  // message (no silent coercion). Normalised by applyDraftStatusFilter()
+  // below into the internal boolean `isDraft` before the service call,
+  // so the query-builder layer (db/queries/inventory_properties.js) sees
+  // the existing `isDraft` shape and no lower-layer edits are needed.
+  //   * 'draft'           → WHERE ip.is_draft = 1 (only draft rows)
+  //   * 'all' or absent   → no additional constraint (byte-identical to
+  //                         today's behaviour when the param is omitted).
+  // Compose cleanly with every other list filter (district / taluka /
+  // property_type / transaction_type / property_variety / status /
+  // budget / date range / search) via ANDed WHERE clauses.
+  draftStatus: Joi.string().valid('all', 'draft').optional().messages({
+    'any.only': 'draftStatus must be either "all" or "draft".',
+  }),
   sort: Joi.string()
     .pattern(/^(created_at|price|location|property_type|title):(asc|desc)$/)
     .default('title:asc'),
 });
+
+// T-2026-117: Normalise the public `draftStatus` list-filter param into
+// the internal `isDraft` boolean that db/queries/inventory_properties.js
+// already understands. Returns a NEW object so `req.query` is never
+// mutated in place (safer for any downstream middleware / logs that
+// re-read the same object).
+//   * draftStatus omitted        → out.isDraft = undefined (no WHERE clause)
+//   * draftStatus === 'all'      → out.isDraft = undefined (no WHERE clause)
+//   * draftStatus === 'draft'    → out.isDraft = true      (WHERE is_draft = 1)
+// The `draftStatus` key itself is stripped so downstream services and the
+// export path never see it — keeping the internal contract exactly as it
+// was before this ticket.
+function applyDraftStatusFilter(query) {
+  const { draftStatus, ...rest } = query || {};
+  if (draftStatus === 'draft') return { ...rest, isDraft: true };
+  return rest;
+}
 
 // Sanity ceilings — catch typos like an extra zero on price/area without
 // being so tight that they reject a real ultra-prime Nashik property.
@@ -148,6 +190,13 @@ const propertyBody = Joi.object({
   postingDate: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional().allow('', null),
   // Available From Date — optional. Owner may or may not disclose availability.
   availableFromDate: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional().allow('', null),
+  // T-2026-112: Agreement Tracking & Reminder System — the two dates
+  // captured on Rent Out and Lease Out forms only. Both optional at the
+  // API layer (drafts must accept partial values); if BOTH are provided,
+  // end must be >= start. Any other transaction type submits `null` /
+  // `''` for both, which are accepted here and stored as NULL in the DB.
+  agreementStartDate: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional().allow('', null),
+  agreementEndDate: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional().allow('', null),
   propertyType: propertyTypeField,
   transactionType: Joi.string().trim().max(255).allow('', null).optional(),
   transactionVariant: masterCodeField.optional().allow('', null),
@@ -235,6 +284,19 @@ const exportQuery = listQuery.fork(['page', 'pageSize'], (s) => s.optional());
 function validateDynamicDataMiddleware(req, res, next) {
   try {
     const body = req.body || {};
+    // T-2026-112: Cross-field agreement dates check — end must be
+    // >= start when BOTH are provided. Runs on drafts AND non-drafts
+    // (a draft with impossible dates is a bug worth flagging early),
+    // but only when both dates are actually set — a partially-filled
+    // draft (only start, or neither) passes silently.
+    const agrStart = typeof body.agreementStartDate === 'string' ? body.agreementStartDate.trim() : '';
+    const agrEnd = typeof body.agreementEndDate === 'string' ? body.agreementEndDate.trim() : '';
+    if (agrStart && agrEnd && agrEnd < agrStart) {
+      return next(new HttpError(400, 'VALIDATION_ERROR', 'Validation failed.', [{
+        path: 'agreementEndDate',
+        message: 'Agreement End Date cannot be earlier than Agreement Start Date.',
+      }]));
+    }
     if (body.isDraft) return next();
     const dyn = body.details && body.details.dynamicData;
     // Product-mandatory dynamic-form field: Address lives on
@@ -276,7 +338,11 @@ function validateDynamicDataMiddleware(req, res, next) {
     // types. Runs AFTER Joi so we compute from the already-coerced
     // numeric values instead of raw strings.
     const propertyType = req.body.propertyType || req.body.property_type;
-    req.body.details.dynamicData = computeLandPricing(value, propertyType);
+    // T-2026-107: Land Frontage Foot -> Distance auto-derivation runs
+    // FIRST so any downstream pricing / analytics see the corrected
+    // Distance value. Idempotent; no-op when neither field is present.
+    let dynAfterFrontage = computeLandFrontage(value);
+    req.body.details.dynamicData = computeLandPricing(dynAfterFrontage, propertyType);
     return next();
   } catch (err) {
     return next(err);
@@ -285,7 +351,7 @@ function validateDynamicDataMiddleware(req, res, next) {
 
 router.get('/', validate(listQuery, 'query'), async (req, res, next) => {
   try {
-    res.json(await management.listProperties(req.query));
+    res.json(await management.listProperties(applyDraftStatusFilter(req.query)));
   } catch (err) {
     next(err);
   }
@@ -307,7 +373,7 @@ router.get('/suggest', validate(suggestQuery, 'query'), async (req, res, next) =
 // the standard project convention: <Module>_<YYYY-MM-DD>.<ext>.
 router.get('/export.csv', validate(exportQuery, 'query'), async (req, res, next) => {
   try {
-    const csv = await management.exportCsv(req.query, { auth: req.auth });
+    const csv = await management.exportCsv(applyDraftStatusFilter(req.query), { auth: req.auth });
     const stamp = new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="Inventory_Properties_${stamp}.csv"`);
@@ -319,7 +385,7 @@ router.get('/export.csv', validate(exportQuery, 'query'), async (req, res, next)
 
 router.get('/export.xlsx', validate(exportQuery, 'query'), async (req, res, next) => {
   try {
-    const buffer = await management.exportXlsx(req.query, { auth: req.auth });
+    const buffer = await management.exportXlsx(applyDraftStatusFilter(req.query), { auth: req.auth });
     const stamp = new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="Inventory_Properties_${stamp}.xlsx"`);
@@ -331,7 +397,7 @@ router.get('/export.xlsx', validate(exportQuery, 'query'), async (req, res, next
 
 router.get('/export.pdf', validate(exportQuery, 'query'), async (req, res, next) => {
   try {
-    const buffer = await management.exportPdf(req.query, { auth: req.auth });
+    const buffer = await management.exportPdf(applyDraftStatusFilter(req.query), { auth: req.auth });
     const stamp = new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="Inventory_Properties_${stamp}.pdf"`);

@@ -541,6 +541,46 @@ function discriminatorFor(masterKey) {
   return isLookupKey(masterKey) ? { masterKey } : undefined;
 }
 
+// T-2026-114: masters whose "duplicate name" rule is scoped by parent (not
+// global). Village ('shivar') is the canonical case: the same village name
+// may legitimately exist under two different Talukas (e.g. "Wadali" appears
+// under both Akola/Balapur and Nashik/Nashik-City in the Maharashtra land-
+// record vocabulary). Extending duplicate detection to (parent_code, LOWER
+// (label)) instead of global LOWER(label) makes the check match reality.
+//
+// District and Taluka masters are deliberately NOT in this set — the client
+// explicitly asked us not to change their behaviour, and their label-under-
+// parent semantics are less clearly ambiguous. `code` remains globally
+// unique inside master_lookups via the existing UNIQUE(master_key, code)
+// index; ONLY the label-duplicate rule changes here.
+const PARENT_SCOPED_LABEL_KEYS = new Set(['shivar']);
+function isParentScopedLabel(masterKey) {
+  return PARENT_SCOPED_LABEL_KEYS.has(masterKey);
+}
+
+// T-2026-114: resolve a parent's display label so the "already exists"
+// error can name the containing scope (e.g. "under taluka 'Nashik City'").
+// Purely cosmetic — the check itself works on codes. Returns the code
+// verbatim when the parent row is missing, so the message still reads.
+async function resolveParentLabel(masterKey, parentCode) {
+  if (!parentCode) return '';
+  // The immediate parent for shivar is taluka; parent for taluka is district.
+  // Look it up in master_lookups by (parent_master_key, code).
+  const parentKey = masterKey === 'shivar' ? 'taluka' : (masterKey === 'taluka' ? 'district' : null);
+  if (!parentKey) return String(parentCode);
+  try {
+    const [rows] = await pool.query(
+      `SELECT label FROM master_lookups
+        WHERE master_key = ? AND code = ? AND deleted_at IS NULL
+        LIMIT 1`,
+      [parentKey, String(parentCode)],
+    );
+    return (rows[0] && rows[0].label) ? String(rows[0].label) : String(parentCode);
+  } catch (_err) {
+    return String(parentCode);
+  }
+}
+
 // Fixed-vocabulary masters: the admin can toggle active/inactive on existing
 // rows but cannot add, rename or delete them. Currently empty — property
 // status was removed in migration 056 so admins can extend the vocabulary
@@ -853,14 +893,27 @@ async function create(masterKey, payload, req) {
       { existingId: existingByCode.id, existingLabel: existingByCode.label, isActive: Boolean(existingByCode.is_active) },
     );
   }
-  const existingByLabel = await repo.findByLabel(table, label, null, { discriminator });
+  // T-2026-114: for parent-scoped masters (currently just `shivar` /
+  // Village), the label-duplicate check runs under the same parent scope,
+  // so "Wadali" in Akola/Balapur does NOT collide with "Wadali" in Nashik/
+  // Nashik-City. For every other master key the discriminator is unchanged
+  // and the check remains global-per-vocabulary as before.
+  const labelDiscriminator = (isParentScopedLabel(masterKey) && parentCode)
+    ? { ...discriminator, parentCode }
+    : discriminator;
+  const existingByLabel = await repo.findByLabel(table, label, null, { discriminator: labelDiscriminator });
   if (existingByLabel) {
     const status = existingByLabel.is_active ? 'currently active' : 'currently inactive — you can reactivate it';
+    // T-2026-114: name the containing scope in the error so the admin
+    // knows why the check fired (e.g. "under taluka 'Nashik City'").
+    const scopeSuffix = isParentScopedLabel(masterKey) && parentCode
+      ? ` under taluka "${await resolveParentLabel(masterKey, parentCode)}"`
+      : '';
     throw new HttpError(
       409,
       'LABEL_TAKEN',
-      `A ${MASTER_LABELS[masterKey].toLowerCase()} named "${existingByLabel.label}" already exists (#${existingByLabel.id}, ${status}). Search the list for "${existingByLabel.label}" to find it.`,
-      { existingId: existingByLabel.id, existingLabel: existingByLabel.label, isActive: Boolean(existingByLabel.is_active) },
+      `A ${MASTER_LABELS[masterKey].toLowerCase()} named "${existingByLabel.label}"${scopeSuffix} already exists (#${existingByLabel.id}, ${status}). Search the list for "${existingByLabel.label}" to find it.`,
+      { existingId: existingByLabel.id, existingLabel: existingByLabel.label, isActive: Boolean(existingByLabel.is_active), parentCode: parentCode || null },
     );
   }
   // Revive a soft-deleted twin if the admin is re-adding a previously-
@@ -868,10 +921,16 @@ async function create(masterKey, payload, req) {
   // (master_key, code) still covers deleted rows, so a fresh INSERT
   // hits ER_DUP_ENTRY. Reviving preserves the id + audit history and
   // gives the admin the "add worked" outcome they expected.
+  //
+  // T-2026-114: for parent-scoped masters, deleted-label revive also
+  // scopes by parent — so a deleted "Wadali" under Akola/Balapur will
+  // NOT be revived when the admin adds "Wadali" under Nashik/Nashik-City;
+  // a fresh row is inserted instead. Deleted-code revive stays global
+  // because code is globally unique via UNIQUE(master_key, code).
   const deletedByCode = await repo.findDeletedByCode(table, code, { discriminator });
   const deletedByLabel = deletedByCode
     ? null
-    : await repo.findDeletedByLabel(table, label, { discriminator });
+    : await repo.findDeletedByLabel(table, label, { discriminator: labelDiscriminator });
   const dead = deletedByCode || deletedByLabel;
   if (dead) {
     await repo.revive(table, dead.id, {
@@ -934,14 +993,38 @@ async function update(masterKey, id, payload, req) {
   if (code !== existing.code && await repo.codeTaken(table, code, id, { discriminator })) {
     throw new HttpError(409, 'CODE_TAKEN', `A ${MASTER_LABELS[masterKey].toLowerCase()} with code "${code}" already exists`);
   }
-  if (label.toLowerCase() !== String(existing.label).toLowerCase() && await repo.labelTaken(table, label, id, { discriminator })) {
-    throw new HttpError(409, 'LABEL_TAKEN', `A ${MASTER_LABELS[masterKey].toLowerCase()} named "${label}" already exists`);
-  }
+  // T-2026-114: resolve parentCode BEFORE the label-uniqueness check so that
+  // (a) parent-scoped label duplicate detection can use the incoming or
+  //     preserved parentCode as the scope, and
+  // (b) an update that moves a village from taluka A to taluka B is properly
+  //     checked against taluka B's existing villages (not taluka A's).
   const parentCode = isLookupKey(masterKey)
     ? (payload.parentCode !== undefined
         ? (payload.parentCode ? String(payload.parentCode).trim().toLowerCase() : null)
         : (existing.parent_code || null))
     : null;
+  const labelDiscriminator = (isParentScopedLabel(masterKey) && parentCode)
+    ? { ...discriminator, parentCode }
+    : discriminator;
+  // T-2026-114: for parent-scoped masters, the label check MUST rerun even
+  // when the label itself is unchanged if the parentCode is changing (moving
+  // "Wadali" from Balapur taluka to Nashik-City taluka can collide with an
+  // existing "Wadali" in Nashik-City). Detect either case.
+  const labelChanged = label.toLowerCase() !== String(existing.label).toLowerCase();
+  const parentChanged = isParentScopedLabel(masterKey)
+    && String(parentCode || '') !== String(existing.parent_code || '');
+  if ((labelChanged || parentChanged)
+      && await repo.labelTaken(table, label, id, { discriminator: labelDiscriminator })) {
+    const scopeSuffix = isParentScopedLabel(masterKey) && parentCode
+      ? ` under taluka "${await resolveParentLabel(masterKey, parentCode)}"`
+      : '';
+    throw new HttpError(
+      409,
+      'LABEL_TAKEN',
+      `A ${MASTER_LABELS[masterKey].toLowerCase()} named "${label}"${scopeSuffix} already exists`,
+      { parentCode: parentCode || null },
+    );
+  }
   // T-2026-045: description only applied when the table has the column and
   // the caller included the field. When key is absent, preserve existing.
   const description = payload.description !== undefined

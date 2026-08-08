@@ -6,31 +6,47 @@
 // have computed. The frontend and backend must always agree — that's the
 // contract the client asked for.
 //
-// Applies ONLY to Land Sale / Purchase and SEZ Land Sale / Purchase
-// property types. Any other property type passes through untouched.
+// Applies to:
+//   • Land Sale / Purchase and SEZ Land Sale / Purchase
+//       (multi-unit family: source rate × source area via
+//        lastEditedRateUnit / lastEditedGovRateUnit stamps).
+//   • T-2026-119 built-up family: Flat / Bungalow / Rowhouse /
+//     Commercial / Shop / Project Sale variants
+//       (single-unit family: builtUpArea (Sq. Ft.) × ratePerSqFt for
+//        Actual, × governmentRatePerSqFt for Government).
+//
+// Any other property type passes through untouched.
 //
 // Fields computed (all read-only in the FE form config):
 //
 //   • `actualCalculatedPropertyPrice`
-//       = source_rate × source_area, where `source` is the unit label
-//         on `data.lastEditedRateUnit` (`sqm` / `sqft` / `guntha` /
-//         `acre` / `hectare` / `yard`). Blank when no rate has been
-//         entered yet.
+//       Land / SEZ-Land: source_rate × source_area, where `source` is
+//                         the unit label on `data.lastEditedRateUnit`.
+//       Built-up:         builtUpArea × ratePerSqFt.
+//       Blank when the required operands are empty.
+//   • `governmentCalculatedPropertyPrice`
+//       Land / SEZ-Land: source_gov_rate × source_area
+//                         (`lastEditedGovRateUnit` stamp).
+//       Built-up:         builtUpArea × governmentRatePerSqFt.
 //   • `gstPercentage`
-//       = parseGstPercentage(gstId) — extracts the first digit run from
-//         the master code. Supports preset codes (`5-pct` → 5) and
-//         admin-created "Other" codes (raw slug like `12` → 12).
-//   • `stampDuty`           = considerationValue × 5%
-//   • `registrationCharges` = considerationValue × 1%
-//   • `lbt`                 = considerationValue × 1%
-//   • `gstAmount`           = considerationValue × gstPercentage%
-//   • `costToCustomer`      = live sum of every line
-//                             (considerationValue + stampDuty +
-//                              registrationCharges + lbt + gstAmount +
-//                              paperNotice + documentTypingCharges +
-//                              amountOfStampPaper + undertableFees).
-//                             Left blank when the whole Financial
-//                             subsection is untouched.
+//       parseGstPercentage(gstId).
+//   • Maharashtra registration rule (T-2026-119) — UNIVERSAL. Applies
+//     to Land + SEZ-Land + built-up alike:
+//       baseValue           = max(considerationValue,
+//                                 governmentCalculatedPropertyPrice)
+//       stampDuty           = baseValue × 5%
+//       registrationCharges = baseValue × 1%
+//       lbt                 = baseValue × 1%
+//       gstAmount           = baseValue × gstPercentage%
+//       costToCustomer      = baseValue + stampDuty + registrationCharges
+//                           + lbt + gstAmount + paperNotice
+//                           + documentTypingCharges + amountOfStampPaper
+//                           + undertableFees
+//     Rationale: Maharashtra registration charges are calculated on the
+//     HIGHER of the market/consideration value and the government
+//     ready-reckoner valuation. Using the lower amount under-collects
+//     duty. Rule 6 of T-2026-119 makes this universal (Land, SEZ-Land,
+//     and every built-up Sale form all use the same rule).
 
 const AREA_KEY_BY_UNIT = Object.freeze({
   sqm:     'areaSqMeter',
@@ -70,13 +86,22 @@ const GOV_RATE_KEY_BY_UNIT = Object.freeze({
   yard:    'govRateVarYard',
 });
 
+// T-2026-119: built-up canonical keys — single-unit (Sq. Ft.) family.
+const BUILT_UP_AREA_KEY     = 'builtUpArea';
+const BUILT_UP_RATE_KEY     = 'ratePerSqFt';
+const BUILT_UP_GOV_RATE_KEY = 'governmentRatePerSqFt';
+
 // Detects the pricing family from the `property_type` value stored on
 // inventory_properties.property_type. Front-end sends the human label
 // (e.g. "Land Registration Form[Sale]" → stripped to "Land[Sale]") or a
 // canonical code (`land-sale`, `land-purchase`, `sez-land-sale`,
-// `sez-land-purchase`). This matcher stays generous — case-insensitive,
-// whitespace-collapsed — because the storage shape has drifted over
-// time (see resolveFormConfig.js in the FE for the same headache).
+// `sez-land-purchase`, `flat-resale`, `bunglow-new-sale`, etc.). This
+// matcher stays generous — case-insensitive, whitespace-collapsed —
+// because the storage shape has drifted over time (see resolveFormConfig.js
+// in the FE for the same headache).
+//
+// Returns:
+//   'land' | 'sez-land' | 'built-up' | null
 function detectFamily(propertyType) {
   const s = String(propertyType || '').toLowerCase().replace(/\s+/g, '');
   if (!s) return null;
@@ -91,6 +116,23 @@ function detectFamily(propertyType) {
   if (s.startsWith('land') || s.includes('landregistrationform')) {
     if (s.includes('sale') || s.includes('purchase')) return 'land';
     return null;
+  }
+  // T-2026-119: built-up Sale family. Any of flat / bunglow / rowhouse /
+  // commercial / shop / project property types AND a Sale-ish token.
+  // Sale-ish = `sale`, `resale`, `new-sale`, `new_sale`, `newsale`
+  // (all variations reduce to a substring containing "sale" after
+  // whitespace-strip + lowercase). Purchase / Rent / Lease variants of
+  // these property types do NOT match because their property_type
+  // strings won't carry "sale".
+  const isBuiltUpPropertyType =
+       s.startsWith('flat')
+    || s.startsWith('bunglow')
+    || s.startsWith('rowhouse')
+    || s.startsWith('commercial')
+    || s.startsWith('shop')
+    || s.startsWith('project');
+  if (isBuiltUpPropertyType && s.includes('sale')) {
+    return 'built-up';
   }
   return null;
 }
@@ -120,10 +162,32 @@ function parseGstPercentage(gstId) {
   return n;
 }
 
+// T-2026-119: numeric max that treats null as "not applicable".
+// max(null, 10) === 10; max(null, null) === null.
+function maxNumberOrNull(a, b) {
+  if (a === null && b === null) return null;
+  if (a === null) return b;
+  if (b === null) return a;
+  return a > b ? a : b;
+}
+
 /**
- * Recompute every derived Land Pricing field on a dynamicData record.
- * Idempotent — running it twice on the same input produces the same
- * output. Non-Land / SEZ-Land property types return the input unchanged.
+ * Recompute every derived Land / SEZ-Land / built-up Pricing field on a
+ * dynamicData record. Idempotent — running it twice on the same input
+ * produces the same output. Non-matching property types return the input
+ * unchanged.
+ *
+ * IMPORTANT — T-2026-119 no-touch-on-hydrate rule (rule 12): this mirror
+ * runs on every save (Create / Update / Draft). It does NOT distinguish
+ * "user just typed a value" from "historically-saved value". If the FE
+ * sent a payload that already contains a manually-entered actual or gov
+ * price inconsistent with area × rate, this mirror will OVERWRITE it.
+ * This is the intended contract (FE + BE must always agree on the
+ * canonical derived shape); the no-touch-on-hydrate rule lives on the FE
+ * side (InventoryForm.jsx / coerceLegacyBuiltUpPricingKeys) where it
+ * preserves the historical intent until the user edits an input, at
+ * which point the recompute fires and the FE sends the new derived
+ * values which the BE mirror then persists.
  *
  * @param {object} data          — dynamicData JSON blob (Joi-validated).
  * @param {string} propertyType  — top-level property_type from the request.
@@ -133,65 +197,90 @@ function computeLandPricing(data, propertyType) {
   const family = detectFamily(propertyType);
   if (!family || !data || typeof data !== 'object') return data;
   const out = { ...data };
-  const rateMap = family === 'land' ? RATE_KEY_BY_UNIT_LAND : RATE_KEY_BY_UNIT_SEZ;
 
-  // Actual Calculated Property Price — SELECTED RATE × CORRESPONDING
-  // AREA. Blank when no source unit is stamped or the operand is empty.
-  const unit = out.lastEditedRateUnit;
-  if (unit && AREA_KEY_BY_UNIT[unit] && rateMap[unit]) {
-    const area = toNumberOrNull(out[AREA_KEY_BY_UNIT[unit]]);
-    const rate = toNumberOrNull(out[rateMap[unit]]);
+  // ─── Actual Calculated Property Price ─────────────────────────────
+  if (family === 'built-up') {
+    // Single-unit built-up (Sq. Ft.).
+    const area = toNumberOrNull(out[BUILT_UP_AREA_KEY]);
+    const rate = toNumberOrNull(out[BUILT_UP_RATE_KEY]);
     if (area !== null && rate !== null) {
       out.actualCalculatedPropertyPrice = formatCurrency(area * rate);
     } else {
       out.actualCalculatedPropertyPrice = '';
     }
   } else {
-    out.actualCalculatedPropertyPrice = '';
+    // Multi-unit Land / SEZ-Land — pick the source pair via the stamp.
+    const rateMap = family === 'land' ? RATE_KEY_BY_UNIT_LAND : RATE_KEY_BY_UNIT_SEZ;
+    const unit = out.lastEditedRateUnit;
+    if (unit && AREA_KEY_BY_UNIT[unit] && rateMap[unit]) {
+      const area = toNumberOrNull(out[AREA_KEY_BY_UNIT[unit]]);
+      const rate = toNumberOrNull(out[rateMap[unit]]);
+      if (area !== null && rate !== null) {
+        out.actualCalculatedPropertyPrice = formatCurrency(area * rate);
+      } else {
+        out.actualCalculatedPropertyPrice = '';
+      }
+    } else {
+      out.actualCalculatedPropertyPrice = '';
+    }
   }
 
-  // Government Calculated Property Price — SELECTED GOV RATE ×
-  // CORRESPONDING AREA. Same rule as above but reads from Family D
-  // (govRate*) and its own source stamp `lastEditedGovRateUnit`. Blank
-  // when no gov rate has been entered.
-  const govUnit = out.lastEditedGovRateUnit;
-  if (govUnit && AREA_KEY_BY_UNIT[govUnit] && GOV_RATE_KEY_BY_UNIT[govUnit]) {
-    const area = toNumberOrNull(out[AREA_KEY_BY_UNIT[govUnit]]);
-    const rate = toNumberOrNull(out[GOV_RATE_KEY_BY_UNIT[govUnit]]);
+  // ─── Government Calculated Property Price ──────────────────────────
+  if (family === 'built-up') {
+    const area = toNumberOrNull(out[BUILT_UP_AREA_KEY]);
+    const rate = toNumberOrNull(out[BUILT_UP_GOV_RATE_KEY]);
     if (area !== null && rate !== null) {
       out.governmentCalculatedPropertyPrice = formatCurrency(area * rate);
     } else {
       out.governmentCalculatedPropertyPrice = '';
     }
   } else {
-    out.governmentCalculatedPropertyPrice = '';
+    const govUnit = out.lastEditedGovRateUnit;
+    if (govUnit && AREA_KEY_BY_UNIT[govUnit] && GOV_RATE_KEY_BY_UNIT[govUnit]) {
+      const area = toNumberOrNull(out[AREA_KEY_BY_UNIT[govUnit]]);
+      const rate = toNumberOrNull(out[GOV_RATE_KEY_BY_UNIT[govUnit]]);
+      if (area !== null && rate !== null) {
+        out.governmentCalculatedPropertyPrice = formatCurrency(area * rate);
+      } else {
+        out.governmentCalculatedPropertyPrice = '';
+      }
+    } else {
+      out.governmentCalculatedPropertyPrice = '';
+    }
   }
 
-  // Financial derivations
-  const cv = toNumberOrNull(out.considerationValue);
+  // ─── Financial derivations — Maharashtra rule (T-2026-119) ────────
+  // baseValue = max(considerationValue, governmentCalculatedPropertyPrice)
+  // Every percentage-of-base charge computed from baseValue (never from
+  // the lower of the two). Applies universally to Land + SEZ-Land +
+  // built-up.
+  const cv  = toNumberOrNull(out.considerationValue);
+  const gov = toNumberOrNull(out.governmentCalculatedPropertyPrice);
+  const baseValue = maxNumberOrNull(cv, gov);
+
   const gstPct = parseGstPercentage(out.gstId);
   out.gstPercentage = gstPct === null ? '' : String(gstPct);
-  if (cv === null) {
+  if (baseValue === null) {
     out.stampDuty = '';
     out.registrationCharges = '';
     out.lbt = '';
     out.gstAmount = '';
   } else {
-    out.stampDuty = formatCurrency(cv * 0.05);
-    out.registrationCharges = formatCurrency(cv * 0.01);
-    out.lbt = formatCurrency(cv * 0.01);
+    out.stampDuty = formatCurrency(baseValue * 0.05);
+    out.registrationCharges = formatCurrency(baseValue * 0.01);
+    out.lbt = formatCurrency(baseValue * 0.01);
     out.gstAmount = (gstPct === null)
       ? ''
-      : formatCurrency(cv * (gstPct / 100));
+      : formatCurrency(baseValue * (gstPct / 100));
   }
 
   // Cost to Customer — live sum. Left blank when the whole Financial
-  // subsection is untouched (no CV and no manual line entered).
+  // subsection is untouched (no baseValue and no manual line entered).
   const paperNotice           = toNumberOrNull(out.paperNotice);
   const documentTypingCharges = toNumberOrNull(out.documentTypingCharges);
   const amountOfStampPaper    = toNumberOrNull(out.amountOfStampPaper);
   const undertableFees        = toNumberOrNull(out.undertableFees);
-  const anyValuePresent = cv !== null
+  const anyValuePresent = baseValue !== null
     || paperNotice !== null
     || documentTypingCharges !== null
     || amountOfStampPaper !== null
@@ -199,7 +288,7 @@ function computeLandPricing(data, propertyType) {
   if (!anyValuePresent) {
     out.costToCustomer = '';
   } else {
-    const sum = (cv ?? 0)
+    const sum = (baseValue ?? 0)
       + (toNumberOrNull(out.stampDuty) ?? 0)
       + (toNumberOrNull(out.registrationCharges) ?? 0)
       + (toNumberOrNull(out.lbt) ?? 0)
