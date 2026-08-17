@@ -6,6 +6,7 @@ const { pool } = require('../../db/pool');
 const inventory = require('../../db/queries/inventory_properties');
 const propertyFiles = require('../../db/queries/property_files');
 const storageUsage = require('../../db/queries/storage_usage');
+const allocationGuard = require('../crm/allocationGuard');
 const imageUpload = require('../files/imageUpload');
 const documentUpload = require('../files/documentUpload');
 const excel = require('../files/excel');
@@ -286,6 +287,11 @@ async function removeProperty(id) {
   const existing = await inventory.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
 
+  // Refuse to delete a property still allocated to a CRM lead. Keyed on
+  // property_code because that is what the allocation column stores -- passing
+  // the row id would match nothing and the guard would fail OPEN.
+  await allocationGuard.assertNotAllocatedToAnyLead(existing.property_code, 'inventory property');
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -425,6 +431,21 @@ function toListItem(row) {
     // (raw Date vs ISO string) driver-shape variance.
     agreementStartDate: formatIsoDate(row.agreement_start_date),
     agreementEndDate: formatIsoDate(row.agreement_end_date),
+    // T-2026-138: Builder Property / Multi-Unit Inventory (Admin-only).
+    // Top-level flag + counter (migration 099 / T-2026-136). Present on
+    // every row: `isBuilderMaster` is a boolean (coerced from 0/1),
+    // `totalUnitsPlanned` is a number or null. Pre-T-136 rows land
+    // isBuilderMaster=false + totalUnitsPlanned=null automatically
+    // because the migration set DEFAULT 0 and NULL respectively. The
+    // FE hydrate path in InventoryForm.jsx mirrors these back into
+    // details.dynamicData.builderProperty ('Yes'/'No') and
+    // details.dynamicData.totalUnitsPlanned so the Flat Sale New form
+    // fields render the saved values on edit — same dual-write pattern
+    // as agreementStartDate above.
+    isBuilderMaster: Boolean(Number(row.is_builder_master)),
+    totalUnitsPlanned: row.total_units_planned === null || row.total_units_planned === undefined
+      ? null
+      : Number(row.total_units_planned),
     // Every field the admin filled in on the registration form — including
     // the entire dynamicData blob for MD-engine variants — is included so
     // the frontend can render or export the record without a per-row detail

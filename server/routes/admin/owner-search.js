@@ -21,7 +21,8 @@
  * single MODULE — a sub_admin who can create either Inventory or Enquiry
  * properties genuinely needs to see duplicates across all three data sets
  * (otherwise a Business Associate contact wouldn't surface for an Enquiry
- * form filler with only INVENTORY_MANAGEMENT access).
+ * form filler with only INVENTORY_PROPERTIES / ENQUIRY_PROPERTIES access
+ * -- pre-T-174 this was INVENTORY_MANAGEMENT).
  */
 
 const express = require('express');

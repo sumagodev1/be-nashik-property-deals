@@ -1,3 +1,21 @@
+// ============================================================
+// public_properties.js — public-facing website property queries
+// ============================================================
+// PUBLIC / ADMIN BOUNDARY (T-2026-141):
+//   Every query in this file MUST target `website_properties` only.
+//   `inventory_properties` and `inventory_property_units` are ADMIN-ONLY
+//   surfaces (see T-2026-136 spec sections 12 / 26 / T13-T14). If a
+//   future ticket needs a public list that mixes seller listings with
+//   admin inventory, the guard MUST be:
+//     • Never JOIN inventory_property_units (unit rows never leak).
+//     • On inventory_properties: add
+//         AND (ip.is_builder_master = 0 OR ip.is_builder_master IS NULL)
+//       so a Builder Property MASTER never appears publicly.
+//   Today no query here reads inventory_properties at all — enforcement
+//   is architectural (no import + no SQL). This block documents the
+//   invariant so review catches any future drift.
+// ============================================================
+
 const { pool } = require('../pool');
 
 const SORTABLE_COLUMNS = {
@@ -267,4 +285,52 @@ async function listSimilar({ excludeId, propertyType, transactionType, price, li
   return rows;
 }
 
-module.exports = { list, findByIdentifier, listFeatured, listLatest, findActiveById, listSimilar, incrementViewCount };
+/**
+ * T-2026-171: Fetch the seller (owner) row that owns a public property,
+ * given the property's public identifier (numeric id OR property_code).
+ *
+ * Returns null when the property doesn't exist (or isn't publicly
+ * visible), OR when the linked seller row has been soft-deleted / marked
+ * inactive. The caller (public/propertyOwner service) treats null as a
+ * generic "not found" — do NOT distinguish the two cases in the API
+ * response, because that would leak whether a valid property has a
+ * missing owner row (never actually expected in prod but defensive).
+ *
+ * The join is filtered to the SAME PUBLIC_WHERE gates as the rest of the
+ * public surface (approved + active + not deleted) so an unpublished
+ * draft cannot leak its owner even if the caller knows the property_code.
+ */
+async function findPublicPropertyOwner(identifier) {
+  const numeric = /^\d+$/.test(String(identifier));
+  const [rows] = await pool.query(
+    `SELECT s.id AS seller_id,
+            s.full_name,
+            s.user_type,
+            s.mobile_number,
+            s.alternate_contact,
+            s.email,
+            s.agency_name,
+            s.business_address,
+            s.area
+     FROM website_properties wp
+     INNER JOIN sellers s ON s.id = wp.seller_id
+     WHERE ${PUBLIC_WHERE}
+       AND s.is_active = 1
+       AND s.deleted_at IS NULL
+       AND (${numeric ? 'wp.id = ?' : 'wp.property_code = ?'})
+     LIMIT 1`,
+    [identifier],
+  );
+  return rows[0] || null;
+}
+
+module.exports = {
+  list,
+  findByIdentifier,
+  listFeatured,
+  listLatest,
+  findActiveById,
+  listSimilar,
+  incrementViewCount,
+  findPublicPropertyOwner,
+};

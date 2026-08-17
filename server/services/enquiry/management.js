@@ -6,6 +6,7 @@ const { pool } = require('../../db/pool');
 const enquiry = require('../../db/queries/enquiry_properties');
 const propertyFiles = require('../../db/queries/property_files');
 const storageUsage = require('../../db/queries/storage_usage');
+const allocationGuard = require('../crm/allocationGuard');
 const imageUpload = require('../files/imageUpload');
 const documentUpload = require('../files/documentUpload');
 const excel = require('../files/excel');
@@ -29,6 +30,14 @@ const { validatePropertyClassification } = require('../masters/propertyMasters')
 const formCodeCatalog = require('../../constants/formCodeCatalog');
 // Fix E (T-2026-058): DB-authoritative dependency validator.
 const propertyFormCatalog = require('../masters/propertyFormCatalog');
+// T-2026-151 Phase 1: CRM ingestion hook. Every successful enquiry
+// property create writes a mirror row into the CRM subsystem via the
+// duplicate-resolver (matches on normalized mobile / email). This is
+// BEST-EFFORT -- a failure inside the resolver never rolls back or
+// blocks the enquiry create, it just logs and moves on. The enquiry
+// row itself continues to be the source of truth for the Enquiry
+// list surface; CRM ingestion is additive.
+const crmResolver = require('../crm/duplicateResolver');
 
 // Structural mirror of services/inventory/management.js — every function has
 // the same signature and same downstream behaviour. Only the data source
@@ -195,7 +204,49 @@ async function createProperty(payload) {
       throw err;
     }
   });
+  // T-2026-151 Phase 1: best-effort CRM ingestion. Extracts the
+  // primary contact (owner_name + owner_contact + first non-blank email
+  // from contacts[]) and hands off to the duplicate resolver. Any error
+  // is swallowed + logged so a resolver hiccup never breaks the primary
+  // enquiry create.
+  void ingestIntoCrm({ enquiryId: id, payload }).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.warn('[crm-ingest][enquiry] non-fatal:', err && err.message);
+  });
   return getProperty(id);
+}
+
+// T-2026-151 Phase 1: extract-primary-contact + hand off to CRM
+// resolver. Extracted into a helper so the same logic can be
+// re-invoked from a future replay tool if we ever need to backfill
+// CRM rows for pre-Phase-1 enquiries.
+async function ingestIntoCrm({ enquiryId, payload }) {
+  const ownerName = payload?.ownerName || '';
+  const ownerContact = payload?.ownerContact || '';
+  // First contact with a non-blank email wins.
+  let firstEmail = '';
+  const contacts = payload?.details?.dynamicData?.contacts;
+  if (Array.isArray(contacts)) {
+    for (const c of contacts) {
+      const emails = Array.isArray(c?.emails) ? c.emails : (c?.email ? [c.email] : []);
+      const e = emails.find((x) => typeof x === 'string' && x.includes('@'));
+      if (e) { firstEmail = e; break; }
+    }
+  }
+  // T-2026-156: `ingestion_snapshot` no longer persisted (dropped by
+  // migration 104). The CRM listing joins enquiry_properties at
+  // read time via source_type='npd' + source_id -> live owner_name /
+  // owner_contact / property_code / title, so a per-row cache is
+  // unnecessary. Admin edits to the NPD enquiry row are visible in
+  // CRM immediately.
+  await crmResolver.ingest({
+    full_name: ownerName,
+    mobile: ownerContact,
+    email: firstEmail,
+    source_type: 'npd',
+    source_id: enquiryId,
+    status_code: 'new',
+  });
 }
 
 async function updateProperty(id, payload) {
@@ -230,6 +281,17 @@ async function updateStatus(id, status, note, changedBy) {
 async function removeProperty(id) {
   const existing = await enquiry.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+
+  // Refuse to delete while still allocated to a CRM lead.
+  //
+  // NEW GUARD. Enquiry properties previously could not be allocated at all
+  // (the allocation column was inventory-scoped), so this surface never
+  // needed one. Now that allocations key on globally-unique property codes,
+  // an enquiry property CAN be attached to a lead -- and deleting it without
+  // this check would leave the CRM pointing at a property that no longer
+  // exists, exactly the dangling-reference problem the inventory guard was
+  // written to prevent.
+  await allocationGuard.assertNotAllocatedToAnyLead(existing.property_code, 'enquiry property');
 
   const conn = await pool.getConnection();
   try {

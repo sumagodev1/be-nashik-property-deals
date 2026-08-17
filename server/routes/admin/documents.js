@@ -19,7 +19,7 @@ const express = require('express');
 const Joi = require('joi');
 
 const { validate } = require('../../middleware/validate');
-const { requireAuth, requireModule } = require('../../middleware/auth');
+const { requireAuth, requireModule, requireModuleWriteOnMutation } = require('../../middleware/auth');
 const { documentDirectoryUpload } = require('../../middleware/documentDirectoryUpload');
 const service = require('../../services/admin/documents');
 const { MODULES } = require('../../constants/modules');
@@ -27,6 +27,8 @@ const { MODULES } = require('../../constants/modules');
 const router = express.Router();
 
 router.use(requireAuth, requireModule(MODULES.DOCUMENT_DIRECTORY));
+// T-2026-173 Phase 2: sub-admins with only Read access get 403 on mutation.
+router.use(requireModuleWriteOnMutation(MODULES.DOCUMENT_DIRECTORY));
 
 const idParam = Joi.object({ id: Joi.number().integer().positive().required() });
 

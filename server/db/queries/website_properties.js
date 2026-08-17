@@ -167,13 +167,27 @@ async function updatePropertyCode(id, code) {
 }
 
 async function update(id, payload) {
-  const detailsJson = payload.details && Object.keys(payload.details).length
-    ? JSON.stringify(payload.details)
-    : null;
+  // `details` is OMIT-PRESERVING, distinguished from "explicitly cleared":
+  //   undefined / null -> bind null -> COALESCE keeps whatever is stored
+  //   {} or populated   -> bind JSON  -> overwrite (an empty object clears)
+  //
+  // It previously bound `payload.details && Object.keys(...).length ? json : null`
+  // into a bare `details = ?`, so ANY caller that omitted details nulled the
+  // whole blob. The admin Website-Properties edit form never sends details
+  // (its updateBody in routes/admin/website-properties.js does not declare
+  // the field), so a single admin save silently destroyed everything stored
+  // there -- today that is the seller's `property_variety` and `landmarks`.
+  //
+  // That is not just a latent risk: the admin list filter reads
+  // JSON_EXTRACT(details,'$.property_variety') and the dashboard's
+  // "By Property Variety" card COALESCEs four JSON keys, so both quietly went
+  // blank for any property an admin had ever edited.
+  const detailsProvided = payload.details !== undefined && payload.details !== null;
+  const detailsJson = detailsProvided ? JSON.stringify(payload.details) : null;
   // Location cascade columns use COALESCE(?, existing) so callers that omit
   // them (e.g. the admin edit form, which doesn't render the cascade) don't
   // silently wipe the seller-provided values. Passing an explicit '' or a
-  // fresh code still overwrites.
+  // fresh code still overwrites. `details` now follows the same idiom.
   await pool.query(
     `UPDATE website_properties SET
        title = ?, description = ?, property_type = ?, transaction_type = ?, location = ?,
@@ -182,7 +196,7 @@ async function update(id, payload) {
        shivar   = COALESCE(?, shivar),
        pincode  = COALESCE(?, pincode),
        latitude = ?, longitude = ?, area_value = ?, area_unit = ?, bhk = ?, price = ?,
-       details = ?
+       details  = COALESCE(?, details)
      WHERE id = ? AND deleted_at IS NULL`,
     [
       payload.title,

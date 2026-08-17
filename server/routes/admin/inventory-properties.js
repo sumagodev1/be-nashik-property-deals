@@ -2,7 +2,7 @@ const express = require('express');
 const Joi = require('joi');
 
 const { validate } = require('../../middleware/validate');
-const { requireAuth, requireModule } = require('../../middleware/auth');
+const { requireAuth, requireModule, requireModuleWriteOnMutation } = require('../../middleware/auth');
 const { imageUploadMiddleware, documentUploadMiddleware } = require('../../middleware/imageMulter');
 const idempotency = require('../../middleware/idempotency');
 const management = require('../../services/inventory/management');
@@ -20,10 +20,40 @@ const {
 const masterCodeField = Joi.string().trim().lowercase().pattern(/^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$/);
 const { MODULES } = require('../../constants/modules');
 const { HttpError } = require('../../middleware/errors');
+// T-2026-169 Phase D: direct pool for the batched property-code lookup.
+const { pool: dbPool } = require('../../db/pool');
 
 const router = express.Router();
 
-router.use(requireAuth, requireModule(MODULES.INVENTORY_MANAGEMENT));
+// T-2026-174: split off from INVENTORY_MANAGEMENT umbrella key. This router
+// serves the Inventory Properties surface (property owner listings for
+// Sell/Rent Out/Lease Out/Out/Joint Venture). Sub-admins now need the
+// discrete INVENTORY_PROPERTIES grant. Two layers of backward-compat keep
+// pre-T-174 sub-admins fully functional:
+//   (a) Migration 111 fans out every pre-T-174 sub_admin_modules row with
+//       module_key='inventory_management' into 5 equivalent rows on the
+//       new discrete keys (same access_level). Any re-login mints a JWT
+//       that carries INVENTORY_PROPERTIES directly.
+//   (b) middleware/auth.js#hasGrant treats a legacy 'inventory_management'
+//       entry (in either shape) as an implicit grant on any of the 5 new
+//       keys via LEGACY_UMBRELLA_ALIASES. So in-flight JWTs issued BEFORE
+//       the migration deploy continue to work until refresh.
+// Admin bypasses via requireModule's role==='admin' short-circuit.
+router.use(requireAuth, requireModule(MODULES.INVENTORY_PROPERTIES));
+// Sub-admins with only Read access on INVENTORY_PROPERTIES can hit GET
+// endpoints but any POST/PUT/PATCH/DELETE is 403'd here at the router
+// level. Nested router below (/:masterId/units) inherits this gate so
+// unit CRUD is also write-gated.
+router.use(requireModuleWriteOnMutation(MODULES.INVENTORY_PROPERTIES));
+
+// T-2026-137: Builder Property unit CRUD lives on the same router surface
+// under /:masterId/units. Mounted with mergeParams:true (see the child
+// router file) so it can read :masterId. Mounted here — BEFORE the /:id
+// handlers below — so Express's path matcher picks the more specific
+// prefix. Auth + module gate are already applied by the router.use above,
+// and are inherited by the child router; the child MUST NOT re-apply
+// them (would double-invoke and log noise).
+router.use('/:masterId/units', require('./inventory-property-units'));
 
 const idParam = Joi.object({ id: Joi.number().integer().positive().required() });
 const subIdParam = Joi.object({
@@ -254,6 +284,23 @@ const propertyBody = Joi.object({
   // Capped at 200 keys to prevent abuse — well above what any real
   // registration form would need.
   details: Joi.object().unknown(true).max(200).optional().allow(null),
+  // T-2026-138: Builder Property / Multi-Unit Inventory (Admin-only).
+  // Optional flag + counter, both persisted to dedicated top-level
+  // columns via migration 099 (T-2026-136).
+  //   isBuilderMaster:  1 = Builder Property MASTER row (holds project
+  //                     info; unit rows live in inventory_property_units).
+  //                     Default 0 for every ordinary record so the T1/T2
+  //                     regression bar ("normal property flow byte-identical
+  //                     when toggle OFF") is trivially satisfied.
+  //   totalUnitsPlanned: Admin-entered target unit count. NULL when the
+  //                     master isn't a Builder Property, or when the admin
+  //                     hasn't picked a target yet. Non-negative integer.
+  // FE promotes these keys from `details.dynamicData.builderProperty` /
+  // `details.dynamicData.totalUnitsPlanned` at submit time (see
+  // src/admin/pages/Inventory/InventoryForm.jsx#promoteMandatory in the
+  // same slice). Non-Flat-New-Sale forms never send the keys.
+  isBuilderMaster:   Joi.boolean().optional(),
+  totalUnitsPlanned: Joi.number().integer().min(0).max(100000).optional().allow(null, ''),
 }).unknown(true);
 
 const statusBody = Joi.object({
@@ -360,6 +407,56 @@ router.get('/', validate(listQuery, 'query'), async (req, res, next) => {
 router.get('/suggest', validate(suggestQuery, 'query'), async (req, res, next) => {
   try {
     res.json({ data: await management.suggest(req.query) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// T-2026-169 Phase D: batched property-code lookup used by the CRM
+// listing to resolve numeric interested_property_ids into the human-
+// readable business `property_code` chip (e.g. 56 -> PUN-FLT-26-MSFTB4M).
+//
+// Contract:
+//   POST /admin/inventory-properties/property-codes
+//   Body:  { ids: [1, 2, 3, ...] }   (max 500 per request)
+//   Reply: { data: { "1": { code:"PUN-FLT-26-MSFTB4M", title:"..." }, ... } }
+//
+// Response includes ONLY the ids that resolve to a live (non-deleted)
+// property. Missing / deleted ids are OMITTED from the map so the FE
+// can render an inline "Property unavailable" fallback for anything
+// not present in the reply.
+//
+// No PII in the payload -- property_code + title are public identity
+// fields that the FE already exposes on the Inventory listing to any
+// admin with INVENTORY_PROPERTIES access. No pin gate on the endpoint.
+// The click-through target /admin/inventory/:id continues to gate via
+// useAdminActionPinGate at the FE call-site (per
+// project-admin-action-pin-gate).
+const propertyCodesBody = Joi.object({
+  ids: Joi.array().items(Joi.number().integer().positive()).min(1).max(500).required(),
+});
+router.post('/property-codes', validate(propertyCodesBody), async (req, res, next) => {
+  try {
+    const ids = req.body.ids || [];
+    // Deduplicate to save a round-trip on tiny CRM pages.
+    const uniqIds = Array.from(new Set(ids.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0)));
+    if (!uniqIds.length) return res.json({ data: {} });
+    const placeholders = uniqIds.map(() => '?').join(',');
+    const [rows] = await dbPool.query(
+      `SELECT id, property_code, title
+         FROM inventory_properties
+        WHERE id IN (${placeholders})
+          AND deleted_at IS NULL`,
+      uniqIds,
+    );
+    const map = {};
+    for (const r of rows) {
+      map[String(r.id)] = {
+        code:  r.property_code || null,
+        title: r.title         || null,
+      };
+    }
+    res.json({ data: map });
   } catch (err) {
     next(err);
   }

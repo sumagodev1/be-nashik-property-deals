@@ -132,6 +132,28 @@ function generatePropertyCode(districtCode, propertyTypeIdCode, now = new Date()
  * Throws after MAX_ATTEMPTS — collisions are astronomically unlikely so a
  * persistent failure means something else is wrong.
  *
+ * CROSS-TABLE UNIQUENESS
+ * ----------------------
+ * Every candidate is first checked against EVERY property table
+ * (inventory_properties, enquiry_properties, website_properties — see
+ * db/queries/property_codes.js) before it is offered to `tryAssign`.
+ *
+ * This is not redundant with the UNIQUE indexes. A UNIQUE index is
+ * per-table, and each caller's `tryAssign` writes to only its own table, so
+ * ER_DUP_ENTRY could only ever detect a collision WITHIN that table.
+ * Nothing prevented inventory and enquiry from minting the same code. The
+ * codes are used as cross-system business identifiers — an operator reading
+ * AKL-BNG-26-0XCQYR5 must get exactly one property — so the namespace has to
+ * be global. Row ids emphatically are NOT global (inventory #19 and enquiry
+ * #19 are unrelated properties), which is precisely why the code is the
+ * identifier worth trusting.
+ *
+ * The pre-check plus the per-table UNIQUE index is not a distributed lock:
+ * two creates racing into DIFFERENT tables could in principle both pass the
+ * check and then both insert. That needs a collision on the 7-char suffix
+ * (36^7 ≈ 78 billion) AND overlapping requests, so it is not a practical
+ * risk; same-table races are still caught outright by the UNIQUE index.
+ *
  * @param {string}   districtCode      3-letter district short code.
  * @param {string}   propertyTypeIdCode 2-3 letter property type abbreviation.
  * @param {Function} tryAssign         Async fn(code) → true | false.
@@ -139,6 +161,18 @@ function generatePropertyCode(districtCode, propertyTypeIdCode, now = new Date()
 async function assignUniqueCode(districtCode, propertyTypeIdCode, tryAssign) {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const code = generatePropertyCode(districtCode, propertyTypeIdCode);
+
+    // Reject a candidate already taken in ANY property table before the
+    // caller writes it. Fail-open on a lookup error: the per-table UNIQUE
+    // index still guards the common case, and a transient DB blip must not
+    // block property creation outright.
+    try {
+      // eslint-disable-next-line global-require
+      const propertyCodes = require('../../db/queries/property_codes');
+      // eslint-disable-next-line no-await-in-loop
+      if (await propertyCodes.codeExistsAnywhere(code)) continue;
+    } catch (_e) { /* fall through to the per-table UNIQUE index */ }
+
     let ok = false;
     try {
       ok = await tryAssign(code);

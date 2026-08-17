@@ -3,6 +3,13 @@ const sellers = require('../../db/queries/sellers');
 const otp = require('../auth/otp');
 const { signAccessToken } = require('../auth/tokens');
 const refresh = require('../auth/refresh');
+// T-2026-179: seller registration triggers an admin notification (spec
+// §C.2). The OTP email itself (issued via otp.js in registerStart) is a
+// transactional auth-flow message NOT an application notification -- it
+// remains out of scope. The admin notification below fires only AFTER
+// the seller successfully verifies their OTP and their account is
+// marked verified (i.e., a genuine new seller signup).
+const adminNotifications = require('../email/adminNotifications');
 
 /**
  * Start registration: validate uniqueness, upsert an unverified seller record,
@@ -100,11 +107,41 @@ async function registerVerify({ mobileNumber, code }) {
   });
 
   if (seller.is_verified) {
+    // Re-verification of an already-verified account (e.g. rebuilt draft):
+    // no admin notification -- this is not a "New Seller Registration".
     return issueTokenWithRefresh(seller);
   }
 
   await sellers.markVerified(seller.id);
   const fresh = await sellers.findById(seller.id);
+
+  // T-2026-179: fire the SELLER_REGISTRATION admin notification. Only
+  // fields already present on the seller row are surfaced (spec §C.2:
+  // "do not invent fields"). fire-and-forget -- an SMTP hiccup must
+  // never block the registration response.
+  try {
+    const rendered = adminNotifications.renderSellerRegistration({
+      fullName: fresh?.full_name || null,
+      mobile:   fresh?.mobile_number || null,
+      email:    fresh?.email || null,
+      userType: fresh?.user_type || null,
+      accountStatus: fresh?.is_verified
+        ? (fresh?.is_active ? 'Active (Verified)' : 'Verified (Inactive)')
+        : 'Pending Verification',
+      registeredAt: fresh?.created_at || adminNotifications.nowIstDate(),
+    });
+    void adminNotifications.sendAdminNotification({
+      subject: rendered.subject,
+      html: rendered.html,
+      text: rendered.text,
+      type: adminNotifications.TYPES.SELLER_REGISTRATION,
+      customerEmails: rendered.customerEmails,
+    });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[seller-register] admin notification failed:', (e && e.message) || 'unknown');
+  }
+
   return issueTokenWithRefresh(fresh);
 }
 

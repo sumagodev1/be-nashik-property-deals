@@ -1,6 +1,27 @@
+// ============================================================
+// services/public/properties.js — public-facing property service layer
+// ============================================================
+// PUBLIC / ADMIN BOUNDARY (T-2026-141):
+//   This service serves the public website's property list + detail
+//   endpoints (/api/public/properties/*). It composes only against
+//   `website_properties` (via publicProps below). It MUST NOT import
+//   or touch inventory_properties or inventory_property_units. Builder
+//   Property masters and their units are ADMIN-ONLY per T-2026-136
+//   spec sections 12 / 26 / T13-T14. See the header comment in
+//   db/queries/public_properties.js for the enforcement rules that
+//   MUST be applied if a future ticket ever adds an inventory-backed
+//   public surface.
+// ============================================================
+
 const { HttpError } = require('../../middleware/errors');
 const publicProps = require('../../db/queries/public_properties');
 const propertyFiles = require('../../db/queries/property_files');
+// T-2026-171: reuse the SAME Key PIN source of truth that gates admin
+// View/Edit/Delete/Share. No parallel PIN system — the /verify contract
+// (bcrypt-compare over active hashes, 401 INVALID_PIN on miss) is
+// invoked directly at the service layer so the route only wires
+// Joi + rate-limit around it.
+const keyPins = require('../security/key_pins');
 
 const { PUBLIC_URL_PREFIX } = require('../files/publicUrl');
 
@@ -117,4 +138,57 @@ async function similar({ id, limit = 4 }) {
   return rows.map(toListItem);
 }
 
-module.exports = { listPublic, getPublic, featured, latest, similar };
+/**
+ * T-2026-171: reveal the owner block for a public property, guarded by
+ * the shared 6-digit Key PIN.
+ *
+ * Called by POST /api/public/properties/:identifier/owner-details.
+ *
+ * Order matters:
+ *   1. VERIFY THE PIN FIRST. A wrong PIN must not leak whether the
+ *      property exists (though existence is otherwise public through the
+ *      GET detail endpoint, keeping the ordering keeps the failure
+ *      surface uniform + means the timing side-channel on the property
+ *      lookup can't be probed unauthenticated).
+ *   2. Look up the property + seller via the SAME PUBLIC_WHERE gates
+ *      the rest of the public surface uses (approved + active + not
+ *      deleted). Any drift here would leak drafts.
+ *   3. Return ONLY owner-facing fields. Never include seller_id (the
+ *      internal PK is admin-scoped concern) or any timestamps.
+ *
+ * Response shape:
+ *   { owner: { fullName, userType, mobileNumber, alternateContact?,
+ *              email?, agencyName?, businessAddress?, area? } }
+ * Nullable fields are OMITTED (not sent as null) so the FE doesn't
+ * render empty "Email: —" rows for sellers who haven't filled optional
+ * fields. `fullName`, `userType`, `mobileNumber` are always required
+ * (the sellers table constrains them NOT NULL).
+ */
+async function revealOwnerDetails(identifier, { pin } = {}) {
+  // 1. PIN check first — throws HttpError(401, 'INVALID_PIN', ...) on miss.
+  //    keyPins.verify also validates PIN shape (400 INVALID_PIN if not 6 digits).
+  await keyPins.verify({ pin });
+
+  // 2. Property + seller lookup.
+  const row = await publicProps.findPublicPropertyOwner(identifier);
+  if (!row) {
+    // Consistent with the GET /:identifier 404.
+    throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  }
+
+  // 3. Shape the response — omit falsy/nullish optionals.
+  const owner = {
+    fullName: row.full_name,
+    userType: row.user_type,
+    mobileNumber: row.mobile_number,
+  };
+  if (row.alternate_contact) owner.alternateContact = row.alternate_contact;
+  if (row.email) owner.email = row.email;
+  if (row.agency_name) owner.agencyName = row.agency_name;
+  if (row.business_address) owner.businessAddress = row.business_address;
+  if (row.area) owner.area = row.area;
+
+  return { owner };
+}
+
+module.exports = { listPublic, getPublic, featured, latest, similar, revealOwnerDetails };

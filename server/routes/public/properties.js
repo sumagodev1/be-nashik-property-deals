@@ -1,5 +1,6 @@
 const express = require('express');
 const Joi = require('joi');
+const rateLimit = require('express-rate-limit');
 
 const { validate } = require('../../middleware/validate');
 const service = require('../../services/public/properties');
@@ -62,5 +63,75 @@ router.get('/:identifier/similar', validate(idParam, 'params'), validate(similar
 router.get('/:identifier', validate(idParam, 'params'), async (req, res, next) => {
   try { res.json(await service.getPublic(req.params.identifier)); } catch (e) { next(e); }
 });
+
+// -----------------------------------------------------------------------
+// T-2026-171: PIN-gated owner-details reveal.
+//
+// POST /public/properties/:identifier/owner-details { pin: "NNNNNN" }
+//
+// This is the ONLY public surface that returns owner PII. Nothing else
+// under /public/properties/* leaks owner_name, mobile, email etc.
+// (verified in services/public/properties.toDetail / toListItem — those
+// project only descriptive property columns).
+//
+// Security layers, in order:
+//   1. Joi shape validation: pin is exactly 6 digits.
+//   2. Per-IP rate limit (verifyOwnerLimiter): 20 attempts / 5 min —
+//      same tightness as /admin/key-pins/verify. Blunts brute-force
+//      against the 6-digit key space.
+//   3. Service invokes keyPins.verify() — bcrypt-compares against every
+//      active Key PIN hash (constant-ish timing) and throws 401
+//      INVALID_PIN on miss. THE SAME source of truth that gates admin
+//      View/Edit/Delete/Share (see project-admin-action-pin-gate memory).
+//   4. If PIN valid, service loads the seller row via a JOIN that
+//      re-applies PUBLIC_WHERE — so an unpublished draft cannot leak.
+//   5. Response shape drops nullish optional fields so the FE renders
+//      only what the seller actually filled in.
+//
+// Notes:
+//   - No requireAuth. Public buyers have no admin session. The PIN is
+//     the secondary-factor secret being tested; presence of a valid
+//     PIN is the sole authorization signal here.
+//   - No audit log write in this ticket (parity with /admin/key-pins/verify
+//     which also doesn't log). Follow-up ticket can add an owner-view
+//     audit trail if the client wants it.
+//   - FE client interceptor (src/shared/api/client.js) short-circuits
+//     the 401 on this URL so a wrong PIN doesn't wipe the buyer's
+//     session (there is none) or trigger an /auth/refresh loop.
+// -----------------------------------------------------------------------
+const verifyOwnerLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: 'RATE_LIMITED',
+      message: 'Too many PIN attempts. Please wait a few minutes and try again.',
+    },
+  },
+});
+
+const ownerDetailsBody = Joi.object({
+  pin: Joi.string().pattern(/^[0-9]{6}$/, '6-digit-numeric').required().messages({
+    'string.pattern.name': 'PIN must be exactly 6 numeric digits.',
+    'string.empty': 'PIN is required.',
+    'any.required': 'PIN is required.',
+  }),
+});
+
+router.post(
+  '/:identifier/owner-details',
+  verifyOwnerLimiter,
+  validate(idParam, 'params'),
+  validate(ownerDetailsBody),
+  async (req, res, next) => {
+    try {
+      res.json(await service.revealOwnerDetails(req.params.identifier, req.body));
+    } catch (e) {
+      next(e);
+    }
+  },
+);
 
 module.exports = router;

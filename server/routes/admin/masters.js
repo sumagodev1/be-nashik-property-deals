@@ -2,13 +2,15 @@ const express = require('express');
 const Joi = require('joi');
 
 const { validate } = require('../../middleware/validate');
-const { requireAuth, requireModule } = require('../../middleware/auth');
+const { requireAuth, requireModule, requireModuleWriteOnMutation } = require('../../middleware/auth');
 const { MODULES } = require('../../constants/modules');
 const management = require('../../services/masters/management');
 
 const router = express.Router();
 
 router.use(requireAuth, requireModule(MODULES.MASTER_MANAGEMENT));
+// T-2026-173 Phase 2: sub-admins with only Read access get 403 on mutation.
+router.use(requireModuleWriteOnMutation(MODULES.MASTER_MANAGEMENT));
 
 const masterKeyParam = Joi.object({
   key: Joi.string().valid(...management.masterKeys()).required(),

@@ -201,6 +201,36 @@ const LOOKUP_KEYS = Object.freeze([
   // rented/inactive) are seeded as INACTIVE so historical enquiry rows still
   // resolve to a human label without offering those codes in new dropdowns.
   'enquiry_status',
+  // CRM / Status — added in migration 102 (T-2026-151). Powers the
+  // per-enquiry status pill + the status-change dialog dropdown on the
+  // new CRM subsystem. Runtime-editable via the standard master admin
+  // (Add / Edit / Activate / Deactivate); referenced by
+  // `crm_enquiries.status_code` (VARCHAR) and validated on every
+  // status-change via `masters.assertActiveCode('crm_status', code)`.
+  // USAGE_REFS below wires the delete-safety guard so admins cannot
+  // hard-delete a status that any enquiry is using (they must
+  // Deactivate instead -- historical rows keep rendering).
+  'crm_status',
+  // CRM / Lead Stage, Lead Status, Lead Rating — added in migration 109
+  // (T-2026-169 Phase A). These replace the legacy crm_status as the
+  // primary CRM lead classification. crm_status is PRESERVED in parallel
+  // so the T-166 auto-cancel-on-CLOSED_WON/CLOSED_LOST logic keeps
+  // working and pre-T-169 history stays readable. USAGE_REFS below
+  // wires delete-safety guards to the three new columns on
+  // crm_enquiries. Runtime-editable via the standard master admin.
+  'crm_lead_stage',
+  'crm_lead_status',
+  'crm_lead_rating',
+  // Builder Property / Unit Status — added in migration 100 (T-2026-146).
+  // Powers the status pills on Builder Property Unit blocks (Flat Sale New).
+  // Replaces the pre-T-146 hardcoded 6-status enum on
+  // inventory_property_units.status (now VARCHAR(64) — the enum was widened
+  // by migration 100). Seeded with the 6 shipped codes (available /
+  // in_discussion / booked / sold / hold / hidden) so post-migration display
+  // is byte-identical. USAGE_REFS below wires the delete-safety guard to
+  // inventory_property_units.status so admins cannot hard-delete a status
+  // that any unit is using (they must Deactivate instead).
+  'builder_status',
   // Website-scoped masters — added in migration 055. Deliberately
   // INDEPENDENT from the Global masters above so the public Seller
   // Registration + Add-Property flow can evolve its vocabulary without
@@ -248,6 +278,11 @@ const MASTER_LABELS = Object.freeze({
   transaction_type: 'Global / Transaction Type',
   status_type:      'Inventory / Property Status',
   enquiry_status:   'Enquiry / Property Status',
+  builder_status:   'Builder Property / Unit Status',
+  crm_status:       'CRM / Enquiry Status',
+  crm_lead_stage:   'CRM / Lead Stages',
+  crm_lead_status:  'CRM / Lead Status',
+  crm_lead_rating:  'CRM / Lead Rating',
   enquiry_relation: 'Enquiry / Relation',
   contact_relation: 'Global / Contact Relation',
   contact_type:     'Global / Contact Type',
@@ -629,6 +664,41 @@ const USAGE_REFS = Object.freeze({
   ],
   enquiry_status: [
     { table: 'enquiry_properties',   column: 'status', friendlyLabel: 'Enquiry Properties' },
+  ],
+  // T-2026-146: Builder Property / Unit Status master is referenced by
+  // inventory_property_units.status (VARCHAR since migration 100). The
+  // usage-check refuses hard-delete when any unit uses the code; admin
+  // must Deactivate instead. Same idiom as status_type + enquiry_status.
+  //
+  // hasSoftDelete: false -- inventory_property_units is a hard-delete-only
+  // child collection (see migration 099; no deleted_at column). The
+  // remove() usage-check below OMITS the "AND deleted_at IS NULL" clause
+  // when this flag is false so the SQL doesn't fail on missing column.
+  builder_status: [
+    { table: 'inventory_property_units', column: 'status', friendlyLabel: 'Builder Property Units', hasSoftDelete: false },
+  ],
+  // T-2026-151: CRM Enquiry Status master. Referenced by
+  // crm_enquiries.status_code (VARCHAR since migration 101). Delete-
+  // safety guard refuses hard-delete when any enquiry uses the code;
+  // admin must Deactivate instead. crm_enquiries has no deleted_at
+  // (rows are permanent; only status flips), so hasSoftDelete:false
+  // matches the builder_status idiom above.
+  crm_status: [
+    { table: 'crm_enquiries', column: 'status_code', friendlyLabel: 'CRM Enquiries', hasSoftDelete: false },
+  ],
+  // T-2026-169 Phase A: delete-safety for the three new lead-taxonomy
+  // masters. Same idiom as crm_status -- admin cannot hard-delete a
+  // code that any crm_enquiries row references; they must Deactivate
+  // instead so historical rows still resolve to a human label. No
+  // hasSoftDelete because crm_enquiries has no deleted_at column.
+  crm_lead_stage: [
+    { table: 'crm_enquiries', column: 'lead_stage_code', friendlyLabel: 'CRM Enquiries', hasSoftDelete: false },
+  ],
+  crm_lead_status: [
+    { table: 'crm_enquiries', column: 'lead_status_code', friendlyLabel: 'CRM Enquiries', hasSoftDelete: false },
+  ],
+  crm_lead_rating: [
+    { table: 'crm_enquiries', column: 'lead_rating_code', friendlyLabel: 'CRM Enquiries', hasSoftDelete: false },
   ],
   // Promoted-to-column lookups: tracked because they have a fast index.
   district: [{ table: 'inventory_properties', column: 'district', friendlyLabel: 'Inventory Properties' }],
@@ -1097,8 +1167,15 @@ async function remove(masterKey, id, req) {
   const usage = [];
   let inUse = 0;
   for (const ref of refs) {
+    // T-2026-146: some referring tables (e.g. inventory_property_units)
+    // are hard-delete-only child collections without a deleted_at
+    // column. Emit the "AND deleted_at IS NULL" filter ONLY when the
+    // ref explicitly opts in (hasSoftDelete !== false); default remains
+    // ON so every pre-T-146 ref (inventory_properties / enquiry_properties
+    // / website_properties) keeps its exact previous behaviour.
+    const softDeleteClause = ref.hasSoftDelete === false ? '' : ' AND deleted_at IS NULL';
     const [[{ n }]] = await pool.query(
-      `SELECT COUNT(*) AS n FROM ${ref.table} WHERE ${ref.column} = ? AND deleted_at IS NULL`,
+      `SELECT COUNT(*) AS n FROM ${ref.table} WHERE ${ref.column} = ?${softDeleteClause}`,
       [existing.code],
     );
     const count = Number(n);

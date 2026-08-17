@@ -9,7 +9,7 @@ const audit = require('../admin/audit');
 const BCRYPT_COST = 12;
 
 function buildLoginUrl() {
-  const base = (process.env.APP_PUBLIC_URL || 'https://nashikpropertybackend.sumagodemo.com/').replace(/\/+$/, '');
+  const base = (process.env.APP_PUBLIC_URL || 'http://nasikpropertydeals.betaprojects.in/admin/').replace(/\/+$/, '');
   return `${base}/admin/login`;
 }
 
@@ -73,15 +73,34 @@ function notifyEmail({ email, fullName, kind }) {
   return { subject, text, html };
 }
 
-function dedupeModules(keys) {
-  const seen = new Set();
-  for (const k of keys) {
-    if (!isValidModuleKey(k)) {
-      throw new HttpError(400, 'INVALID_MODULE', `Unknown module key: ${k}`);
+// T-2026-173: dedupeModules now accepts EITHER shape (legacy string array
+// OR array of { module_key, access_level }). Returns a normalized array of
+// { module_key, access_level } objects — the shape sub_admin_modules table
+// persists.
+//
+// Backward compat rule (matches migration 110 DEFAULT and the query-layer
+// normalizeGrants): a bare string key is treated as an implicit 'write'
+// grant so pre-T-173 API callers keep the same effective permission.
+function dedupePermissions(input) {
+  const byKey = new Map();
+  for (const entry of input || []) {
+    let key;
+    let level;
+    if (typeof entry === 'string') {
+      key = entry;
+      level = 'write';
+    } else if (entry && typeof entry === 'object') {
+      key = entry.module_key;
+      level = entry.access_level === 'read' ? 'read' : 'write';
+    } else {
+      throw new HttpError(400, 'INVALID_MODULE', 'Malformed module grant');
     }
-    seen.add(k);
+    if (!isValidModuleKey(key)) {
+      throw new HttpError(400, 'INVALID_MODULE', `Unknown module key: ${key}`);
+    }
+    byKey.set(key, { module_key: key, access_level: level });
   }
-  return Array.from(seen);
+  return Array.from(byKey.values());
 }
 
 async function list({ page, pageSize, search, isActive }) {
@@ -106,7 +125,7 @@ async function create({ email, password, fullName, isActive, modules, createdByA
   if (await subAdmins.emailTaken(email)) {
     throw new HttpError(409, 'EMAIL_TAKEN', 'A sub admin with this email already exists');
   }
-  const moduleKeys = dedupeModules(modules || []);
+  const permissions = dedupePermissions(modules || []);
   const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
 
   // sub_admins.email is UNIQUE at the DB level across ALL rows including
@@ -134,7 +153,7 @@ async function create({ email, password, fullName, isActive, modules, createdByA
       createdByAdminId,
     });
   }
-  await modulesRepo.replaceForSubAdmin(id, moduleKeys);
+  await modulesRepo.replaceForSubAdmin(id, permissions);
   if (req) {
     void audit.record(req, {
       action: 'sub_admin.created',
@@ -144,7 +163,9 @@ async function create({ email, password, fullName, isActive, modules, createdByA
       metadata: {
         entityLabel: fullName,
         entitySubLabel: email,
-        modules: moduleKeys,
+        // T-173: audit metadata records the full grant shape so the log
+        // preserves the read/write intent, not just the module list.
+        modules: permissions,
         restored: !!(existing && existing.deleted_at),
       },
     });
@@ -219,16 +240,30 @@ async function update(id, { email, fullName, isActive, password }, req = null) {
   return getOne(id);
 }
 
-async function updateModules(id, moduleKeys, req = null) {
+async function updateModules(id, moduleGrants, req = null) {
   const existing = await subAdmins.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Sub admin not found');
-  const deduped = dedupeModules(moduleKeys || []);
+  const deduped = dedupePermissions(moduleGrants || []);
   const before = await modulesRepo.listForSubAdmin(id);
   await modulesRepo.replaceForSubAdmin(id, deduped);
   if (req) {
-    const added = deduped.filter((k) => !before.includes(k));
-    const removed = before.filter((k) => !deduped.includes(k));
-    if (added.length > 0 || removed.length > 0) {
+    // T-173: diff on the { module_key, access_level } tuple so a change from
+    // read → write (or write → read) is captured, not just add/remove.
+    const beforeMap = new Map(before.map((g) => [g.module_key, g.access_level]));
+    const afterMap = new Map(deduped.map((g) => [g.module_key, g.access_level]));
+    const added = [];
+    const removed = [];
+    const changed = [];
+    for (const [k, level] of afterMap.entries()) {
+      if (!beforeMap.has(k)) added.push({ module_key: k, access_level: level });
+      else if (beforeMap.get(k) !== level) {
+        changed.push({ module_key: k, from: beforeMap.get(k), to: level });
+      }
+    }
+    for (const [k, level] of beforeMap.entries()) {
+      if (!afterMap.has(k)) removed.push({ module_key: k, access_level: level });
+    }
+    if (added.length > 0 || removed.length > 0 || changed.length > 0) {
       void audit.record(req, {
         action: 'sub_admin.modules_changed',
         entityType: 'sub_admin',
@@ -239,6 +274,7 @@ async function updateModules(id, moduleKeys, req = null) {
           entitySubLabel: existing.email,
           added,
           removed,
+          changed,
           after: deduped,
         },
       });
@@ -277,6 +313,12 @@ function toListItem(row) {
 }
 
 function toDetail(row, modules) {
+  // T-173: `modules` is now an array of { module_key, access_level }.
+  // The FE Sub Admin editor consumes this shape directly to render the
+  // Read/Write matrix. The subAdmins API wrapper on the FE side ships a
+  // compat shim so a pre-T-173 FE consumer would still see something
+  // usable (though the editor would collapse Read+Write into a single
+  // boolean — which is exactly the pre-T-173 UX).
   return {
     id: row.id,
     email: row.email,

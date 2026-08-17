@@ -7,15 +7,36 @@
  * Per CLAUDE.md the OTP delivery channel is SMTP (email). Email is REQUIRED
  * — without it we have no OTP delivery address. Mobile is captured as the
  * contact-back number the admin will dial.
+ *
+ * PUBLIC / ADMIN BOUNDARY (T-2026-141):
+ *   This service serves the public Contact Us form. It composes only
+ *   against `leads`, `notifications`, `otp_codes`, and email. It MUST
+ *   NOT read or write inventory_properties / inventory_property_units.
+ *   Builder Property masters and their units are ADMIN-ONLY per
+ *   T-2026-136 spec sections 12 / 26 / T13-T14. See public_properties.js
+ *   for the guard rules that MUST be applied if a future ticket ever
+ *   exposes inventory data on the public surface.
  */
 
 const { HttpError } = require('../../middleware/errors');
 const leadsQ = require('../../db/queries/leads');
 const notificationsQ = require('../../db/queries/notifications');
 const otp = require('../auth/otp');
-const { trySendMail, getAdminEmail } = require('../email/transporter');
-const { renderEmail, sectionTitle, kvRow, kvTable, quoteBlock, BRAND } = require('../email/emailTemplate');
+// T-2026-179: notification emails now route ONLY through the centralised
+// admin-notification service. The old trySendMail(getAdminEmail()) pattern
+// is removed here (still exists in transporter.js for OTP / auth / share
+// flows that are out of scope). The emailTemplate helpers are no longer
+// needed by this module since template rendering moved into
+// adminNotifications.renderNewWebsiteEnquiry().
+const adminNotifications = require('../email/adminNotifications');
 const { MODULES } = require('../../constants/modules');
+// T-2026-168: general enquiry (OTP-verified /verify AND captcha-only
+// /submit) also creates a `leads` row -- must project into CRM the
+// same way the property-specific leads.js#verify path does. Prior to
+// T-168 these two paths silently missed CRM ingestion, so "Send an
+// Inquiry" (ContactPage) and "Send Enquiry" (PropertyDetailPage with
+// property prop) showed up in /admin/leads but never /admin/crm.
+const { ingestWebsiteLeadIntoCrm } = require('./crmIngestion');
 
 const TRANSACTION_TYPE_LABELS = {
   sale: 'Buy',
@@ -72,6 +93,18 @@ async function verify({ name, mobile, email, code, message, categories }) {
     message: cleanedMessage,
   });
 
+  // T-2026-168 + T-2026-179: CRM Website ingestion hook. We now AWAIT
+  // the resolver so the follow-on admin notification can carry the CRM
+  // enquiry_code (business ID). The resolver already runs
+  // fire-and-forget internally in the sense that a failure returns null
+  // rather than throwing, so the buyer response is never blocked by it.
+  const crmIngest = await ingestWebsiteLeadIntoCrm({
+    leadId,
+    buyerName,
+    buyerMobile,
+    buyerEmail,
+  });
+
   try {
     await notificationsQ.create({
       kind: 'lead.created',
@@ -86,16 +119,27 @@ async function verify({ name, mobile, email, code, message, categories }) {
     console.warn('[general-enquiry] notification insert failed:', err.message);
   }
 
-  // Admin recipient comes from the active Email Master (admin_email).
-  const adminEmail = await getAdminEmail();
-  if (adminEmail) {
-    void trySendMail({
-      to: adminEmail,
-      subject: `[Enquiry] General — ${buyerName}`,
-      text: buildAdminEmailText({ buyerName, buyerMobile, buyerEmail, message, categories }),
-      html: buildAdminEmailHtml({ buyerName, buyerMobile, buyerEmail, message, categories }),
-    });
-  }
+  // T-2026-179: admin-only notification. sendAdminNotification loads the
+  // recipient dynamically from Email Master; buyerEmail is captured only
+  // for the defensive guard.
+  const rendered = adminNotifications.renderNewWebsiteEnquiry({
+    enquiryCode: crmIngest?.enquiry_code || null,
+    source: 'website',
+    enquiryTypeLabel: 'General Enquiry (Contact Us)',
+    name: buyerName,
+    mobile: buyerMobile,
+    email: buyerEmail,
+    message: composeMessage({ categories, message }) || null,
+    propertyDetails: null,
+    createdAt: adminNotifications.nowIstDate(),
+  });
+  void adminNotifications.sendAdminNotification({
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
+    type: adminNotifications.TYPES.NEW_WEBSITE_ENQUIRY,
+    customerEmails: rendered.customerEmails,
+  });
 
   return { ok: true, leadId };
 }
@@ -112,47 +156,6 @@ function composeMessage({ categories, message }) {
   const cleanedBody = (message || '').trim();
   if (cleanedBody) parts.push(cleanedBody);
   return parts.length > 0 ? parts.join('\n\n') : null;
-}
-
-function buildAdminEmailText({ buyerName, buyerMobile, buyerEmail, message, categories }) {
-  const summary = categoriesSummary(categories);
-  return [
-    `New general enquiry`,
-    '',
-    `Buyer:  ${buyerName}`,
-    `Mobile: ${buyerMobile}`,
-    buyerEmail ? `Email:  ${buyerEmail}` : '',
-    summary ? `Interested in: ${summary}` : '',
-    message && message.trim() ? `Message:\n${message.trim()}` : '',
-    '',
-    'Manage at: /admin/leads',
-  ].filter(Boolean).join('\n');
-}
-
-function buildAdminEmailHtml({ buyerName, buyerMobile, buyerEmail, message, categories }) {
-  const summary = categoriesSummary(categories);
-  const adminPanelUrl = process.env.ADMIN_PANEL_URL || `${process.env.PUBLIC_BASE_URL || ''}/admin/leads`;
-  const body = `
-    ${sectionTitle('Buyer details')}
-    ${kvTable(
-      kvRow('Name', buyerName) +
-      kvRow('Mobile', buyerMobile, { mono: true, link: `tel:${buyerMobile}` }) +
-      (buyerEmail ? kvRow('Email', buyerEmail, { link: `mailto:${buyerEmail}` }) : '') +
-      (summary ? kvRow('Interested in', summary) : '')
-    )}
-
-    ${message && message.trim() ? `${sectionTitle('Their message')}${quoteBlock(message)}` : ''}
-  `;
-  return renderEmail({
-    preheader: `New general enquiry from ${buyerName}`,
-    title: 'New general enquiry',
-    intro: 'A visitor just reached out through the Contact Us form. No specific property — they want to start a conversation.',
-    bodyHtml: body,
-    ctaHref: adminPanelUrl,
-    ctaLabel: 'Open in Admin Panel',
-    accentColor: BRAND.primary,
-    footerNote: 'You\'re receiving this because your address is set as the admin notification email.',
-  });
 }
 
 /**
@@ -178,6 +181,15 @@ async function submit({ name, mobile, email, message, categories }) {
     message: cleanedMessage,
   });
 
+  // T-2026-168 + T-2026-179: CRM Website ingestion hook -- awaited so
+  // the admin notification carries the CRM enquiry_code exactly.
+  const crmIngest = await ingestWebsiteLeadIntoCrm({
+    leadId,
+    buyerName,
+    buyerMobile,
+    buyerEmail,
+  });
+
   try {
     await notificationsQ.create({
       kind: 'lead.created',
@@ -192,16 +204,25 @@ async function submit({ name, mobile, email, message, categories }) {
     console.warn('[general-enquiry] notification insert failed:', err.message);
   }
 
-  // Admin recipient comes from the active Email Master (admin_email).
-  const adminEmail = await getAdminEmail();
-  if (adminEmail) {
-    void trySendMail({
-      to: adminEmail,
-      subject: `[Enquiry] General — ${buyerName}`,
-      text: buildAdminEmailText({ buyerName, buyerMobile, buyerEmail, message, categories }),
-      html: buildAdminEmailHtml({ buyerName, buyerMobile, buyerEmail, message, categories }),
-    });
-  }
+  // T-2026-179: admin-only notification (identical shape to /verify).
+  const rendered = adminNotifications.renderNewWebsiteEnquiry({
+    enquiryCode: crmIngest?.enquiry_code || null,
+    source: 'website',
+    enquiryTypeLabel: 'General Enquiry (Contact Us)',
+    name: buyerName,
+    mobile: buyerMobile,
+    email: buyerEmail,
+    message: composeMessage({ categories, message }) || null,
+    propertyDetails: null,
+    createdAt: adminNotifications.nowIstDate(),
+  });
+  void adminNotifications.sendAdminNotification({
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
+    type: adminNotifications.TYPES.NEW_WEBSITE_ENQUIRY,
+    customerEmails: rendered.customerEmails,
+  });
 
   return { ok: true, leadId };
 }

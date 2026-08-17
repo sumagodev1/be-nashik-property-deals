@@ -23,7 +23,7 @@ const Joi = require('joi');
 const rateLimit = require('express-rate-limit');
 
 const { validate } = require('../../middleware/validate');
-const { requireAuth, requireModule } = require('../../middleware/auth');
+const { requireAuth, requireModule, requireModuleWriteOnMutation } = require('../../middleware/auth');
 const { MODULES } = require('../../constants/modules');
 const service = require('../../services/security/key_pins');
 const resetService = require('../../services/security/key_pin_reset');
@@ -118,6 +118,12 @@ router.post(
 // CRUD — restricted to admins holding MASTER_MANAGEMENT.
 // -----------------------------------------------------------------------
 router.use(requireAuth, requireModule(MODULES.MASTER_MANAGEMENT));
+// T-2026-173 Phase 2: sub-admins with only Read access get 403 on mutation.
+// The /verify sub-route above is mounted BEFORE this line and is available
+// to any authenticated admin/sub_admin regardless of module access — the
+// PIN itself is the secondary factor. This gate only applies to the CRUD
+// endpoints (POST/PUT/DELETE) that persist PIN master rows.
+router.use(requireModuleWriteOnMutation(MODULES.MASTER_MANAGEMENT));
 
 router.get(
   '/',

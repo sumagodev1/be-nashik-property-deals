@@ -79,6 +79,39 @@ if (require.main === module) {
     app.listen(port, () => {
       // eslint-disable-next-line no-console
       console.log(`API listening on :${port} (${process.env.NODE_ENV || 'development'})`);
+      // T-2026-164: start the Google Calendar sync worker. Gated by
+      // GOOGLE_CALENDAR_SYNC_WORKER_ENABLED (default true); returns
+      // {started:false, reason:'DISABLED_BY_ENV'} when explicitly
+      // disabled by tests / secondary instances. Silent no-op when
+      // no admin has connected -- the worker itself short-circuits
+      // its tick when the token row is absent.
+      try {
+        const gcalWorker = require('./server/services/crm/googleCalendarSyncWorker');
+        const outcome = gcalWorker.start();
+        // eslint-disable-next-line no-console
+        console.log('[googleCalendarSyncWorker] start', outcome);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('[googleCalendarSyncWorker] boot error', (e && e.message) || 'unknown');
+      }
+
+      // Migration 112: dispatch the 1-day / 1-hour admin reminder emails for
+      // booked CRM follow-ups. Runs in-process on an interval (same shape as
+      // the GCal worker above) rather than depending solely on the cron
+      // endpoint -- without this, a deployment that never added the cPanel
+      // cron entry silently sends no reminders at all. Gated by
+      // CRM_REMINDER_WORKER_ENABLED (default true). The cron endpoint remains
+      // available for manual / external scheduling; both paths are safe
+      // together because each reminder is claimed atomically before send.
+      try {
+        const reminderWorker = require('./server/services/crm/appointmentReminders');
+        const outcome = reminderWorker.start();
+        // eslint-disable-next-line no-console
+        console.log('[appointmentReminders] start', outcome);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('[appointmentReminders] boot error', (e && e.message) || 'unknown');
+      }
     });
   });
 }

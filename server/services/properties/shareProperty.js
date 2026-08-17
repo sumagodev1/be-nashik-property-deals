@@ -43,6 +43,11 @@ const enquiryQ = require('../../db/queries/enquiry_properties');
 const websiteQ = require('../../db/queries/website_properties');
 const masters = require('../../db/queries/masters');
 const locations = require('../../db/queries/locations');
+// T-2026-149: Builder Master Share parity with PDF. Import the per-master
+// units listing so the Share renderer can emit one section per unit —
+// same field ordering + labels as the PDF export. Only imported here;
+// legacy shares (no `kind:'builderUnits'` marker) don't fire this path.
+const inventoryPropertyUnitsQ = require('../../db/queries/inventory_property_units');
 
 // Backend area-unit code → human label. Kept inline (no shared constant on
 // the backend) because constants/property.js only tracks the master
@@ -686,6 +691,117 @@ async function renderSection(propertyKind, row, dyn, details, section) {
   return { lines, keysRendered };
 }
 
+// ── Builder Property units (T-2026-149) ──────────────────────────────
+//
+// Render per-unit sections for a Builder Master's Share email so the
+// recipient receives the same complete per-unit data the PDF export
+// already ships. Guarded by:
+//   * propertyKind === 'inventory'  (Builder is admin-inventory-only)
+//   * row.is_builder_master === 1   (server-side re-verification of the
+//                                    incoming client marker — tampered
+//                                    payloads cannot force this codepath
+//                                    on a non-Builder row)
+//
+// `unitDescriptors` is the flat descriptor list the FE built via
+// `buildUnitShareSectionDescriptors(masterFormConfig)` (see
+// src/shared/utils/shareSections.js). Every descriptor is re-checked
+// against isDeniedKey here as belt-and-suspenders — a client that tried
+// to inject an owner/contact/aadhaar/note key would still see it dropped.
+//
+// One section is emitted per unit; empty units emit a Note line
+// instead of an empty section so the operator can see the unit exists
+// but has no captured details. A header section is prefixed so the
+// recipient reads the boundary clearly.
+//
+// T-2026-150: `selectedUnitIds` is an OPTIONAL allowlist of unit ids the
+// operator ticked in the Share dialog. When it is a non-empty array the
+// listByMaster result is filtered to those ids (the allowlist can only
+// SHRINK the set — it never expands beyond the units belonging to this
+// master, so it cannot be abused to exfiltrate another master's units).
+// When absent / empty the full unit set renders (byte-identical to the
+// T-2026-149 default). `unitDescriptors` is already filtered on the FE to
+// the checked field keys; isDeniedKey is re-applied here belt-and-suspenders.
+async function renderBuilderUnitsSections(propertyKind, row, unitDescriptors, selectedUnitIds) {
+  if (propertyKind !== 'inventory') return [];
+  if (!row || Number(row.is_builder_master) !== 1) return [];
+  const safeDescriptors = Array.isArray(unitDescriptors)
+    ? unitDescriptors.filter((d) => d && d.key && !isDeniedKey(d.key))
+    : [];
+
+  let units = [];
+  try {
+    units = await inventoryPropertyUnitsQ.listByMaster(row.id);
+  } catch (_err) {
+    // Fetch failed: emit a minimal warning section rather than crashing
+    // the whole share. Recipient still gets the master details.
+    return [{
+      title: 'Builder Property Units',
+      lines: [{ label: 'Note', value: 'Could not load unit inventory. Please try again or contact support.' }],
+    }];
+  }
+
+  // T-2026-150: apply the unit allowlist when provided. Compare as
+  // strings so numeric vs string ids from the client payload both match.
+  if (Array.isArray(selectedUnitIds) && selectedUnitIds.length > 0) {
+    const allow = new Set(selectedUnitIds.map((v) => String(v)));
+    units = units.filter((u) => u && allow.has(String(u.id)));
+  }
+
+  // Resolve the builder_status master ONCE so per-unit status labels
+  // are consistent + we don't hammer the master lookups for N units.
+  const uniqueStatusCodes = Array.from(new Set(units.map((u) => u && u.status).filter(Boolean)));
+  const statusLabelByCode = {};
+  for (const code of uniqueStatusCodes) {
+    // eslint-disable-next-line no-await-in-loop
+    statusLabelByCode[code] = await resolveMasterLabelByKey('builder_status', code);
+  }
+
+  const sections = [];
+  // Header section so the recipient sees the boundary between master
+  // fields and per-unit blocks.
+  sections.push({
+    title: `Builder Property Units (${units.length})`,
+    lines: [{ label: 'Total Units', value: String(units.length) }],
+  });
+
+  for (let idx = 0; idx < units.length; idx += 1) {
+    const u = units[idx];
+    const unitDetails = (u && typeof u.details === 'object' && u.details !== null) ? u.details : {};
+    const statusLabel = statusLabelByCode[u.status] || u.status || '';
+    const unitNoLabel = String(u.unit_no || (idx + 1));
+    const title = statusLabel
+      ? `Unit ${unitNoLabel} — ${statusLabel}`
+      : `Unit ${unitNoLabel}`;
+    const lines = [];
+    // Walk the same descriptor order the PDF renderer uses so the
+    // Share email + PDF read the same top-to-bottom for each unit.
+    for (const descriptor of safeDescriptors) {
+      const raw = unitDetails[descriptor.key];
+      if (raw === null || raw === undefined || raw === '') continue;
+      // Reuse the module's per-field formatter (booleans -> Yes/No,
+      // arrays comma-joined, master codes resolved via masters lookup,
+      // dates DD/MM/YYYY IST, dualMode specific/any). `row` is passed
+      // for compatibility with formatters that read top-level columns
+      // (area_unit for areaValue etc.) — unit details rarely need it
+      // but we pass it through so the surface stays uniform.
+      // eslint-disable-next-line no-await-in-loop
+      const value = await formatFieldValue(propertyKind, row, descriptor, raw);
+      if (value === null || value === undefined || String(value).trim() === '') continue;
+      lines.push({ label: descriptor.label || descriptor.key, value: String(value) });
+    }
+    if (lines.length === 0) {
+      sections.push({
+        title,
+        lines: [{ label: 'Note', value: 'No unit details captured yet.' }],
+      });
+    } else {
+      sections.push({ title, lines });
+    }
+  }
+
+  return sections;
+}
+
 // ── Property URL builder ─────────────────────────────────────────────
 
 function buildPropertyUrl(propertyKind, propertyId) {
@@ -859,12 +975,46 @@ async function shareProperty(propertyKind, propertyId, {
 
   if (Array.isArray(sections) && sections.length > 0) {
     // DYNAMIC PATH — one rendered block per section the caller passed.
+    // T-2026-149: `kind:'builderUnits'` sections are handled separately
+    // (they don't carry a fields[] to walk through renderSection). We
+    // defer them so the master's sections render first, then append the
+    // per-unit blocks in-order — matching the PDF export layout where
+    // master details appear before the per-unit block.
+    const builderUnitsSection = sections.find((s) => s && s.kind === 'builderUnits');
     for (const section of sections) {
       if (!section || !section.title) continue;
+      if (section.kind === 'builderUnits') continue; // handled below
       // eslint-disable-next-line no-await-in-loop
       const { lines, keysRendered } = await renderSection(propertyKind, row, dyn, details, section);
       renderedSections.push({ title: String(section.title), lines });
       for (const k of keysRendered) alreadyRenderedKeys.add(k);
+    }
+    // T-2026-149: Per-unit sections for Builder Masters. The helper
+    // re-verifies the actual DB flag (row.is_builder_master === 1) so a
+    // tampered client that adds a `kind:'builderUnits'` section to a
+    // non-Builder payload gets an empty array back — no unit leak.
+    if (builderUnitsSection) {
+      const unitSections = await renderBuilderUnitsSections(
+        propertyKind,
+        row,
+        builderUnitsSection.unitDescriptors,
+        // T-2026-150: unit allowlist (only the ticked units). Absent /
+        // empty => all units (T-2026-149 default).
+        builderUnitsSection.selectedUnitIds,
+      );
+      for (const s of unitSections) renderedSections.push(s);
+      // T-2026-150 LATENT RISK 2: do NOT add the per-unit descriptor keys
+      // to `alreadyRenderedKeys`. The completion pass reads the MASTER's
+      // top-level columns + MASTER dynamicData only — it never emits unit
+      // data — so suppressing a key here can only DROP a legitimate master
+      // field that happens to share a key with a unit descriptor. A real
+      // collision exists: `buildUnitShareSectionDescriptors` recurses
+      // `subsectionCard` pricing leaves (ratePerSqFt, considerationValue,
+      // stampDuty, costToCustomer, …) while `sectionsFromFormConfig` does
+      // NOT, so those master pricing values reach the completion pass and
+      // were being wrongly suppressed. Removing the tracking restores them.
+      // No duplication risk: unit values come from listByMaster unit
+      // details (a separate source the completion pass never touches).
     }
   } else {
     // LEGACY PATH — respect the old boolean flags.

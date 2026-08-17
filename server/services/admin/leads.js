@@ -5,8 +5,6 @@ const notificationsRepo = require('../../db/queries/notifications');
 const wpRepo = require('../../db/queries/website_properties');
 const excel = require('../files/excel');
 const pdf = require('../files/pdf');
-const { trySendMail } = require('../email/transporter');
-const { renderEmail, sectionTitle, kvRow, kvTable, infoCard, quoteBlock, BRAND } = require('../email/emailTemplate');
 const audit = require('./audit');
 const { MODULES } = require('../../constants/modules');
 
@@ -96,60 +94,7 @@ async function updateStatus(id, status, req = null) {
     }
   }
 
-  // Notify the seller when a lead first moves to "contacted" — closes the
-  // loop so the seller knows the admin team is actively engaging the buyer.
-  // Skipped for general enquiries (no property → no seller). Same fire-and-
-  // forget pattern as lead notifications: trySendMail enqueues on failure,
-  // never throws back to the caller.
-  if (row.status !== 'contacted' && status === 'contacted') {
-    void notifySellerLeadContacted(id).catch((err) => {
-      // eslint-disable-next-line no-console
-      console.warn('[lead-contacted] seller notification failed:', err.message);
-    });
-  }
-
   return getLead(id);
-}
-
-async function notifySellerLeadContacted(leadId) {
-  const seller = await leadsRepo.findSellerForLead(leadId);
-  if (!seller || !seller.seller_email) return;
-  const lead = await leadsRepo.findById(leadId);
-  const enquiryWhen = lead?.created_at ? new Date(lead.created_at).toLocaleString('en-IN') : '—';
-  const subject = `[Update] We've contacted a buyer for your listing ${seller.property_code}`;
-  const text = [
-    `Hi ${seller.seller_name},`,
-    '',
-    `Good news — our team has just reached out to a buyer who enquired about your listing.`,
-    '',
-    `Property: ${seller.property_code} — ${seller.property_title}`,
-    `Enquiry received on: ${enquiryWhen}`,
-    '',
-    `We'll let you know if the conversation progresses to a site visit.`,
-    '',
-    `— Nashik Property Deals team`,
-  ].join('\n');
-  const html = renderEmail({
-    preheader: `We've contacted a buyer for ${seller.property_code}`,
-    title: `Hi ${seller.seller_name}, a buyer enquiry is being handled`,
-    intro: 'Good news — our team has just reached out to a buyer who enquired about your listing. We\'ll let you know if the conversation progresses to a site visit.',
-    bodyHtml: `
-      ${infoCard({
-        eyebrow: 'Your listing',
-        title: seller.property_code,
-        subtitle: seller.property_title,
-        accent: BRAND.brand,
-      })}
-      ${sectionTitle('Enquiry details')}
-      ${kvTable(
-        kvRow('Received on', enquiryWhen) +
-        kvRow('Status', 'Contacted by admin team')
-      )}
-    `,
-    accentColor: BRAND.primary,
-    footerNote: `You're receiving this because you own listing ${seller.property_code}.`,
-  });
-  await trySendMail({ to: seller.seller_email, subject, text, html });
 }
 
 async function updateAssignment(id, assignedSubAdminId, req = null) {
@@ -255,51 +200,14 @@ async function notifyAssignee({ leadId, lead, assigneeId, assigneeName, assignee
     console.warn('[lead-assigned] notification insert failed:', err.message);
   }
 
-  if (assigneeEmail) {
-    const leadUrl = `${process.env.ADMIN_PANEL_URL || process.env.PUBLIC_BASE_URL || ''}/admin/leads/${leadId}`;
-    const buyerMobile = lead?.buyer_mobile || '—';
-    void trySendMail({
-      to: assigneeEmail,
-      subject: `[Lead assigned] ${buyer}`,
-      text: [
-        `Hi ${assigneeName || 'there'},`,
-        '',
-        `A new lead has been assigned to you.`,
-        '',
-        `Buyer:  ${buyer}`,
-        `Mobile: ${buyerMobile}`,
-        lead?.buyer_email ? `Email:  ${lead.buyer_email}` : '',
-        `Property: ${propertyTag}`,
-        lead?.message ? `\nMessage:\n${lead.message}` : '',
-        '',
-        `Open it: ${leadUrl}`,
-      ].filter(Boolean).join('\n'),
-      html: renderEmail({
-        preheader: `${buyer} (${buyerMobile}) is your lead now`,
-        title: `Hi ${assigneeName || 'there'}, a new lead is on your queue`,
-        intro: 'You\'ve been assigned this lead. The buyer is waiting — reach out while interest is fresh.',
-        bodyHtml: `
-          ${infoCard({
-            eyebrow: 'Buyer',
-            title: buyer,
-            subtitle: buyerMobile,
-            accent: BRAND.brand,
-          })}
-          ${sectionTitle('Lead details')}
-          ${kvTable(
-            kvRow('Mobile', buyerMobile, { mono: true, link: `tel:${buyerMobile}` }) +
-            (lead?.buyer_email ? kvRow('Email', lead.buyer_email, { link: `mailto:${lead.buyer_email}` }) : '') +
-            kvRow('Property', propertyTag)
-          )}
-          ${lead?.message ? `${sectionTitle('Buyer\'s message')}${quoteBlock(lead.message)}` : ''}
-        `,
-        ctaHref: leadUrl,
-        ctaLabel: 'Open this lead',
-        accentColor: BRAND.primary,
-        footerNote: 'You\'re receiving this because this lead was just assigned to you.',
-      }),
-    });
-  }
+  // T-2026-179: assignee email notification removed. Per T-179 spec,
+  // application notification emails go ONLY to the Admin Email in
+  // Email Master -- never to any customer, seller, or per-user
+  // recipient (including sub-admin assignees). The in-app bell
+  // notification above (targetActorType='sub_admin') still fires so
+  // the assignee sees the lead in their notification tray.
+  // Suppress the unused-parameter warning without changing the signature.
+  void assigneeEmail;
 }
 
 async function listAssignees() {

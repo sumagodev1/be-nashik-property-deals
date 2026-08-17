@@ -13,9 +13,13 @@ const { getDistrictShortCode } = require('../../db/queries/locations');
 // Centralised Property Type / Transaction Type / Property Variety
 // validator — see services/masters/propertyMasters.js for the contract.
 const { validatePropertyClassification } = require('../masters/propertyMasters');
-const { trySendMail } = require('../email/transporter');
-const { renderEmail, sectionTitle, kvRow, kvTable, infoCard, quoteBlock, BRAND } = require('../email/emailTemplate');
 const audit = require('../admin/audit');
+const allocationGuard = require('../crm/allocationGuard');
+// T-2026-156: CRM ingestion hook REMOVED from this file. Website
+// Property create is a SELLER action; the CRM Website source is
+// BUYER enquiries (services/public/leads.js). See the removal
+// comment inside createProperty() for the full rationale. The
+// crmResolver import is no longer needed here.
 
 async function validateMasterCodes(payload) {
   await validatePropertyClassification(payload);
@@ -113,8 +117,19 @@ async function createProperty(payload) {
       throw err;
     }
   });
+  // T-2026-156 (corrective for T-2026-151 Phase 1): the CRM
+  // ingestion hook that used to fire here has been REMOVED. It was
+  // wrong: it pushed the SELLER (who registered a property) into CRM
+  // as if they were a Website LEAD, but Website Leads in this
+  // project are BUYERS who submitted an enquiry via the public
+  // Buyer Enquiry form (services/public/leads.js -> `leads` table).
+  // Sellers are a different subject and now live only in
+  // /admin/sellers (Website Seller module). The correct CRM Website
+  // hook now lives in services/public/leads.js#verify -- fires when
+  // a buyer OTP-verifies and their `leads` row is created.
   return getProperty(id);
 }
+
 
 async function updateProperty(id, payload) {
   await validateMasterCodes(payload);
@@ -141,10 +156,6 @@ async function approveProperty(id, adminId, req = null) {
       },
     });
   }
-  void notifySellerOnApproval(existing).catch((err) => {
-    // eslint-disable-next-line no-console
-    console.warn('[property-approved] seller email failed:', err.message);
-  });
   return getProperty(id);
 }
 
@@ -165,104 +176,7 @@ async function rejectProperty(id, adminId, reason, req = null) {
       },
     });
   }
-  void notifySellerOnRejection(existing, reason).catch((err) => {
-    // eslint-disable-next-line no-console
-    console.warn('[property-rejected] seller email failed:', err.message);
-  });
   return getProperty(id);
-}
-
-/**
- * Seller-facing email when their submission is approved and goes live on
- * the public site. Best-effort — the approval transaction commits before
- * we attempt to email, so SMTP issues never block the workflow.
- */
-async function notifySellerOnApproval(prop) {
-  if (!prop?.seller_email) return;
-  const publicUrl = `${process.env.PUBLIC_BASE_URL || ''}/properties/${prop.id}`;
-  const subject = `Your listing ${prop.property_code} is live`;
-  const text = [
-    `Hi ${prop.seller_name || 'there'},`,
-    '',
-    `Great news — your property has been approved and is now live on Nashik Property Deals.`,
-    '',
-    `Property: ${prop.property_code} — ${prop.title}`,
-    `View it:  ${publicUrl}`,
-    '',
-    `Buyers can now contact you through the platform.`,
-    '',
-    `— Nashik Property Deals team`,
-  ].join('\n');
-  const html = renderEmail({
-    preheader: `Your listing ${prop.property_code} is approved and live`,
-    title: `Hi ${prop.seller_name || 'there'}, your listing is now live`,
-    intro: 'Great news — your property has been approved and is now visible to buyers on Nashik Property Deals.',
-    bodyHtml: `
-      ${infoCard({
-        eyebrow: 'Your listing',
-        title: prop.property_code,
-        subtitle: prop.title,
-        accent: '#10b981',
-      })}
-      ${sectionTitle('What happens next')}
-      <p style="margin:8px 0 0 0;font-size:13.5px;line-height:1.6;color:${BRAND.text};">
-        Buyers can now click <strong>Contact Seller</strong> or <strong>View Location</strong>
-        on your listing. Every enquiry comes through our team — we verify the buyer with an
-        OTP, then route the lead to you.
-      </p>
-    `,
-    ctaHref: publicUrl,
-    ctaLabel: 'View your live listing',
-    accentColor: '#10b981',
-    footerNote: 'Need to make changes? Log in and visit My Listed Properties.',
-  });
-  await trySendMail({ to: prop.seller_email, subject, text, html });
-}
-
-/**
- * Seller-facing email when their submission is rejected. The rejection
- * reason (if the admin typed one) is surfaced as a block-quoted note so
- * the seller knows what to fix before re-submitting.
- */
-async function notifySellerOnRejection(prop, reason) {
-  if (!prop?.seller_email) return;
-  const profileUrl = `${process.env.PUBLIC_BASE_URL || ''}/seller/profile`;
-  const subject = `Update on your listing ${prop.property_code}`;
-  const text = [
-    `Hi ${prop.seller_name || 'there'},`,
-    '',
-    `Your submitted property could not be approved at this time.`,
-    '',
-    `Property: ${prop.property_code} — ${prop.title}`,
-    reason ? `\nReviewer's note:\n${reason}\n` : '',
-    `You can edit the listing and re-submit it from your profile: ${profileUrl}`,
-    '',
-    `— Nashik Property Deals team`,
-  ].join('\n');
-  const html = renderEmail({
-    preheader: `Your listing ${prop.property_code} needs changes before it can go live`,
-    title: `Hi ${prop.seller_name || 'there'}, your listing needs some changes`,
-    intro: 'Your property submission was reviewed but could not be approved as-is. You can update it and re-submit from your profile.',
-    bodyHtml: `
-      ${infoCard({
-        eyebrow: 'Listing reviewed',
-        title: prop.property_code,
-        subtitle: prop.title,
-        accent: '#ef4444',
-      })}
-      ${reason ? `${sectionTitle('Reviewer\'s note')}${quoteBlock(reason)}` : ''}
-      ${sectionTitle('What to do next')}
-      <p style="margin:8px 0 0 0;font-size:13.5px;line-height:1.6;color:${BRAND.text};">
-        Open the listing from <strong>My Listed Properties</strong>, address the points above,
-        and submit it again — our team will review the updated version.
-      </p>
-    `,
-    ctaHref: profileUrl,
-    ctaLabel: 'Edit and re-submit',
-    accentColor: '#ef4444',
-    footerNote: 'Need help? Reply to this notification address or reach us through Contact Us.',
-  });
-  await trySendMail({ to: prop.seller_email, subject, text, html });
 }
 
 async function setActive(id, isActive, req = null) {
@@ -308,6 +222,16 @@ async function setFeatured(id, isFeatured, req = null) {
 async function removeProperty(id, req = null) {
   const existing = await wp.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+
+  // Refuse to delete while still allocated to a CRM lead.
+  //
+  // NEW GUARD, same reasoning as the enquiry surface: website properties
+  // became allocatable the moment the CRM started keying allocations on
+  // globally-unique property codes instead of inventory row ids. Without
+  // this, deleting an allocated website property leaves a dangling
+  // reference in the lead's allocation list.
+  await allocationGuard.assertNotAllocatedToAnyLead(existing.property_code, 'website property');
+
   await wp.softDelete(id);
   if (req) {
     void audit.record(req, {

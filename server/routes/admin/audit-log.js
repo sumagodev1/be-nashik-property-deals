@@ -2,14 +2,28 @@ const express = require('express');
 const Joi = require('joi');
 
 const { validate } = require('../../middleware/validate');
-const { requireAuth, requireRole } = require('../../middleware/auth');
+const {
+  requireAuth,
+  requireModule,
+  requireModuleWriteOnMutation,
+} = require('../../middleware/auth');
 const audit = require('../../services/admin/audit');
+const { MODULES } = require('../../constants/modules');
 
 const router = express.Router();
 
-// Audit log is admin-only — sub-admins shouldn't be able to see what other
-// people did (it's an oversight tool for the head admin).
-router.use(requireAuth, requireRole('admin'));
+// T-2026-173-B: Audit Log is now a grantable module. Administrator role
+// bypasses. Sub-admins with AUDIT_LOG (read) can see the audit trail.
+// The write gate is applied for future-proofing but the router currently
+// has no mutating verbs (audit log is append-only, populated by the
+// services layer -- never through a direct API mutation). Existing
+// sub-admins have NO grant on deploy so the audit surface remains hidden
+// from them until a grant is explicitly created.
+router.use(
+  requireAuth,
+  requireModule(MODULES.AUDIT_LOG),
+  requireModuleWriteOnMutation(MODULES.AUDIT_LOG),
+);
 
 const listQuery = Joi.object({
   page: Joi.number().integer().min(1).default(1),

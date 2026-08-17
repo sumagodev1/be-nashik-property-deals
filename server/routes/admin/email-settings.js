@@ -21,7 +21,7 @@ const Joi = require('joi');
 const rateLimit = require('express-rate-limit');
 
 const { validate } = require('../../middleware/validate');
-const { requireAuth, requireModule } = require('../../middleware/auth');
+const { requireAuth, requireModule, requireModuleWriteOnMutation } = require('../../middleware/auth');
 const { MODULES } = require('../../constants/modules');
 const service = require('../../services/email/email_settings');
 
@@ -84,6 +84,10 @@ const testLimiter = rateLimit({
 });
 
 router.use(requireAuth, requireModule(MODULES.MASTER_MANAGEMENT));
+// T-2026-173 Phase 2: sub-admins with only Read access get 403 on mutation.
+// This also gates the POST /:id/activate + POST /:id/test endpoints which
+// technically mutate state (activate flips is_active; test sends an email).
+router.use(requireModuleWriteOnMutation(MODULES.MASTER_MANAGEMENT));
 
 router.get('/', validate(listQuery, 'query'), async (req, res, next) => {
   try { res.json(await service.list(req.query)); }

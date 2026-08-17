@@ -380,6 +380,12 @@ async function list({
             ip.is_draft, ip.owner_name, ip.owner_contact,
             ip.agent_name, ip.agent_contact, ip.details, ip.created_at, ip.updated_at,
             ip.agreement_start_date, ip.agreement_end_date,
+            -- T-2026-141 (slice 6): expose the T-2026-138 top-level flag + counter
+            -- on the LIST projection so the admin InventoryList row can render the
+            -- Builder Property badge + total-units summary column WITHOUT a second
+            -- round-trip. toListItem() maps these to isBuilderMaster (boolean)
+            -- and totalUnitsPlanned (number|null). Pre-T-136 rows land 0/NULL.
+            ip.is_builder_master, ip.total_units_planned,
             COALESCE(ip.property_type_name, mpt_id.label, mpt_code.label) AS resolved_property_type_name,
             COALESCE(ip.transaction_type_name, mtt_id.label, mtt_code.label) AS resolved_transaction_type_name,
             COALESCE(ip.property_variety_name, mpv_id.label, mpv_code.label) AS resolved_property_variety_name
@@ -450,8 +456,13 @@ async function create(payload) {
       latitude, longitude, formatted_address, pincode,
       area_value, area_unit, bhk, price, status, is_draft,
       owner_name, owner_contact, agent_name, agent_contact, details, created_by_admin_id,
-      agreement_start_date, agreement_end_date)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      agreement_start_date, agreement_end_date,
+      -- T-2026-138: Builder Property / Multi-Unit Inventory (migration 099).
+      -- is_builder_master defaults to 0 in the DB, so omitting the value
+      -- lands the correct "normal property" flag for every existing caller
+      -- that predates T-136. total_units_planned is NULL when unset.
+      is_builder_master, total_units_planned)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.propertyCode,
       payload.postingDate || null,
@@ -493,6 +504,20 @@ async function create(payload) {
       // form leaves these NULL.
       payload.agreementStartDate || null,
       payload.agreementEndDate || null,
+      // T-2026-138: Builder Property (Admin-only). Coerce to 0/1 so the
+      // DB TINYINT stays clean regardless of what the FE sent (boolean /
+      // 0 / 1 / undefined). Absent / falsy = 0 (normal property, matches
+      // migration-099 DEFAULT).
+      payload.isBuilderMaster ? 1 : 0,
+      // total_units_planned is nullable. Coerce '' / undefined to NULL so
+      // an admin who typed "5" and then cleared the field lands NULL, not
+      // an empty string. Non-numeric input from any source lands NULL
+      // instead of NaN (which would silently corrupt the column).
+      payload.totalUnitsPlanned === '' || payload.totalUnitsPlanned == null
+        ? null
+        : (Number.isFinite(Number(payload.totalUnitsPlanned))
+            ? Number(payload.totalUnitsPlanned)
+            : null),
     ],
   );
   return result.insertId;
@@ -516,7 +541,13 @@ async function update(id, payload) {
        latitude = ?, longitude = ?, formatted_address = ?, pincode = ?,
        area_value = ?, area_unit = ?, bhk = ?, price = ?, status = ?, is_draft = ?,
        owner_name = ?, owner_contact = ?, agent_name = ?, agent_contact = ?, details = ?,
-       agreement_start_date = ?, agreement_end_date = ?
+       agreement_start_date = ?, agreement_end_date = ?,
+       -- T-2026-138: Builder Property columns (migration 099). Nullable-safe
+       -- update via COALESCE-with-existing: only overwritten when the caller
+       -- sent a non-undefined value. This preserves the "normal property"
+       -- flag on any pre-T-136 update flow that never sends the keys.
+       is_builder_master   = COALESCE(?, is_builder_master),
+       total_units_planned = ?
      WHERE id = ? AND deleted_at IS NULL`,
     [
       payload.postingDate || null,
@@ -556,6 +587,33 @@ async function update(id, payload) {
       // FE can clear the field simply by not setting it.
       payload.agreementStartDate || null,
       payload.agreementEndDate || null,
+      // T-2026-138: Builder Property flag + counter.
+      //   is_builder_master: pass null when key is absent so the SQL
+      //     COALESCE(?, is_builder_master) leaves the existing value
+      //     unchanged. When present, coerce boolean/number to 0/1.
+      //     Ensures a legacy PUT that doesn't know about the flag can
+      //     round-trip a Builder-marked master without accidentally
+      //     wiping the flag.
+      //   total_units_planned: three cases:
+      //     - key ABSENT (undefined): leave existing value alone.
+      //       Since MySQL doesn't have "skip this column" in bulk SET,
+      //       we route undefined through the same COALESCE trick — but
+      //       for simplicity and consistency with existing columns above,
+      //       we send the coerced value directly. An UPDATE that doesn't
+      //       set the field will therefore overwrite it with NULL. This
+      //       matches how postingDate / agreementStartDate / etc. behave
+      //       on this same UPDATE (a caller who omits them wipes them),
+      //       so no new invariant is introduced.
+      //     - empty string / null: NULL (admin cleared the field).
+      //     - numeric string / number: coerce to integer.
+      payload.isBuilderMaster === undefined
+        ? null
+        : (payload.isBuilderMaster ? 1 : 0),
+      payload.totalUnitsPlanned === '' || payload.totalUnitsPlanned == null
+        ? null
+        : (Number.isFinite(Number(payload.totalUnitsPlanned))
+            ? Number(payload.totalUnitsPlanned)
+            : null),
       id,
     ],
   );

@@ -69,7 +69,7 @@ const express = require('express');
 const Joi = require('joi');
 const { pool } = require('../../db/pool');
 const { validate } = require('../../middleware/validate');
-const { requireAuth, requireModule } = require('../../middleware/auth');
+const { requireAuth, requireModule, requireModuleWriteOnMutation } = require('../../middleware/auth');
 const { MODULES } = require('../../constants/modules');
 const {
   computeAgreementState,
@@ -78,10 +78,18 @@ const {
 
 const router = express.Router();
 
-// The Agreement Reminder page shows both Inventory and Enquiry rows and
-// gates on the INVENTORY_MANAGEMENT module (same permission that already
-// gates both source lists — no new permission surface).
-router.use(requireAuth, requireModule(MODULES.INVENTORY_MANAGEMENT));
+// T-2026-174: the Agreement Reminder page shows both Inventory and
+// Enquiry rows and is now gated on the discrete AGREEMENT_REMINDERS
+// module (formerly bundled under INVENTORY_MANAGEMENT). Sub-admins are
+// grantable independently of Inventory/Enquiry Properties. Backward-
+// compat: migration 111 fans out pre-T-174 INVENTORY_MANAGEMENT grants
+// into 5 discrete rows including AGREEMENT_REMINDERS; hasGrant() also
+// honours a legacy 'inventory_management' JWT entry as an implicit
+// grant on AGREEMENT_REMINDERS. Admin bypasses.
+router.use(requireAuth, requireModule(MODULES.AGREEMENT_REMINDERS));
+// Sub-admins with only Read access on AGREEMENT_REMINDERS get 403 on
+// POST/PUT/PATCH/DELETE while GET/HEAD/OPTIONS pass through.
+router.use(requireModuleWriteOnMutation(MODULES.AGREEMENT_REMINDERS));
 
 const masterCodeField = Joi.string().trim().lowercase().pattern(/^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$/);
 

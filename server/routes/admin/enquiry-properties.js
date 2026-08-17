@@ -2,7 +2,7 @@ const express = require('express');
 const Joi = require('joi');
 
 const { validate } = require('../../middleware/validate');
-const { requireAuth, requireModule } = require('../../middleware/auth');
+const { requireAuth, requireModule, requireModuleWriteOnMutation } = require('../../middleware/auth');
 const { imageUploadMiddleware, documentUploadMiddleware } = require('../../middleware/imageMulter');
 const idempotency = require('../../middleware/idempotency');
 const management = require('../../services/enquiry/management');
@@ -24,12 +24,19 @@ const { HttpError } = require('../../middleware/errors');
 
 const router = express.Router();
 
-// Access control reuses INVENTORY_MANAGEMENT — a Sub Admin who can manage
-// Inventory records is authorised to manage Enquiry records as well. This
-// avoids silently locking existing Sub Admins out of the new surface on
-// deploy. If finer-grained separation is needed later, introduce
-// ENQUIRY_MANAGEMENT here and grant it to existing roles in a follow-up.
-router.use(requireAuth, requireModule(MODULES.INVENTORY_MANAGEMENT));
+// T-2026-174: this router now gates on the discrete ENQUIRY_PROPERTIES
+// key (formerly bundled under INVENTORY_MANAGEMENT). Backward-compat is
+// preserved by (a) migration 111 fanning out every pre-T-174 sub_admin
+// grant on INVENTORY_MANAGEMENT into 5 discrete rows (including
+// ENQUIRY_PROPERTIES), and (b) middleware/auth.js#hasGrant treating a
+// legacy 'inventory_management' entry (in JWT payload OR pre-migration
+// SQL row) as an implicit grant on any of the 5 new keys via
+// LEGACY_UMBRELLA_ALIASES. Admin bypasses via requireModule's
+// role==='admin' short-circuit.
+router.use(requireAuth, requireModule(MODULES.ENQUIRY_PROPERTIES));
+// Sub-admins with only Read access on ENQUIRY_PROPERTIES get 403 on
+// POST/PUT/PATCH/DELETE while GET/HEAD/OPTIONS pass through.
+router.use(requireModuleWriteOnMutation(MODULES.ENQUIRY_PROPERTIES));
 
 const idParam = Joi.object({ id: Joi.number().integer().positive().required() });
 const subIdParam = Joi.object({

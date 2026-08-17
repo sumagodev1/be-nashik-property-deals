@@ -2,21 +2,48 @@ const express = require('express');
 const Joi = require('joi');
 
 const { validate } = require('../../middleware/validate');
-const { requireAuth, requireRole } = require('../../middleware/auth');
+const {
+  requireAuth,
+  requireModule,
+  requireModuleWriteOnMutation,
+} = require('../../middleware/auth');
 const management = require('../../services/sub_admin/management');
-const { MODULE_KEYS } = require('../../constants/modules');
+const { MODULES, MODULE_KEYS } = require('../../constants/modules');
 
 const router = express.Router();
 
-// All routes require an authenticated admin (NOT sub admin — admin manages sub admins).
-router.use(requireAuth, requireRole('admin'));
+// T-2026-173-B: Sub Admin management is now a grantable module. Administrator
+// role bypasses via requireModule's role==='admin' short-circuit. Sub-admins
+// with SUB_ADMIN_MANAGEMENT (read) can list/view sub-admins; those with
+// SUB_ADMIN_MANAGEMENT (write) additionally get POST/PUT/PATCH/DELETE
+// (create / edit / deactivate / grant modules). Prior behaviour
+// (requireRole('admin')) is preserved for administrators because the
+// middleware short-circuits for role==='admin' before any grant check;
+// existing sub-admins have NO grant on deploy so nothing is auto-escalated.
+router.use(
+  requireAuth,
+  requireModule(MODULES.SUB_ADMIN_MANAGEMENT),
+  requireModuleWriteOnMutation(MODULES.SUB_ADMIN_MANAGEMENT),
+);
 
 const emailField = Joi.string().email({ tlds: { allow: false } }).max(255);
 const passwordField = Joi.string().min(8).max(128);
 const LETTERS_ONLY = /^[A-Za-z\s]+$/;
 const nameField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY)
   .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
-const moduleField = Joi.string().valid(...MODULE_KEYS);
+// T-2026-173: `modules` now accepts EITHER shape:
+//   - legacy string (implicit write, preserves pre-T-173 API callers)
+//   - { module_key, access_level } object (new UI shape)
+// Joi.alternatives() picks whichever matches per array element, and the
+// service layer's dedupePermissions() normalizes both to the object shape.
+const moduleKeyField = Joi.string().valid(...MODULE_KEYS);
+const moduleGrantField = Joi.alternatives().try(
+  moduleKeyField,
+  Joi.object({
+    module_key: moduleKeyField.required(),
+    access_level: Joi.string().valid('read', 'write').default('write'),
+  }),
+);
 
 const idParam = Joi.object({ id: Joi.number().integer().positive().required() });
 
@@ -32,7 +59,7 @@ const createBody = Joi.object({
   password: passwordField.required(),
   fullName: nameField.required(),
   isActive: Joi.boolean().default(true),
-  modules: Joi.array().items(moduleField).default([]),
+  modules: Joi.array().items(moduleGrantField).default([]),
 });
 
 const updateBody = Joi.object({
@@ -43,7 +70,7 @@ const updateBody = Joi.object({
 }).min(1);
 
 const updateModulesBody = Joi.object({
-  modules: Joi.array().items(moduleField).required(),
+  modules: Joi.array().items(moduleGrantField).required(),
 });
 
 router.get('/', validate(listQuery, 'query'), async (req, res, next) => {
