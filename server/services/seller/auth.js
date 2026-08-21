@@ -181,7 +181,13 @@ async function loginStart({ email }) {
     mobileNumber: seller.mobile_number,
     label: 'sign-in',
   });
-  return withDevCode({ ok: true, emailHint: maskEmail(seller.email) }, issued);
+  // expiresInMinutes is the code's REAL validity (OTP_TTL_MINUTES). The
+  // login screen only showed a 30-second countdown, which is the resend
+  // cooldown - it was being read as "the code expires in 30 seconds".
+  return withDevCode(
+    { ok: true, emailHint: maskEmail(seller.email), expiresInMinutes: otp.TTL_MINUTES },
+    issued,
+  );
 }
 
 async function loginVerify({ email, code }) {

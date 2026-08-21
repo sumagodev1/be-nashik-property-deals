@@ -22,6 +22,7 @@ const INVENTORY_STATUS_LABELS = {
 };
 const { assignUniqueCode, resolvePropertyTypeIdCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
+const audit = require('../admin/audit');
 // Centralised Property Type / Transaction Type / Property Variety
 // validator. Every service that persists a property MUST use this so the
 // three fields cannot be miswired to the wrong master (see the module
@@ -116,13 +117,13 @@ function renderInventoryCell(r, key) {
     case 'property_type':    return r.resolved_property_type_name    || r.property_type_name    || r.property_type    || '';
     case 'transaction_type': return r.resolved_transaction_type_name || r.transaction_type_name || r.transaction_type || '';
     case 'property_variety': return r.resolved_property_variety_name || r.property_variety_name || r.transaction_variant || '';
-    case 'status':           return INVENTORY_STATUS_LABELS[r.status] || r.status || '';
+    case 'status':           return r._statusLabel || INVENTORY_STATUS_LABELS[r.status] || r.status || '';
     case 'owner_name':       return r.owner_name || '';
     case 'agent_name':       return r.agent_name || '';
     case 'posting_date':     return formatDateShort(r.posting_date);
     case 'available_from_date': return formatDateShort(r.available_from_date);
     case 'created_at':       return formatDateTime(r.created_at);
-    // District/Taluka/Village labels resolved via enrichRowsWithLocationLabels below.
+    // District/Taluka/Village AND status labels resolved via enrichExportRows below.
     case 'district':         return r._districtLabel || r.district || '';
     case 'taluka':           return r._talukaLabel   || r.taluka   || '';
     case 'village':          return r._shivarLabel   || r.shivar   || '';
@@ -133,35 +134,81 @@ function renderInventoryCell(r, key) {
 // Batch-resolve district/taluka/shivar codes → labels, then attach as
 // underscore-prefixed fields on each row so renderInventoryCell can pick
 // them up without re-querying.
-async function enrichRowsWithLocationLabels(rows) {
+async function enrichExportRows(rows) {
   const uniq = (arr) => Array.from(new Set(arr.filter(Boolean).map(String)));
-  const [districts, talukas, shivars] = await Promise.all([
+  const [districts, talukas, shivars, statusRows] = await Promise.all([
     locationsQuery.labelsForCodes('district', uniq(rows.map((r) => r.district))).catch(() => []),
     locationsQuery.labelsForCodes('taluka',   uniq(rows.map((r) => r.taluka))).catch(() => []),
     locationsQuery.labelsForCodes('shivar',   uniq(rows.map((r) => r.shivar))).catch(() => []),
+    // Status is master-driven. listAll (not activeCodes) so a row still
+    // carrying a DEACTIVATED code - e.g. the retired `sold` or `sold-by-me`
+    // - still resolves to a readable label instead of leaking the raw code.
+    masters.listAll('status_type').catch(() => []),
   ]);
   const dMap = Object.fromEntries((districts || []).map((r) => [r.code, r.label]));
   const tMap = Object.fromEntries((talukas   || []).map((r) => [r.code, r.label]));
   const sMap = Object.fromEntries((shivars   || []).map((r) => [r.code, r.label]));
+  const statusList = Array.isArray(statusRows) ? statusRows : (statusRows && statusRows.data) || [];
+  const stMap = Object.fromEntries(statusList.map((r) => [r.code, r.label || r.name]));
   return rows.map((r) => ({
     ...r,
     _districtLabel: r.district ? (dMap[r.district] || r.district) : '',
     _talukaLabel:   r.taluka   ? (tMap[r.taluka]   || r.taluka)   : '',
     _shivarLabel:   r.shivar   ? (sMap[r.shivar]   || r.shivar)   : '',
+    // Falls back through the master map, then the legacy hardcoded map, then
+    // the raw code - so no export can ever render an empty status cell.
+    _statusLabel:   r.status   ? (stMap[r.status] || INVENTORY_STATUS_LABELS[r.status] || r.status) : '',
   }));
 }
 
-function buildInventorySummaryCards(rows) {
-  const counts = { available: 0, sold: 0, rented: 0 };
-  for (const r of rows) {
-    if (counts[r.status] != null) counts[r.status] += 1;
+// Summary cards, derived from the live status master.
+//
+// These were a hardcoded Available / Sold / Rented trio, which no longer
+// describes this product. The actual status vocabulary - the same list the
+// Status filter on the listing offers - is Pipeline, Sold by NPD, Sold by
+// Owner and Available. Two things were therefore wrong on every report:
+//   * RENTED is not a status at all, so that card could only ever read 0;
+//   * PIPELINE had no card, so those rows counted toward Total and then
+//     vanished from the breakdown.
+// Additionally the old counter keyed on the exact code `sold`, which is an
+// INACTIVE legacy code, so a genuinely sold property scored nothing and the
+// figures did not add up to Total.
+//
+// Now: one card per ACTIVE status, in the master's own sort order, so the
+// report always mirrors the filter dropdown and picks up any status the
+// client adds later without a code change.
+async function buildInventorySummaryCards(rows) {
+  const res = await masters.listAll('status_type').catch(() => null);
+  const all = (res && res.data) || [];
+  const active = all
+    .filter((s) => s.isActive)
+    .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+
+  const counts = new Map();
+  for (const r of rows) { const k = String(r.status || ''); counts.set(k, (counts.get(k) || 0) + 1); }
+
+  const total = { label: 'Total Records', value: String(rows.length) };
+
+  // If the master is unreachable, fall back to whatever statuses the result
+  // set actually contains rather than printing nothing.
+  if (active.length === 0) {
+    const present = [...counts.entries()].filter(([k]) => k);
+    return [total, ...present.slice(0, 5).map(([k, v]) => ({
+      label: INVENTORY_STATUS_LABELS[k] || k,
+      value: String(v),
+    }))];
   }
-  return [
-    { label: 'Total Records', value: String(rows.length) },
-    { label: 'Available',     value: String(counts.available) },
-    { label: 'Sold',          value: String(counts.sold) },
-    { label: 'Rented',        value: String(counts.rented) },
-  ];
+
+  // drawSummaryCards renders at most 6 cards. Under that ceiling show every
+  // active status (a 0 is meaningful - "nothing sold yet"). Above it, keep
+  // Total plus the statuses actually present, so a real number is never
+  // pushed off the strip by an empty one.
+  const cardsFor = (list) => list.map((s) => ({
+    label: s.label || s.code,
+    value: String(counts.get(s.code) || 0),
+  }));
+  if (active.length + 1 <= 6) return [total, ...cardsFor(active)];
+  return [total, ...cardsFor(active.filter((s) => counts.get(s.code)).slice(0, 5))];
 }
 
 async function buildInventoryFilterChips(filters) {
@@ -275,14 +322,53 @@ async function updateProperty(id, payload) {
   return getProperty(id);
 }
 
-async function updateStatus(id, status, note, changedBy) {
+async function updateStatus(id, status, note, changedBy, req) {
   await masters.assertActiveCode('status_type', status);
   const existing = await inventory.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   await inventory.updateStatus(id, status, note, changedBy);
+  // Status History: inventory.updateStatus OVERWRITES status + status_note,
+  // so the property row only ever holds the latest value and every earlier
+  // change was being lost. The per-change trail is appended to audit_log
+  // instead of a new table: that table is already polymorphic
+  // (entity_type + entity_id, with ix_audit_log_entity) and carries a JSON
+  // metadata bag, which is exactly what leads.js uses for
+  // 'lead.status.changed'. Same fire-and-forget `void` idiom, so a logging
+  // failure can never fail the status change the admin just made.
+  if (req) {
+    void audit.record(req, {
+      action: 'inventory_property.status.changed',
+      entityType: 'inventory_property',
+      entityId: Number(id),
+      summary: `Property ${existing.property_code || `#${id}`} status: ${existing.status} → ${status}`,
+      metadata: {
+        from: existing.status || null,
+        to: status,
+        note: note || null,
+        entityLabel: existing.property_code || null,
+      },
+    });
+  }
   return getProperty(id);
 }
 
+// Status History read. Sourced from audit_log, so no migration was needed.
+// Deliberately NOT served from the /admin/audit-log router: that surface is
+// gated behind the grantable AUDIT_LOG module which sub-admins have NO grant
+// for on deploy, so reusing it would 403 this section for most operators.
+// Scoped here to a single property, it inherits the module gate this router
+// already applies to every other read of the same record.
+async function listStatusHistory(id) {
+  const existing = await inventory.findById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  return audit.list({
+    page: 1,
+    pageSize: 200,
+    action: 'inventory_property.status.changed',
+    entityType: 'inventory_property',
+    entityId: Number(id),
+  });
+}
 async function removeProperty(id) {
   const existing = await inventory.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
@@ -400,6 +486,8 @@ function toListItem(row) {
     propertyVarietyId: row.property_variety_id ?? null,
     propertyVarietyName: row.resolved_property_variety_name ?? row.property_variety_name ?? null,
     location: row.location,
+    // Curated Area. Distinct from areaValue/areaUnit below, which are SIZE.
+    areaName: row.area_name,
     district: row.district ?? null,
     taluka: row.taluka ?? null,
     shivar: row.shivar ?? null,
@@ -599,7 +687,7 @@ function formatDateTime(d) {
 
 async function exportCsv(filters, context = {}) {
   const { rows: raw } = await inventory.list({ ...filters, page: 1, pageSize: 100000 });
-  const rows = await enrichRowsWithLocationLabels(raw);
+  const rows = await enrichExportRows(raw);
   return csvUtil.buildCsvFromColumns({
     columns: INVENTORY_EXPORT_COLUMNS.map((c) => ({
       label: c.label,
@@ -612,7 +700,7 @@ async function exportCsv(filters, context = {}) {
 
 async function exportXlsx(filters, context = {}) {
   const { rows: raw } = await inventory.list({ ...filters, page: 1, pageSize: 100000 });
-  const rows = await enrichRowsWithLocationLabels(raw);
+  const rows = await enrichExportRows(raw);
   return excel.buildWorkbookFromColumns({
     sheetName: 'Inventory Properties',
     columns: INVENTORY_EXPORT_COLUMNS.map((c) => ({
@@ -628,7 +716,7 @@ async function exportXlsx(filters, context = {}) {
 
 async function exportPdf(filters, context = {}) {
   const { rows: raw } = await inventory.list({ ...filters, page: 1, pageSize: 100000 });
-  const rows = await enrichRowsWithLocationLabels(raw);
+  const rows = await enrichExportRows(raw);
   const [branding, filterChips] = await Promise.all([
     getBrandingSnapshot(),
     buildInventoryFilterChips(filters || {}),
@@ -636,6 +724,13 @@ async function exportPdf(filters, context = {}) {
   return buildTablePdf({
     title: 'Inventory Properties Report',
     subtitle: `${rows.length} record${rows.length === 1 ? '' : 's'}`,
+    // A3 rather than A4. Measured: these 14 columns need ~1048pt to put every
+    // value on one line, against 770pt usable on landscape A4 — so on A4 the
+    // property code, village, status, owner and created-date all wrapped onto
+    // two or three lines. Dropping to 8pt and trimming padding still left it
+    // ~150pt short, and even sacrificing two whole columns was 12pt short.
+    // Landscape A3 gives 1119pt, which fits everything at the readable 9pt.
+    pageSize: 'A3',
     columns: INVENTORY_EXPORT_COLUMNS,
     rows: rows.map((r) => {
       const out = {};
@@ -644,7 +739,7 @@ async function exportPdf(filters, context = {}) {
     }),
     branding,
     exportedBy: exportedByLabel(context.auth),
-    summaryCards: buildInventorySummaryCards(rows),
+    summaryCards: await buildInventorySummaryCards(rows),
     filterChips,
     emptyMessage: 'No records found for the selected filters.',
   });
@@ -656,6 +751,7 @@ module.exports = {
   createProperty,
   updateProperty,
   updateStatus,
+  listStatusHistory,
   removeProperty,
   addImages,
   removeImage,

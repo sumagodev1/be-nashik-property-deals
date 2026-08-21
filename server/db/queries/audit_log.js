@@ -67,4 +67,30 @@ async function list({ page = 1, pageSize = 25, action, entityType, entityId, act
   return { rows, total };
 }
 
-module.exports = { append, list };
+// Distinct action / entity_type values actually present in the log.
+//
+// The Audit Log filter dropdowns used to be hardcoded <option> lists, which
+// drifted the moment a module started emitting a new action - the masters
+// layer alone contributes one entity_type per master vocabulary
+// ("master:<key>"), which can never be enumerated by hand. Deriving the
+// options from the data keeps them exhaustive by construction, and means
+// every option is guaranteed to return rows (no dead choices).
+//
+// Trade-off, deliberate: an action that has never occurred does not appear.
+// That is the correct behaviour for a FILTER - offering a choice that can
+// only ever return "no results" is worse than omitting it.
+//
+// Two cheap indexed DISTINCTs (ix_audit_log_action exists; entity_type is
+// the leading column of ix_audit_log_entity), run in parallel.
+async function facets() {
+  const [[actions], [entities]] = await Promise.all([
+    pool.query('SELECT DISTINCT action FROM audit_log ORDER BY action ASC'),
+    pool.query('SELECT DISTINCT entity_type FROM audit_log ORDER BY entity_type ASC'),
+  ]);
+  return {
+    actions: actions.map((r) => r.action).filter(Boolean),
+    entityTypes: entities.map((r) => r.entity_type).filter(Boolean),
+  };
+}
+
+module.exports = { append, list, facets };

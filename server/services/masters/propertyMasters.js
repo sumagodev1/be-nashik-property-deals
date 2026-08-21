@@ -76,7 +76,16 @@ async function validatePropertyClassification(payload) {
     if (id === undefined || id === null || id === '' || Number(id) !== row.id) {
       payload[field.idKey] = row.id;
     }
-    if (!payload[field.nameKey]) {
+    // When the CODE had to be healed (case drift, or a retired code mapped
+    // through RETIRED_MASTER_CODES — e.g. 'sell' -> 'sale'), any name the
+    // caller sent alongside it is stale by definition: a legacy client posts
+    // transactionTypeName 'Sell' with transactionType 'sell', and keeping it
+    // would store the retired spelling on a row whose code is now 'sale'.
+    // Otherwise the operator-supplied name is left intact, as before.
+    const sentCode = code;
+    const codeWasHealed = sentCode !== undefined && sentCode !== null && sentCode !== ''
+      && String(sentCode) !== String(row.code);
+    if (!payload[field.nameKey] || codeWasHealed) {
       payload[field.nameKey] = row.label;
     }
   }

@@ -69,4 +69,8 @@ function list(filters) {
   return repo.list(filters);
 }
 
-module.exports = { record, list };
+function facets() {
+  return repo.facets();
+}
+
+module.exports = { record, list, facets };

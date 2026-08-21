@@ -39,15 +39,26 @@ const bannerUpdateBody = Joi.object({
 // the public site falls back to its default copy when a key is empty.
 // Non-empty values must satisfy the matching pattern + length cap. Mirror
 // these rules in src/admin/pages/Cms/ContactInfoForm.jsx on the frontend.
-// Strict 10-digit Indian mobile — matches the seller / buyer registration
-// flows and the frontend PHONE_PATTERN in src/shared/validation/rules.js.
-const PHONE_RE = /^\d{10}$/;
+// Strict 10-digit Indian mobile.
+//
+// Was /^\d{10}$/, which accepted ANY ten digits — 5455555545 and
+// 0000000000 both validated and were then published on the website footer
+// and contact page. Indian mobile numbers always begin 6, 7, 8 or 9, so the
+// leading character class is required.
+//
+// Scope is the CMS contact pair only. shared/validation/rules.js still
+// carries the looser app-wide pattern used by seller / buyer registration
+// and the bulk-upload helpers; changing those is a separate decision.
+//
+// Mirrored by PHONE_PATTERN in src/admin/pages/Cms/ContactInfoForm.jsx —
+// keep the two in step.
+const PHONE_RE = /^[6-9]\d{9}$/;
 const URL_RE   = /^https?:\/\/[^\s]+$/i;
 
 const optionalLen = (max) => Joi.string().trim().max(max).allow('', null);
 const optionalPhone = () => Joi.string().trim().length(10).pattern(PHONE_RE).allow('', null)
   .messages({
-    'string.pattern.base': 'Enter a valid 10-digit mobile number',
+    'string.pattern.base': 'Enter a valid 10-digit mobile number starting with 6-9',
     'string.length': 'Mobile number must be exactly 10 digits',
   });
 const optionalEmail = () => Joi.string().trim().max(255).email({ tlds: { allow: false } }).allow('', null);

@@ -120,7 +120,19 @@ async function create(payload, adminId) {
 async function update(id, payload) {
   const existing = await repo.getById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Business associate not found.');
-  const row = await repo.update(id, normalize(payload));
+  // Merge over the STORED row, not over blanks.
+  //
+  // repo.update writes every column unconditionally, and normalize() always
+  // produces all 27 keys - so a PUT body missing a field wrote NULL over it.
+  // Any partial update silently erased the rest of the record. The edit form
+  // happens to send every field, which is the only reason this never bit
+  // through the UI, but a trimmed body from anywhere else destroyed data.
+  //
+  // Spreading payload over the existing DTO means supplied keys win and absent
+  // keys keep their stored value. Clearing a field still works: the form sends
+  // the key with an empty string, which is present and therefore wins.
+  const merged = normalize({ ...toDto(existing), ...payload });
+  const row = await repo.update(id, merged);
   return toDto(row);
 }
 

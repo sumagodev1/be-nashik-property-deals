@@ -93,6 +93,15 @@ const GRAY_50  = CARD_BG;
 
 const FONT_DIR = path.resolve(__dirname, '..', '..', 'assets', 'fonts');
 
+// The real brand logo, the same npd-logo.png artwork the admin sidebar and
+// the public website use. Resolved once at module load: if the asset is ever
+// missing the header silently falls back to the drawn mark below, so a PDF
+// export can never fail over branding.
+const LOGO_PATH = path.resolve(__dirname, '..', '..', 'assets', 'npd-logo.png');
+const LOGO_AVAILABLE = (() => {
+  try { return fs.existsSync(LOGO_PATH); } catch { return false; }
+})();
+
 function fontExists(filename) {
   try { return fs.existsSync(path.join(FONT_DIR, filename)); } catch { return false; }
 }
@@ -209,15 +218,32 @@ function drawBrandedHeader(doc, { fonts, title, subtitle, exportedBy, branding }
   const pageWidth = doc.page.width;
   const rightX = pageWidth - 36;
   const metaWidth = 220;
-  const brandBlockWidth = pageWidth - 72 - metaWidth - 16;
+  // The logo is a WIDE lockup (3714x1177), not a square mark, so it needs a
+  // wider slot than the old 56pt disc. Text starts after whatever the logo
+  // actually occupies, and the block width is derived from the meta block
+  // edge rather than a fixed sum, so the two can never overlap.
+  const LOGO_W = LOGO_AVAILABLE ? 110 : 56;
+  const LOGO_H = 56;
+  const brandTextX = startX + LOGO_W + 12;
+  const brandBlockWidth = (rightX - metaWidth - 16) - brandTextX;
 
-  // ── Logo mark: a coloured disc with three ascending bar-graph shapes.
-  //    Sized to match the brand mark used in the client-side design. If we
-  //    ever ship a raster logo we can swap this for doc.image().
-  drawLogoMark(doc, startX, startY, 56);
+  // ── Brand logo. This used to be drawLogoMark(): a hand-drawn disc with
+  //    three bar-graph shapes that looked nothing like Nasik Property Deals.
+  //    It now renders the actual logo artwork. `fit` scales proportionally
+  //    inside the box, so the wide lockup keeps its aspect ratio instead of
+  //    being stretched into a square. drawLogoMark is kept as the fallback
+  //    for a missing asset rather than deleted.
+  if (LOGO_AVAILABLE) {
+    doc.image(LOGO_PATH, startX, startY, {
+      fit: [LOGO_W, LOGO_H],
+      align: 'left',
+      valign: 'center',
+    });
+  } else {
+    drawLogoMark(doc, startX, startY, LOGO_W);
+  }
 
   // ── Brand block (left) ────────────────────────────────────────────────
-  const brandTextX = startX + 56 + 12;
   let y = startY + 2;
   doc.fillColor(BRAND_PRIMARY).font(fonts.bold).fontSize(16)
     .text(branding.name, brandTextX, y, { width: brandBlockWidth, ellipsis: true });
@@ -401,10 +427,26 @@ function drawFilterChips(doc, { fonts, chips }) {
 
 // ─── Data table ────────────────────────────────────────────────────────────
 
+// Header cell metrics. allocateWidths measures with these and drawHeaderRow
+// draws with them, so the two can never disagree about how much room a
+// header needs. 8pt (down from 9) with 5pt side padding is what lets all 14
+// inventory columns fit their widest header word on one landscape page -
+// at 9pt/6pt the required minimums summed to ~803pt against 770pt usable,
+// so the allocator fell back to a plain proportional split and headers broke
+// mid-word.
+const HEADER_FONT_SIZE = 8;
+const HEADER_PAD = 10; // 5pt each side
+
+// Body cell metrics. allocateWidths measures with these and drawRow /
+// measureRowHeight draw with them, so a column sized to hold a value on one
+// line actually renders it on one line.
+const BODY_FONT_SIZE = 9;
+const CELL_PAD = 12; // 6pt each side
+
 function drawTable(doc, { fonts, columns, rows, emptyMessage }) {
   const startX = 36;
   const usable = doc.page.width - 72;
-  const widths = allocateWidths(columns, usable);
+  const widths = allocateWidths(doc, fonts, columns, usable, rows);
 
   drawHeaderRow(doc, { fonts, columns, widths, startX });
 
@@ -422,7 +464,10 @@ function drawTable(doc, { fonts, columns, rows, emptyMessage }) {
   }
 
   for (let i = 0; i < rows.length; i += 1) {
-    if (doc.y + 24 > doc.page.height - 56) {
+    // Measure BEFORE deciding on a page break: rows are now variable-height,
+    // so the old fixed 24pt lookahead could let a tall row run off the page.
+    const needed = measureRowHeight(doc, { fonts, columns, widths, row: rows[i] });
+    if (doc.y + needed > doc.page.height - 56) {
       doc.addPage();
       drawHeaderRow(doc, { fonts, columns, widths, startX });
     }
@@ -432,18 +477,34 @@ function drawTable(doc, { fonts, columns, rows, emptyMessage }) {
 
 function drawHeaderRow(doc, { fonts, columns, widths, startX }) {
   const rowY = doc.y;
-  const rowHeight = 24;
   const totalWidth = widths.reduce((a, b) => a + b, 0);
+
+  // Height is MEASURED, not fixed at 24. Multi-word labels legitimately wrap
+  // onto a second line ("PROPERTY / TYPE"), and the old fixed band left that
+  // second line hanging outside the coloured rectangle. Never shrinks below
+  // the original 24 so single-line tables look unchanged.
+  doc.font(fonts.bold).fontSize(HEADER_FONT_SIZE);
+  let rowHeight = 24;
+  for (let i = 0; i < columns.length; i += 1) {
+    const label = String(columns[i].label || columns[i].key || '').toUpperCase();
+    const h = doc.heightOfString(label, {
+      width: widths[i] - HEADER_PAD,
+      characterSpacing: 0.4,
+    });
+    if (h + 12 > rowHeight) rowHeight = Math.ceil(h + 12);
+  }
 
   doc.rect(startX, rowY, totalWidth, rowHeight).fill(BRAND_PRIMARY);
 
   let x = startX;
-  doc.font(fonts.bold).fontSize(9).fillColor('#ffffff');
+  doc.font(fonts.bold).fontSize(HEADER_FONT_SIZE).fillColor('#ffffff');
   for (let i = 0; i < columns.length; i += 1) {
     const col = columns[i];
-    doc.text(String(col.label || col.key || '').toUpperCase(), x + 6, rowY + 8, {
-      width: widths[i] - 12,
-      ellipsis: true,
+    // No `ellipsis` here on purpose: allocateWidths guarantees every column
+    // is at least as wide as its widest header WORD, so wrapping can only
+    // happen at spaces. Ellipsising would re-introduce clipped headers.
+    doc.text(String(col.label || col.key || '').toUpperCase(), x + HEADER_PAD / 2, rowY + 6, {
+      width: widths[i] - HEADER_PAD,
       align: col.headerAlign || (col.align || 'left'),
       characterSpacing: 0.4,
     });
@@ -453,19 +514,31 @@ function drawHeaderRow(doc, { fonts, columns, widths, startX }) {
   doc.y = rowY + rowHeight;
 }
 
+// Height a row needs so EVERY cell shows in full.
+//
+// Previously only non-`noWrap` columns were measured, and every cell was
+// drawn with `ellipsis: true` + a hard height clamp - so Property ID, dates
+// and Village came out as "NSK-FLT-26-7C6M6...", "10/08/2026 05:4..." with
+// the data simply unreadable. Now every column is measured, nothing is
+// ellipsised, and the row grows to fit its tallest cell.
+function measureRowHeight(doc, { fonts, columns, widths, row }) {
+  doc.font(fonts.regular).fontSize(BODY_FONT_SIZE);
+  let rowHeight = 20;
+  for (let i = 0; i < columns.length; i += 1) {
+    const text = stringify(row[columns[i].key]);
+    if (!text) continue;
+    const h = doc.heightOfString(text, { width: widths[i] - CELL_PAD });
+    // Ceiling guards against one pathological cell producing a row taller
+    // than the page, which would break pagination.
+    if (h + 10 > rowHeight) rowHeight = Math.min(Math.ceil(h + 10), 140);
+  }
+  return rowHeight;
+}
+
 function drawDataRow(doc, { fonts, columns, widths, startX, row, stripe }) {
   const rowY = doc.y;
   const totalWidth = widths.reduce((a, b) => a + b, 0);
-
-  doc.font(fonts.regular).fontSize(9);
-  let rowHeight = 20;
-  for (let i = 0; i < columns.length; i += 1) {
-    const col = columns[i];
-    if (col.noWrap) continue;
-    const text = stringify(row[col.key]);
-    const h = doc.heightOfString(text, { width: widths[i] - 12 });
-    if (h + 10 > rowHeight) rowHeight = Math.min(h + 10, 80);
-  }
+  const rowHeight = measureRowHeight(doc, { fonts, columns, widths, row });
 
   if (stripe) {
     doc.rect(startX, rowY, totalWidth, rowHeight).fill(ROW_ALT);
@@ -478,11 +551,17 @@ function drawDataRow(doc, { fonts, columns, widths, startX, row, stripe }) {
     doc
       .fillColor(TEXT_INK)
       .font(fonts.regular)
-      .fontSize(9)
-      .text(text, x + 6, rowY + 6, {
-        width: widths[i] - 12,
-        ellipsis: true,
-        lineBreak: col.noWrap ? false : true,
+      .fontSize(BODY_FONT_SIZE)
+      .text(text, x + CELL_PAD / 2, rowY + 6, {
+        width: widths[i] - CELL_PAD,
+        // No `ellipsis`: the client asked for full values, and the row was
+        // measured above to fit this text. `col.noWrap` is still honoured by
+        // XLSX/CSV; in the PDF it would re-truncate, so it is ignored here.
+        //
+        // The `height` clamp MUST stay. Without it PDFKit treats an absolutely
+        // positioned text run as flowable and adds a page whenever a cell nears
+        // the bottom margin - dropping it turned a 2-page report into 8. Height
+        // is the measured row height, so nothing is clipped.
         height: rowHeight - 8,
         align: col.align || 'left',
       });
@@ -508,19 +587,132 @@ function drawFooter(doc, { fonts, brandName }) {
     doc.switchToPage(range.start + i);
     const y = doc.page.height - 28;
     const w = doc.page.width - 72;
+    // y sits BELOW the bottom margin, and PDFKit treats a text run that does
+    // not fit above the margin as overflow - it silently calls addPage(). With
+    // three footer runs per page that spawned a trail of blank pages (a 9-row
+    // report rendered as 4 pages, 3 of them empty). Dropping the bottom margin
+    // for the duration of the footer is the documented way to draw in that
+    // strip; it is restored immediately after.
+    const prevBottom = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
     doc.font(fonts.regular).fontSize(8).fillColor(TEXT_MUTED);
-    doc.text(`${brandName} · Confidential`, 36, y, { width: w, align: 'left' });
-    doc.text(`Page ${i + 1} of ${range.count}`, 36, y, { width: w, align: 'center' });
-    doc.text(`© ${year} ${brandName}`, 36, y, { width: w, align: 'right' });
+    doc.text(`${brandName} · Confidential`, 36, y, { width: w, align: 'left', lineBreak: false });
+    doc.text(`Page ${i + 1} of ${range.count}`, 36, y, { width: w, align: 'center', lineBreak: false });
+    doc.text(`© ${year} ${brandName}`, 36, y, { width: w, align: 'right', lineBreak: false });
+    doc.page.margins.bottom = prevBottom;
   }
 }
 
 // ─── Small helpers ─────────────────────────────────────────────────────────
 
-function allocateWidths(columns, usable) {
+// Column widths for the table.
+//
+// This used to be a PURELY proportional split of the usable width by
+// `weight`, with no floor. With 14 columns on one landscape page that could
+// hand a column less room than a single word of its own header needs, and
+// PDFKit then breaks mid-word - which is what produced header cells reading
+// "PROPERT / Y TYPE", "TRANSA / CTION", "TALUK / A", "CREATE / D ON", and
+// pushed the wrapped second line out of the fixed 24pt header band.
+//
+// Now every column is guaranteed at least the width of its widest header
+// WORD (measured in the actual header font, including its characterSpacing,
+// plus the 6pt padding drawn either side); whatever is left over is shared
+// out by weight exactly as before. Headers therefore never break mid-word,
+// and wide-weighted columns still get the bulk of the space.
+function allocateWidths(doc, fonts, columns, usable, rows) {
   const weights = columns.map((c) => Math.max(0.2, Number(c.weight) || 1));
   const total = weights.reduce((a, b) => a + b, 0);
-  return weights.map((w) => Math.floor((w / total) * usable));
+  const proportional = () => weights.map((w) => Math.floor((w / total) * usable));
+
+  // Measure in the same font/size/spacing drawHeaderRow uses.
+  doc.font(fonts.bold).fontSize(HEADER_FONT_SIZE);
+  const headerMins = columns.map((c) => {
+    const label = String(c.label || c.key || '').toUpperCase();
+    const widest = label.split(/\s+/).reduce(
+      (m, word) => Math.max(m, doc.widthOfString(word, { characterSpacing: 0.4 })),
+      0,
+    );
+    return Math.ceil(widest) + HEADER_PAD + 1; // side padding, +1 for rounding
+  });
+
+  // Content floor: the widest VALUE in the column, so a cell renders on one
+  // line instead of wrapping. Only the header used to be measured, which is
+  // why "NSK-FLT-26-7C6M6WG" and "10/08/2026 05:49 PM" broke across three
+  // lines while their columns sat at the width of the word "ID".
+  //
+  // Capped at CONTENT_WIDTH_CAP of the page: one 200-character title must not
+  // be able to claim the whole row and squeeze every other column back into
+  // wrapping. A column over the cap is the only one that wraps.
+  const CONTENT_WIDTH_CAP = 0.22;
+  const capPx = Math.floor(usable * CONTENT_WIDTH_CAP);
+  doc.font(fonts.regular).fontSize(BODY_FONT_SIZE);
+  const contentMins = columns.map((c) => {
+    let widest = 0;
+    for (const row of (Array.isArray(rows) ? rows : [])) {
+      const text = stringify(row[c.key]);
+      if (!text) continue;
+      const w = doc.widthOfString(text);
+      if (w > widest) widest = w;
+      if (widest >= capPx) break; // already past the cap, no need to keep measuring
+    }
+    return Math.min(Math.ceil(widest) + CELL_PAD, capPx);
+  });
+
+  const mins = columns.map((_, i) => Math.max(headerMins[i], contentMins[i]));
+
+  const minTotal = mins.reduce((a, b) => a + b, 0);
+  // Pathological case (far too many columns to fit even the headers): keep
+  // the old behaviour rather than overflowing the page.
+  if (minTotal >= usable) return proportional();
+
+  // Constrained proportional allocation.
+  //
+  // Simply adding "min + share of the leftover" is wrong: the floors consume
+  // most of the page, leaving so little to share that `weight` stops mattering
+  // and TITLE - the widest-weighted, most useful column - came out the NARROWEST
+  // of all fourteen, because its own header word ("TITLE") is short.
+  //
+  // Instead: allocate by weight; any column that lands under its floor is
+  // pinned there and removed from the pool; the remaining width is then
+  // re-shared among the columns still above their floor. Repeat until stable.
+  // Columns that are not floor-bound therefore keep their full weighted share.
+  const widths = new Array(columns.length).fill(0);
+  const pinned = new Array(columns.length).fill(false);
+  let pool = usable;
+  let poolWeight = total;
+
+  for (let guard = 0; guard < columns.length + 1; guard += 1) {
+    let changed = false;
+    for (let i = 0; i < columns.length; i += 1) {
+      if (pinned[i]) continue;
+      const share = (weights[i] / poolWeight) * pool;
+      if (share < mins[i]) {
+        widths[i] = mins[i];
+        pinned[i] = true;
+        pool -= mins[i];
+        poolWeight -= weights[i];
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+
+  // Everything still unpinned splits what is left, by weight.
+  for (let i = 0; i < columns.length; i += 1) {
+    if (!pinned[i]) widths[i] = Math.floor((weights[i] / poolWeight) * pool);
+  }
+
+  // Hand the rounding remainder to the widest unpinned column so the row spans
+  // the full width - the header band and zebra stripes are drawn from this sum.
+  const used = widths.reduce((a, b) => a + b, 0);
+  if (used < usable) {
+    let target = 0;
+    for (let i = 1; i < columns.length; i += 1) {
+      if (!pinned[i] && widths[i] > widths[target]) target = i;
+    }
+    widths[target] += usable - used;
+  }
+  return widths;
 }
 
 function stringify(value) {

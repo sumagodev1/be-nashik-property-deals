@@ -192,9 +192,18 @@ async function updateSidebarAd(id, {
   sortOrder,
   isActive,
 }) {
+  // image_url uses COALESCE, NOT a bare placeholder.
+  //
+  // The update route validates with { stripUnknown: true } and its Joi schema
+  // (sidebarAdUpdateBody) has no imageUrl key, so imageUrl NEVER arrives here -
+  // it is always undefined. With a bare `image_url = ?` that became NULL, so
+  // every ordinary Save from the admin form silently erased the ad image and
+  // the website fell back to its static promo. COALESCE keeps the stored value
+  // whenever no new one is supplied, while still allowing a real replacement
+  // if a caller ever does pass imageUrl.
   await pool.query(
     `UPDATE cms_sidebar_ads
-     SET image_url = ?, title = ?, subtitle = ?, cta_text = ?, cta_url = ?,
+     SET image_url = COALESCE(?, image_url), title = ?, subtitle = ?, cta_text = ?, cta_url = ?,
          start_date = ?, end_date = ?, sort_order = ?, is_active = ?
      WHERE id = ?`,
     [

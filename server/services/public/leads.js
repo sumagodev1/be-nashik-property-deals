@@ -76,11 +76,60 @@ async function verify({ propertyId, actionType, name, mobile, email, code, messa
     code,
   });
 
-  const leadId = await leadsQ.create({
-    websitePropertyId: propertyId,
+  return record({
+    prop,
+    propertyId,
     actionType,
     buyerName: name.trim(),
     buyerMobile: mobile.trim(),
+    buyerEmail,
+    message,
+  });
+}
+
+/**
+ * One-step capture — no OTP. The website's Contact Seller / View Location
+ * forms post straight here: the visitor fills the form once and the lead is
+ * in Leads immediately. The captcha at the route is the spam gate, matching
+ * the public Contact Us form (general_enquiries.submit).
+ *
+ * start() + verify() are deliberately left in place, so the OTP gate can be
+ * switched back on from the frontend without a backend change.
+ */
+async function submit({ propertyId, actionType, name, mobile, email, message }) {
+  const prop = await publicProps.findActiveById(propertyId);
+  if (!prop) throw new HttpError(404, 'PROPERTY_UNAVAILABLE', 'This property is no longer available.');
+
+  // No code to deliver any more, so email is optional here — the mobile
+  // number is enough to reply on. Still normalised when one is given, so a
+  // buyer who types "Rohini@Gmail.Com" is stored the same as everyone else.
+  const buyerEmail = email && String(email).trim()
+    ? String(email).trim().toLowerCase()
+    : null;
+
+  return record({
+    prop,
+    propertyId,
+    actionType,
+    buyerName: name.trim(),
+    buyerMobile: mobile.trim(),
+    buyerEmail,
+    message,
+  });
+}
+
+/**
+ * Everything an accepted enquiry does once the buyer's details are known:
+ * create the lead, push it into the CRM, raise the in-app notification and
+ * send the admin email. Shared by verify() and submit() so the OTP and
+ * no-OTP paths can never drift apart.
+ */
+async function record({ prop, propertyId, actionType, buyerName, buyerMobile, buyerEmail, message }) {
+  const leadId = await leadsQ.create({
+    websitePropertyId: propertyId,
+    actionType,
+    buyerName,
+    buyerMobile,
     buyerEmail,
     message,
   });
@@ -91,8 +140,8 @@ async function verify({ propertyId, actionType, name, mobile, email, code, messa
   // buyer response is never blocked.
   const crmIngest = await ingestWebsiteLeadIntoCrm({
     leadId,
-    buyerName:   name.trim(),
-    buyerMobile: mobile.trim(),
+    buyerName,
+    buyerMobile,
     buyerEmail,
   });
 
@@ -100,7 +149,7 @@ async function verify({ propertyId, actionType, name, mobile, email, code, messa
     await notificationsQ.create({
       kind: 'lead.created',
       title: `New ${ACTION_LABELS[actionType]} enquiry: ${prop.title}`,
-      body: `${name.trim()} (${mobile.trim()}${buyerEmail ? ` / ${buyerEmail}` : ''}) clicked "${ACTION_LABELS[actionType]}" on ${prop.property_code}.`,
+      body: `${buyerName} (${buyerMobile}${buyerEmail ? ` / ${buyerEmail}` : ''}) clicked "${ACTION_LABELS[actionType]}" on ${prop.property_code}.`,
       relatedKind: 'lead',
       relatedId: leadId,
       moduleKey: MODULES.LEAD_MANAGEMENT,
@@ -116,8 +165,8 @@ async function verify({ propertyId, actionType, name, mobile, email, code, messa
     enquiryCode: crmIngest?.enquiry_code || null,
     source: 'website',
     enquiryTypeLabel: actionLabel,
-    name: name.trim(),
-    mobile: mobile.trim(),
+    name: buyerName,
+    mobile: buyerMobile,
     email: buyerEmail,
     message: message || null,
     propertyDetails: [{ code: prop.property_code, title: prop.title }],
@@ -134,4 +183,4 @@ async function verify({ propertyId, actionType, name, mobile, email, code, messa
   return { ok: true, leadId, property: { id: prop.id, code: prop.property_code } };
 }
 
-module.exports = { start, verify };
+module.exports = { start, verify, submit };

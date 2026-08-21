@@ -43,6 +43,8 @@ const enquiryQ = require('../../db/queries/enquiry_properties');
 const websiteQ = require('../../db/queries/website_properties');
 const masters = require('../../db/queries/masters');
 const locations = require('../../db/queries/locations');
+// Public image URLs for the in-body Images list (see publicImageHref).
+const { PUBLIC_URL_PREFIX, toAbsolutePublicUrl } = require('../files/publicUrl');
 // T-2026-149: Builder Master Share parity with PDF. Import the per-master
 // units listing so the Share renderer can emit one section per unit —
 // same field ordering + labels as the PDF export. Only imported here;
@@ -659,15 +661,38 @@ async function buildCompletionSections(propertyKind, row, dyn, details, alreadyR
 // collectImageAttachments / collectDocumentAttachments helpers; this
 // only adds an in-body reference so the recipient can see how many
 // files are attached and what they are called.
-function buildFileListSection(title, rows, itemLabel) {
+function buildFileListSection(title, rows, itemLabel, hrefFor) {
   const lines = [];
   if (!Array.isArray(rows) || rows.length === 0) return { title, lines };
   lines.push({ label: 'Count', value: String(rows.length) });
   rows.forEach((f, i) => {
     const name = (f && (f.original_name || f.stored_name)) || '';
-    if (name) lines.push({ label: `${itemLabel} ${i + 1}`, value: String(name) });
+    if (!name) return;
+    // `href` is optional. When present the renderers turn the filename into a
+    // link; when absent they fall back to the plain filename exactly as
+    // before — so a deployment with no PUBLIC_BASE_URL configured shows text
+    // rather than a broken relative link in someone's inbox.
+    const href = typeof hrefFor === 'function' ? hrefFor(f) : null;
+    lines.push(href ? { label: `${itemLabel} ${i + 1}`, value: String(name), href }
+      : { label: `${itemLabel} ${i + 1}`, value: String(name) });
   });
   return { title, lines };
+}
+
+// Absolute, publicly reachable URL for an uploaded IMAGE, or null.
+//
+// Only images get links. Documents live under uploads/private and are served
+// by an auth-gated route, so a link would 401/404 for the recipient — they
+// are attached to the mail instead, which is how the recipient opens them.
+//
+// Returns null unless the result is absolute: PUBLIC_BASE_URL is what makes
+// it so, and without it `toAbsolutePublicUrl` yields a site-relative path
+// that means nothing inside an email client.
+function publicImageHref(fileRow) {
+  const stored = fileRow && fileRow.stored_name;
+  if (!stored) return null;
+  const url = toAbsolutePublicUrl(`${PUBLIC_URL_PREFIX}/${stored}`);
+  return /^https?:\/\//i.test(String(url || '')) ? url : null;
 }
 
 // ── Section rendering ────────────────────────────────────────────────
@@ -825,7 +850,7 @@ function esc(s) {
     .replace(/>/g, '&gt;');
 }
 
-function renderTextBody({ userMessage, renderedSections, propertyUrl }) {
+function renderTextBody({ userMessage, renderedSections, propertyUrl, videoUrl }) {
   const parts = [];
   if (userMessage) parts.push(userMessage);
   for (const section of renderedSections) {
@@ -833,7 +858,14 @@ function renderTextBody({ userMessage, renderedSections, propertyUrl }) {
     parts.push('');
     parts.push(section.title);
     parts.push('-'.repeat(section.title.length));
-    for (const line of section.lines) parts.push(`${line.label}: ${line.value}`);
+    for (const line of section.lines) {
+      // Text clients get the URL spelled out — most linkify a bare http(s).
+      parts.push(line.href ? `${line.label}: ${line.value} — ${line.href}` : `${line.label}: ${line.value}`);
+    }
+  }
+  if (videoUrl) {
+    parts.push('');
+    parts.push(`Property Video: ${videoUrl}`);
   }
   if (propertyUrl) {
     parts.push('');
@@ -842,7 +874,7 @@ function renderTextBody({ userMessage, renderedSections, propertyUrl }) {
   return parts.join('\n').replace(/^\n+/, '');
 }
 
-function renderHtmlBody({ userMessage, renderedSections, propertyUrl }) {
+function renderHtmlBody({ userMessage, renderedSections, propertyUrl, videoUrl }) {
   const parts = [];
   parts.push('<div style="font-family:Arial,Helvetica,sans-serif;color:#111;font-size:14px;line-height:1.6;">');
   if (userMessage) {
@@ -856,11 +888,21 @@ function renderHtmlBody({ userMessage, renderedSections, propertyUrl }) {
       parts.push(
         '<tr>'
         + `<td style="padding:6px 12px 6px 0;color:#64748B;vertical-align:top;white-space:nowrap;">${esc(line.label)}</td>`
-        + `<td style="padding:6px 0;color:#0F172A;font-weight:600;">${esc(line.value)}</td>`
+        + `<td style="padding:6px 0;color:#0F172A;font-weight:600;">${
+          line.href
+            ? `<a href="${esc(line.href)}" style="color:#1A5E90;text-decoration:underline;" target="_blank" rel="noopener noreferrer">${esc(line.value)}</a>`
+            : esc(line.value)
+        }</td>`
         + '</tr>',
       );
     }
     parts.push('</table>');
+  }
+  if (videoUrl) {
+    parts.push(
+      '<p style="margin:16px 0 0;">Property Video: '
+      + `<a href="${esc(videoUrl)}" style="color:#C62828;">${esc(videoUrl)}</a></p>`,
+    );
   }
   if (propertyUrl) {
     parts.push(
@@ -873,9 +915,14 @@ function renderHtmlBody({ userMessage, renderedSections, propertyUrl }) {
 
 // ── Attachment collection ────────────────────────────────────────────
 
+// Returns { files, unreadable }. A row whose file is gone from disk used to
+// be skipped silently, so the mail body could list "3 Images" while the mail
+// itself carried none and nothing anywhere said why. The count is reported
+// back to the operator.
 async function collectImageAttachments(propertyKind, propertyId) {
   const rows = await propertyFiles.listForProperty(null, propertyKind, propertyId);
   const out = [];
+  let unreadable = 0;
   for (const f of rows) {
     const absolute = path.join(appRoot(), PUBLIC_DIR, f.stored_name);
     try {
@@ -886,14 +933,15 @@ async function collectImageAttachments(propertyKind, propertyId) {
         path: absolute,
         contentType: f.mime_type || 'application/octet-stream',
       });
-    } catch { /* silently skip missing file */ }
+    } catch { unreadable += 1; }
   }
-  return out;
+  return { files: out, unreadable };
 }
 
 async function collectDocumentAttachments(propertyKind, propertyId) {
   const rows = await documentUpload.listPropertyDocuments(propertyKind, propertyId);
   const out = [];
+  let unreadable = 0;
   for (const f of rows) {
     const absolute = path.join(appRoot(), PRIVATE_DIR, f.stored_name);
     try {
@@ -904,9 +952,9 @@ async function collectDocumentAttachments(propertyKind, propertyId) {
         path: absolute,
         contentType: f.mime_type || 'application/octet-stream',
       });
-    } catch { /* silently skip missing file */ }
+    } catch { unreadable += 1; }
   }
-  return out;
+  return { files: out, unreadable };
 }
 
 // ── Legacy (pre-dynamic-sections) rendering path ─────────────────────
@@ -951,6 +999,7 @@ async function shareProperty(propertyKind, propertyId, {
   includeImages = true,
   includeDocuments = true,
   includePropertyUrl = true,
+  completeMissingFields = true,
 } = {}) {
   if (!['inventory', 'enquiry', 'website'].includes(propertyKind)) {
     throw new HttpError(400, 'BAD_KIND', 'Invalid property kind');
@@ -1039,12 +1088,35 @@ async function shareProperty(propertyKind, propertyId, {
   // phone / email / aadhaar / key-person / staff / etc.) remain excluded
   // by the existing DENY_SUBSTRINGS filter — the completion pass runs
   // through isDeniedKey too.
-  const completionSections = await buildCompletionSections(
-    propertyKind, row, dyn, details, alreadyRenderedKeys,
-  );
-  for (const s of completionSections) renderedSections.push(s);
+  // QA fix: this pass used to run UNCONDITIONALLY, which silently undid the
+  // operator's choices - every field they unticked in the Share dialog came
+  // straight back under a completion header, so the checkbox tree had no
+  // effect on the email at all. It now runs only when the caller did not
+  // trim the selection (completeMissingFields), so leaving everything ticked
+  // still produces the identical full email, while unticking genuinely omits.
+  if (completeMissingFields) {
+    const completionSections = await buildCompletionSections(
+      propertyKind, row, dyn, details, alreadyRenderedKeys,
+    );
+    for (const s of completionSections) renderedSections.push(s);
+  }
 
   const propertyUrl = includePropertyUrl ? buildPropertyUrl(propertyKind, propertyId) : null;
+
+  // The Share dialog checkbox is labelled "Property Video URL", but nothing
+  // here ever rendered that value: includePropertyUrl only drove
+  // buildPropertyUrl() (a link back to the property PAGE, itself null unless
+  // ADMIN_PANEL_URL / PUBLIC_BASE_URL are configured), and the completion
+  // pass walks top-level columns + details.dynamicData - so a link stored at
+  // details.propertyLink was missed by every path. Rendered as a real anchor
+  // below so it is clickable in the mail client.
+  //
+  // Only http(s) is accepted: this string is operator-supplied and goes
+  // straight into an href, so a javascript:/data: value must never be linked.
+  const rawVideoUrl = details && typeof details.propertyLink === 'string'
+    ? details.propertyLink.trim()
+    : '';
+  const videoUrl = includePropertyUrl && /^https?:\/\//i.test(rawVideoUrl) ? rawVideoUrl : null;
 
   // Fetch image / document rows once and use them for both the in-body
   // listing (count + filenames per the completeness requirement) and the
@@ -1058,23 +1130,26 @@ async function shareProperty(propertyKind, propertyId, {
       : Promise.resolve([]),
   ]);
 
-  const imagesBodySection = buildFileListSection('Images', imageRows, 'Image');
+  const imagesBodySection = buildFileListSection('Images', imageRows, 'Image', publicImageHref);
+  // No link builder for documents — private files, see publicImageHref.
   const documentsBodySection = buildFileListSection('Documents', documentRows, 'Document');
   if (imagesBodySection.lines.length > 0) renderedSections.push(imagesBodySection);
   if (documentsBodySection.lines.length > 0) renderedSections.push(documentsBodySection);
 
+  const EMPTY_COLLECTION = { files: [], unreadable: 0 };
   const [images, documents] = await Promise.all([
-    includeImages    ? collectImageAttachments(propertyKind, propertyId)    : Promise.resolve([]),
-    includeDocuments ? collectDocumentAttachments(propertyKind, propertyId) : Promise.resolve([]),
+    includeImages    ? collectImageAttachments(propertyKind, propertyId)    : Promise.resolve(EMPTY_COLLECTION),
+    includeDocuments ? collectDocumentAttachments(propertyKind, propertyId) : Promise.resolve(EMPTY_COLLECTION),
   ]);
-  const attachments = [...images, ...documents];
+  const attachments = [...images.files, ...documents.files];
+  const unreadableFiles = images.unreadable + documents.unreadable;
 
   const finalSubject = subject && String(subject).trim()
     ? String(subject).trim()
     : `Property Details - ${row.title || row.property_code || 'Property'}`;
 
-  const text = renderTextBody({ userMessage, renderedSections, propertyUrl });
-  const html = renderHtmlBody({ userMessage, renderedSections, propertyUrl });
+  const text = renderTextBody({ userMessage, renderedSections, propertyUrl, videoUrl });
+  const html = renderHtmlBody({ userMessage, renderedSections, propertyUrl, videoUrl });
 
   try {
     // Central sender resolves From/Sender/Reply-To from the active Email
@@ -1102,6 +1177,14 @@ async function shareProperty(propertyKind, propertyId, {
     sentTo: valid,
     skipped: invalid,
     attachmentCount: attachments.length,
+    imageCount: images.files.length,
+    documentCount: documents.files.length,
+    // Rows that exist but whose file could not be read from disk.
+    unreadableFiles,
+    // True when the operator asked for the property link but no base URL is
+    // configured (PUBLIC_BASE_URL / ADMIN_PANEL_URL), so the mail went out
+    // without one. Previously indistinguishable from "link included".
+    propertyUrlOmitted: Boolean(includePropertyUrl && !propertyUrl),
     sectionsRendered: renderedSections.filter((s) => s.lines.length > 0).map((s) => s.title),
   };
 }

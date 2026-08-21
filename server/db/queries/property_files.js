@@ -49,7 +49,17 @@ async function insertMany(conn, rows) {
 async function findById(conn, id) {
   const c = conn || pool;
   const [rows] = await c.query(
-    `SELECT id, property_kind, property_id, original_name, stored_name, mime_type, size_bytes
+    // `file_kind` is REQUIRED in this projection. All three document-download
+    // routes (admin/inventory-properties, admin/enquiry-properties,
+    // admin/website-properties) guard with
+    //     file.file_kind !== 'document'  ->  404
+    // and this SELECT used to omit the column, so `file.file_kind` was
+    // `undefined`, the comparison was unconditionally true, and EVERY document
+    // download 404'd on every surface — the row and the file on disk were both
+    // fine. The guard itself is correct and worth keeping (it stops an image id
+    // being fetched through the documents endpoint); it just needs the column
+    // it tests.
+    `SELECT id, property_kind, property_id, file_kind, original_name, stored_name, mime_type, size_bytes
      FROM property_files
      WHERE id = ?
      LIMIT 1`,

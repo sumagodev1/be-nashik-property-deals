@@ -266,6 +266,54 @@ async function listEnquiries({
   }
   const where = clauses.join(' AND ');
 
+  // Shared FROM/JOIN block. The page-of-parents query, the count and the row
+  // fetch must all see exactly the same joins, because `where` above filters
+  // on l / ep / wp columns — if they drifted apart the count would stop
+  // agreeing with the rows.
+  const FROM_JOINS = `
+       FROM crm_enquiries e
+       JOIN crm_parents p ON p.id = e.parent_id
+       LEFT JOIN leads l
+         ON e.source_type = 'website'
+        AND l.id = e.source_id
+        AND l.deleted_at IS NULL
+       LEFT JOIN website_properties wp
+         ON wp.id = l.website_property_id
+        AND wp.deleted_at IS NULL
+       LEFT JOIN enquiry_properties ep
+         ON e.source_type = 'npd'
+        AND ep.id = e.source_id
+        AND ep.deleted_at IS NULL`;
+
+  // ── Paginate by PARENT, not by enquiry ────────────────────────────────
+  //
+  // The list renders one row per parent (the FE groups sub-enquiries under
+  // it), but this query used to LIMIT over crm_enquiries and report
+  // FOUND_ROWS() — the count of enquiries. The two never agreed: a parent
+  // with 21 sub-enquiries consumed 22 of a 25-row page, so the operator saw
+  // 4 rows under a footer claiming "1-25 of 56", and the Sr column jumped
+  // between pages because it is derived from page * pageSize.
+  //
+  // Selecting the page of parent_ids first, then fetching every matching
+  // enquiry for those parents, makes one page mean N customer rows.
+  const [parentPage] = await pool.query(
+    `SELECT e.parent_id, MAX(e.created_at) AS latest_at
+       ${FROM_JOINS}
+      WHERE ${where}
+      GROUP BY e.parent_id
+      ORDER BY latest_at DESC
+      LIMIT ? OFFSET ?`,
+    [...params, limit, offset],
+  );
+  const parentIds = parentPage.map((r) => r.parent_id);
+
+  const [[{ total }]] = await pool.query(
+    `SELECT COUNT(DISTINCT e.parent_id) AS total
+       ${FROM_JOINS}
+      WHERE ${where}`,
+    params,
+  );
+
   // Explicit column list: never SELECT * on a joined result, both to
   // avoid column-name collisions (id!) and to make the display
   // contract explicit. The FE reads live_name / live_mobile /
@@ -273,8 +321,15 @@ async function listEnquiries({
   // duplicate-conflict + backfill tooling can still access them
   // without a separate round-trip -- they are NOT rendered by the
   // Phase-2 CrmList after T-2026-156.
-  const [rows] = await pool.query(
-    `SELECT SQL_CALC_FOUND_ROWS
+  // Guard the empty page: `IN ()` and `FIELD()` with no arguments are both
+  // SQL syntax errors, so an out-of-range page or a filter matching nothing
+  // must skip this query rather than build one.
+  let rows = [];
+  if (parentIds.length) {
+    [rows] = await pool.query(
+    // SQL_CALC_FOUND_ROWS dropped: the total is now COUNT(DISTINCT parent_id)
+    // above, because a page is measured in parents rather than enquiries.
+    `SELECT
             e.id, e.parent_id, e.enquiry_code, e.source_type, e.source_id,
             e.status_code,
             e.lead_stage_code, e.lead_status_code, e.lead_rating_code,
@@ -311,25 +366,13 @@ async function listEnquiries({
                                 AS live_npd_owner_email,
             ep.property_code    AS live_npd_property_code,
             ep.title            AS live_npd_property_title
-       FROM crm_enquiries e
-       JOIN crm_parents p ON p.id = e.parent_id
-       LEFT JOIN leads l
-         ON e.source_type = 'website'
-        AND l.id = e.source_id
-        AND l.deleted_at IS NULL
-       LEFT JOIN website_properties wp
-         ON wp.id = l.website_property_id
-        AND wp.deleted_at IS NULL
-       LEFT JOIN enquiry_properties ep
-         ON e.source_type = 'npd'
-        AND ep.id = e.source_id
-        AND ep.deleted_at IS NULL
+       ${FROM_JOINS}
       WHERE ${where}
-      ORDER BY e.created_at DESC
-      LIMIT ? OFFSET ?`,
-    [...params, limit, offset],
-  );
-  const [[{ total }]] = await pool.query(`SELECT FOUND_ROWS() AS total`);
+        AND e.parent_id IN (${parentIds.map(() => '?').join(',')})
+      ORDER BY FIELD(e.parent_id, ${parentIds.map(() => '?').join(',')}), e.created_at DESC`,
+      [...params, ...parentIds, ...parentIds],
+    );
+  }
 
   // Count orphans (rows this operator's filters WOULD have matched,
   // except for the orphan guard) so the FE can surface the hint.

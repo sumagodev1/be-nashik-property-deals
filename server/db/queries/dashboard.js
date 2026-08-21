@@ -176,17 +176,33 @@ async function topAreasWebsite({ limit = 10 } = {}) {
   return rows.map((r) => ({ location: r.location, count: Number(r.count) }));
 }
 
+// Facets on the CURATED Area, not the free-text `location` column.
+//
+// `location` holds a geocoded address string ("Anandwali, Nashik, Nashik
+// Subdistrict, Nashik District, Maharashtra, 422013, India"), so grouping on
+// it produced one bar per property with a barely-readable label - which is
+// what the client reported. `area_name` is the value picked from the Area
+// master, so equal areas actually collapse into one bar.
+//
+// Rows with no Area are excluded rather than bucketed into an "Unknown" bar:
+// this card ranks the top areas, and a giant bucket of un-tagged records
+// would dominate it while saying nothing. Note every property predating the
+// Area field has NULL here, so the card stays empty until Areas are filled.
+//
+// The response key stays `location` on purpose - it is the shape the three
+// dashboards already map (d.location -> label), and renaming it would break
+// them for no gain.
 async function topAreasInventory({ limit = 10 } = {}) {
   const [rows] = await pool.query(
-    `SELECT location, COUNT(*) AS count
+    `SELECT area_name, COUNT(*) AS count
      FROM inventory_properties
-     WHERE deleted_at IS NULL AND location IS NOT NULL AND location != ''
-     GROUP BY location
-     ORDER BY count DESC, location ASC
+     WHERE deleted_at IS NULL AND area_name IS NOT NULL AND area_name != ''
+     GROUP BY area_name
+     ORDER BY count DESC, area_name ASC
      LIMIT ?`,
     [limit],
   );
-  return rows.map((r) => ({ location: r.location, count: Number(r.count) }));
+  return rows.map((r) => ({ location: r.area_name, count: Number(r.count) }));
 }
 
 /**
@@ -220,7 +236,7 @@ async function listingsByBucket({ granularity = 'daily', dateFrom = null, dateTo
   }
 
   // Both queries filter to the earliest bucket boundary to keep result rows small.
-  const since = buckets.length > 0 ? buckets[0] : new Date().toISOString().slice(0, 10);
+  const since = bucketToDate(buckets.length > 0 ? buckets[0] : null);
 
   const [websiteRows] = await pool.query(
     `SELECT ${bucketSql} AS bucket, COUNT(*) AS count
@@ -289,6 +305,22 @@ function buildWeekBuckets(weeks) {
   return out;
 }
 
+/**
+ * Turn a bucket key into a date MySQL can compare against a DATETIME column.
+ *
+ * Monthly buckets are 'YYYY-MM'. Passing that straight into
+ * `created_at >= ?` makes MySQL raise "Truncated incorrect datetime value"
+ * and fall back to lenient coercion; under strict SQL mode it is an error,
+ * which would break every monthly chart. Daily and weekly buckets are
+ * already 'YYYY-MM-DD' and pass through untouched.
+ */
+function bucketToDate(bucket) {
+  if (!bucket) return new Date().toISOString().slice(0, 10);
+  const s = String(bucket);
+  if (/^\d{4}-\d{2}$/.test(s)) return `${s}-01`;
+  return s;
+}
+
 function buildMonthBuckets(months) {
   const out = [];
   const now = new Date();
@@ -336,7 +368,7 @@ async function sellerOnboardingByBucket({ granularity = 'daily', dateFrom = null
     buckets = buildDayBuckets(30);
   }
 
-  const since = buckets.length > 0 ? buckets[0] : new Date().toISOString().slice(0, 10);
+  const since = bucketToDate(buckets.length > 0 ? buckets[0] : null);
 
   const [rows] = await pool.query(
     `SELECT ${bucketSql} AS bucket,
@@ -564,7 +596,7 @@ async function listingsByBucketSingle(table, { granularity = 'daily', dateFrom =
     buckets = buildDayBuckets(30);
   }
 
-  const since = buckets.length > 0 ? buckets[0] : new Date().toISOString().slice(0, 10);
+  const since = bucketToDate(buckets.length > 0 ? buckets[0] : null);
 
   const [rows] = await pool.query(
     `SELECT ${bucketSql} AS bucket, COUNT(*) AS count

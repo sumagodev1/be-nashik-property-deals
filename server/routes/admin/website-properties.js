@@ -26,8 +26,16 @@ const subIdParam = Joi.object({
 });
 
 // Every property field is optional at the API layer. Only max-length caps
-// remain — no min lengths, no format patterns, no `.required()`.
-const titleField = Joi.string().trim().max(255).allow('', null);
+// remain — no min lengths, no format
+// patterns (one exception: `title`, below), no `.required()`.
+// Title stays OPTIONAL: .allow() short-circuits every other rule, so blank
+// and omitted titles pass untouched. Only a non-empty, letter-free title is
+// rejected. Unanchored, so "3 BHK Flat - Gangapur Rd." still passes.
+// Mirrors titleRules() on the FE, message included, and applies on the draft
+// path too (one schema serves both), which is where QA hit it.
+const titleField = Joi.string().trim().max(255).allow('', null)
+  .pattern(/[A-Za-z]/)
+  .messages({ 'string.pattern.base': 'Title must contain at least one letter' });
 const locField = Joi.string().trim().max(255).allow('', null);
 const descField = Joi.string().trim().max(2000).allow('', null);
 
@@ -244,6 +252,11 @@ const shareBody = Joi.object({
   includeImages:      Joi.boolean().default(true),
   includeDocuments:   Joi.boolean().default(true),
   includePropertyUrl: Joi.boolean().default(true),
+  // false when the operator unticked something in the Share dialog, which
+  // tells the service to skip its completion pass and send exactly the
+  // chosen sections. Defaults true so any caller that omits it keeps the
+  // previous "everything" behaviour.
+  completeMissingFields: Joi.boolean().default(true),
 });
 
 router.post(

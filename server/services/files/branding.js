@@ -20,7 +20,9 @@ const DEFAULTS = Object.freeze({
   altPhone: '',
   email: '',
   address: '',
-  website: 'www.nasikpropertydeals.com',
+  // The official site address, printed in the PDF header. Not a CMS setting —
+  // there is no key for it — so it lives here.
+  website: 'nasikpropertydeals.com',
   gst: '',
 });
 

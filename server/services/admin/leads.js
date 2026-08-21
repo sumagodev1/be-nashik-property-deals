@@ -284,9 +284,9 @@ const LEAD_COLUMNS = [
     value: (r) => r.property_title || '' },
   { label: 'Location', key: 'location',      width: 26, pdf: { weight: 2.0 },
     value: (r) => r.property_location || '' },
-  { label: 'Message',  key: 'message',       width: 40,
+  { label: 'Message',  key: 'message',       width: 40, pdf: { weight: 2.4 },
     value: (r) => r.message || '' },
-  { label: 'Notes',    key: 'notes',         width: 30,
+  { label: 'Notes',    key: 'notes',         width: 30, pdf: { weight: 1.8 },
     value: (r) => r.notes || '' },
 ];
 
@@ -327,8 +327,14 @@ async function exportXlsx(filters) {
   });
 }
 
-// PDF only shows the print-friendly columns (no Message / Notes — too verbose).
-const LEAD_PDF_KEYS = ['sr', 'date', 'status', 'action', 'buyer', 'mobile', 'email', 'propertyCode', 'propertyTitle', 'location'];
+// The PDF used to drop Message and Notes as "too verbose", which left it two
+// columns short of the Excel export and made the two files disagree about what
+// a lead record contains.
+//
+// They are back: measured against allocateWidths, all twelve columns fit the
+// 770pt of usable landscape width with every header word intact, and the row
+// height already grows to fit wrapped cell text.
+const LEAD_PDF_KEYS = ['sr', 'date', 'status', 'action', 'buyer', 'mobile', 'email', 'propertyCode', 'propertyTitle', 'location', 'message', 'notes'];
 const LEAD_PDF_COLUMNS = LEAD_COLUMNS
   .filter((c) => LEAD_PDF_KEYS.includes(c.key))
   .map((c) => ({ label: c.label, key: c.key, ...(c.pdf || {}) }));

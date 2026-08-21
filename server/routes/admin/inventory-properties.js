@@ -1,7 +1,7 @@
 const express = require('express');
 const Joi = require('joi');
 
-const { validate } = require('../../middleware/validate');
+const { validate, summarizeDetails: summarizeDetailMessages } = require('../../middleware/validate');
 const { requireAuth, requireModule, requireModuleWriteOnMutation } = require('../../middleware/auth');
 const { imageUploadMiddleware, documentUploadMiddleware } = require('../../middleware/imageMulter');
 const idempotency = require('../../middleware/idempotency');
@@ -65,7 +65,8 @@ const subIdParam = Joi.object({
 // payloads. Callers can send any subset of these keys; missing/empty values
 // are treated as "not provided" and never rejected. Only structural sanity
 // caps remain (max lengths) to prevent abuse — no min lengths, no format
-// patterns, no `.required()` for property fields.
+// patterns (one exception: `title`, below), no `.required()` for property
+// fields.
 //
 // The 7 product-mandatory fields (Property Description, Owner Contact Name,
 // Owner Contact Number, District, Taluka, Village, Address) ARE enforced —
@@ -74,7 +75,14 @@ const subIdParam = Joi.object({
 // so half-filled records can still be parked. Applies to every Inventory
 // AND Enquiry property form. Website Self Registration uses a separate
 // route surface and is NOT affected.
-const titleField = Joi.string().trim().max(255).allow('', null);
+// Title stays OPTIONAL: .allow() short-circuits every other rule, so blank
+// and omitted titles pass untouched. Only a non-empty, letter-free title is
+// rejected. Unanchored, so "3 BHK Flat - Gangapur Rd." still passes.
+// Mirrors titleRules() on the FE, message included, and applies on the draft
+// path too (one schema serves both), which is where QA hit it.
+const titleField = Joi.string().trim().max(255).allow('', null)
+  .pattern(/[A-Za-z]/)
+  .messages({ 'string.pattern.base': 'Title must contain at least one letter' });
 const descField = Joi.string().trim().max(2000).allow('', null);
 const locField = Joi.string().trim().max(255).allow('', null);
 const propertyTypeField = Joi.string().trim().max(255).allow('', null);
@@ -145,6 +153,10 @@ const listQuery = Joi.object({
   propertyVarietyLabel: Joi.string().trim().max(255).allow('').optional(),
   status: masterCodeField.optional(),
   location: Joi.string().trim().max(255).optional(),
+  // Curated Area filter. ONE param name for both surfaces; each query maps
+  // it to its own storage - Inventory to the new area_name column, Enquiry
+  // to its existing location column where its Area dropdown already lands.
+  area: Joi.string().trim().max(255).optional(),
   priceMin: Joi.number().min(0).optional(),
   priceMax: Joi.number().min(0).optional(),
   // T-2026-109: Budget Range filter — Minimum / Maximum Budget in Rs.
@@ -175,7 +187,7 @@ const listQuery = Joi.object({
     'any.only': 'draftStatus must be either "all" or "draft".',
   }),
   sort: Joi.string()
-    .pattern(/^(created_at|price|location|property_type|title):(asc|desc)$/)
+    .pattern(/^(created_at|property_code|price|location|property_type|title):(asc|desc)$/)
     .default('title:asc'),
 });
 
@@ -255,6 +267,10 @@ const propertyBody = Joi.object({
   // T-2026-048: reverse-geocoded human-readable address paired with lat/lng.
   formattedAddress: Joi.string().trim().max(300).allow('', null).optional(),
   pincode: Joi.string().trim().max(20).allow('', null).optional(),
+  // Curated Area (locality) picked from the `location` master. Optional, and
+  // deliberately NOT confused with areaValue/areaUnit directly below, which
+  // carry the property SIZE.
+  areaName: Joi.string().trim().max(255).optional().allow('', null),
   areaValue: Joi.number().min(0).max(AREA_MAX).optional().allow(null, ''),
   areaUnit: Joi.string().max(50).optional().allow('', null),
   bhk: masterCodeField.optional().allow('', null),
@@ -339,7 +355,7 @@ function validateDynamicDataMiddleware(req, res, next) {
     const agrStart = typeof body.agreementStartDate === 'string' ? body.agreementStartDate.trim() : '';
     const agrEnd = typeof body.agreementEndDate === 'string' ? body.agreementEndDate.trim() : '';
     if (agrStart && agrEnd && agrEnd < agrStart) {
-      return next(new HttpError(400, 'VALIDATION_ERROR', 'Validation failed.', [{
+      return next(new HttpError(400, 'VALIDATION_ERROR', 'Agreement End Date cannot be earlier than Agreement Start Date.', [{
         path: 'agreementEndDate',
         message: 'Agreement End Date cannot be earlier than Agreement Start Date.',
       }]));
@@ -361,7 +377,7 @@ function validateDynamicDataMiddleware(req, res, next) {
     }
     if (!dyn) {
       if (mandatoryDynErrors.length > 0) {
-        return next(new HttpError(400, 'VALIDATION_ERROR', 'Validation failed.', mandatoryDynErrors));
+        return next(new HttpError(400, 'VALIDATION_ERROR', summarizeDetailMessages(mandatoryDynErrors), mandatoryDynErrors));
       }
       return next();
     }
@@ -376,7 +392,7 @@ function validateDynamicDataMiddleware(req, res, next) {
           message: e.message,
         })),
       ];
-      return next(new HttpError(400, 'VALIDATION_ERROR', 'Validation failed.', details));
+      return next(new HttpError(400, 'VALIDATION_ERROR', summarizeDetailMessages(details), details));
     }
     // Advanced Land Pricing recompute (2026-08-05): recompute the
     // derived-value fields on Land Sale / Purchase and SEZ Land Sale /
@@ -529,6 +545,7 @@ router.post('/', idempotency(), validate(propertyBody), validateDynamicDataMiddl
       propertyType: req.body.propertyType,
       transactionType: req.body.transactionType,
       location: req.body.location || '',
+      areaName: req.body.areaName || '',
       createdByAdminId: req.auth.role === 'admin' ? Number(req.auth.sub) : null,
     });
     res.status(201).json(created);
@@ -552,6 +569,7 @@ router.put('/:id', validate(idParam, 'params'), validate(propertyBody), validate
       propertyType: req.body.propertyType,
       transactionType: req.body.transactionType,
       location: req.body.location || '',
+      areaName: req.body.areaName || '',
     }));
   } catch (err) {
     next(err);
@@ -561,7 +579,43 @@ router.put('/:id', validate(idParam, 'params'), validate(propertyBody), validate
 router.patch('/:id/status', idempotency(), validate(idParam, 'params'), validate(statusBody), async (req, res, next) => {
   try {
     const changedBy = req.auth?.role === 'admin' ? Number(req.auth.sub) : null;
-    res.json(await management.updateStatus(req.params.id, req.body.status, req.body.note || null, changedBy));
+    // `req` is forwarded so the service can append the Status History entry
+    // to audit_log (it needs the actor + ip off the request). Optional on the
+    // service side, so any other caller keeps working unchanged.
+    res.json(await management.updateStatus(req.params.id, req.body.status, req.body.note || null, changedBy, req));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Status History for one property: every recorded status change, newest
+// first, each with the from/to codes, the operator note if one was typed,
+// who changed it and when. Reads audit_log (see management.listStatusHistory
+// for why this is not served from the /admin/audit-log router).
+router.get('/:id/status-history', validate(idParam, 'params'), async (req, res, next) => {
+  try {
+    const { rows, total } = await management.listStatusHistory(req.params.id);
+    // `metadata` is a JSON column and MariaDB returns it as a string, so
+    // parse defensively - same approach as the audit-log router.
+    const parse = (v) => {
+      if (v === null || v === undefined) return {};
+      if (typeof v === 'object') return v;
+      try { return JSON.parse(v) || {}; } catch { return {}; }
+    };
+    res.json({
+      data: rows.map((r) => {
+        const m = parse(r.metadata);
+        return {
+          id: r.id,
+          from: m.from || null,
+          to: m.to || null,
+          note: m.note || null,
+          actorName: r.actor_name || null,
+          changedAt: r.created_at,
+        };
+      }),
+      total,
+    });
   } catch (err) {
     next(err);
   }
@@ -641,6 +695,11 @@ const shareBody = Joi.object({
   includeImages:      Joi.boolean().default(true),
   includeDocuments:   Joi.boolean().default(true),
   includePropertyUrl: Joi.boolean().default(true),
+  // false when the operator unticked something in the Share dialog, which
+  // tells the service to skip its completion pass and send exactly the
+  // chosen sections. Defaults true so any caller that omits it keeps the
+  // previous "everything" behaviour.
+  completeMissingFields: Joi.boolean().default(true),
 });
 
 router.post(

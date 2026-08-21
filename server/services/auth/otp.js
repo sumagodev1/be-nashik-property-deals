@@ -214,4 +214,4 @@ function buildSmsBody(code, label) {
   return `Nasik Property Deals: your ${label} code is ${code}. Valid for ${TTL_MINUTES} min. Do not share.`;
 }
 
-module.exports = { issue, verify };
+module.exports = { issue, verify, TTL_MINUTES };

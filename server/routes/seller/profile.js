@@ -13,9 +13,21 @@ const router = express.Router();
 router.use(requireAuth, requireRole('seller'));
 
 const LETTERS_ONLY = /^[A-Za-z\s]+$/;
-const emailField = Joi.string().email({ tlds: { allow: false } }).max(255);
-const phoneField = Joi.string().trim().pattern(/^\d{10}$/)
-  .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number' });
+// .lowercase() added: addresses are case-insensitive, but the value was stored
+// exactly as typed, so a seller who signed up as "Tester@Sumagoinfotech.Com"
+// saw that back on their profile. validate() runs with convert:true and
+// assigns the converted value to req.body, which the handler below reads.
+//
+// Safe for existing rows: sellers.email is utf8mb4_unicode_ci, so the
+// EMAIL_TAKEN duplicate check still matches regardless of case.
+const emailField = Joi.string().trim().lowercase().email({ tlds: { allow: false } })
+  .max(255);
+// Indian mobile numbers always begin 6, 7, 8 or 9. This was /^\d{10}$/ - any
+// ten digits - while the profile form already enforced the stricter rule, so
+// an alternate contact of 1212121212 was refused by the UI but accepted by a
+// direct API call. No stored alternate_contact fails the tighter pattern.
+const phoneField = Joi.string().trim().pattern(/^[6-9]\d{9}$/)
+  .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number starting with 6-9' });
 const nameField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY)
   .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
 

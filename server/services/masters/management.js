@@ -66,8 +66,7 @@ const LOOKUP_KEYS = Object.freeze([
   'sez_type', 'tdr_zone', 'pre_leased_project_type', 'bank_auction_pending_dues',
   // Bunglow MD-driven masters — added in migration 030. The Bunglow inventory
   // forms (bungalow-forms.md) drive every multi-option field through these.
-  'bunglow_size', 'bunglow_facing_specific', 'bunglow_facing_any',
-  'bunglow_age_specific', 'bunglow_condition', /* 'bunglow_status', — DISABLED (T-2026-081): per-property Status masters retired in favour of the global `status_type` (Inventory) / `enquiry_status` (Enquiry) masters. Rows remain in master_lookups for backward-compat; only the key registration is off. */
+  'bunglow_size', 'bunglow_age_specific', 'bunglow_condition', /* 'bunglow_status', — DISABLED (T-2026-081): per-property Status masters retired in favour of the global `status_type` (Inventory) / `enquiry_status` (Enquiry) masters. Rows remain in master_lookups for backward-compat; only the key registration is off. */
   'bunglow_defect_built', 'bunglow_defect_community',
   'bunglow_lease_monthly_budget', 'bunglow_lease_yearly_budget',
   'bunglow_deposit_budget', 'bunglow_rent_monthly_budget',
@@ -80,8 +79,7 @@ const LOOKUP_KEYS = Object.freeze([
   // `rowhouse_age_range` mirrors `bunglow_age_range`; `amenities_rowhouse_furniture`
   // mirrors `amenities_bunglow_furniture`.
   'rowhouse_property_position',
-  'rowhouse_size', 'rowhouse_facing_specific', 'rowhouse_facing_any',
-  'rowhouse_age_specific', 'rowhouse_age_range', 'rowhouse_condition',
+  'rowhouse_size', 'rowhouse_age_specific', 'rowhouse_age_range', 'rowhouse_condition',
   'rowhouse_defect_built', 'rowhouse_defect_community',
   'rowhouse_lease_monthly_budget', 'rowhouse_lease_yearly_budget',
   'rowhouse_deposit_budget', 'rowhouse_rent_monthly_budget',
@@ -90,7 +88,6 @@ const LOOKUP_KEYS = Object.freeze([
   'amenities_rowhouse_furniture',
   // Commercial Space MD-driven masters — added in migration 031. Sourced
   // from `reference of forms/Commercial Space Registration Forms.md`.
-  'commercial_facing_specific', 'commercial_facing_any',
   'commercial_age_specific', 'commercial_condition', /* 'commercial_status', — DISABLED (T-2026-081): per-property Status masters retired */
   'commercial_defect_built', 'commercial_defect_community',
   'commercial_lease_monthly_budget', 'commercial_lease_yearly_budget',
@@ -98,8 +95,7 @@ const LOOKUP_KEYS = Object.freeze([
   'commercial_booking_amount_fixed',
   // Flat MD-driven masters — added in migration 032. Sourced from
   // `reference of forms/Flat Registration Forms.md`.
-  'flat_type', 'flat_size', 'flat_facing_specific', 'flat_facing_any',
-  'flat_age_specific', 'flat_condition', /* 'flat_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'flat_nature',
+  'flat_type', 'flat_size', 'flat_age_specific', 'flat_condition', /* 'flat_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'flat_nature',
   'flat_parking_type', 'flat_no_of_car_parking',
   'flat_defect_built', 'flat_defect_community',
   'flat_lease_monthly_budget', 'flat_lease_yearly_budget',
@@ -108,22 +104,19 @@ const LOOKUP_KEYS = Object.freeze([
   'flat_indoor_amenities', 'flat_outdoor_amenities',
   // Hostel MD-driven masters — added in migration 033. Sourced from
   // `reference of forms/Hostel Registration Form.md`.
-  'hostel_category', 'hostel_rooms_count', 'hostel_facing',
-  'hostel_condition', /* 'hostel_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'hostel_amount_budget',
+  'hostel_category', 'hostel_rooms_count', 'hostel_condition', /* 'hostel_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'hostel_amount_budget',
   // Land MD-driven masters — added in migration 034. Sourced from
   // `reference of forms/Land Registration Forms.md`.
   'land_sub_type', 'land_category_residential', 'land_category_commercial',
-  'land_category_industrial', 'land_facing', /* 'land_status', — DISABLED (T-2026-081): per-property Status masters retired */
+  'land_category_industrial', /* 'land_status', — DISABLED (T-2026-081): per-property Status masters retired */
   'land_area_unit', 'land_lease_monthly_budget', 'land_lease_yearly_budget',
   'land_deposit_budget',
   // Paying Guest MD-driven masters — added in migration 035. Sourced from
   // `reference of forms/Paying Guest Registration Forms.md`.
-  'paying_guest_size', 'paying_guest_floor', 'paying_guest_facing',
-  'paying_guest_condition', /* 'paying_guest_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'paying_guest_defect_built',
+  'paying_guest_size', 'paying_guest_floor', 'paying_guest_condition', /* 'paying_guest_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'paying_guest_defect_built',
   // Plot MD-driven masters — added in migration 036. Sourced from
   // `reference of forms/Plot Registration Form.md`.
-  'plot_sub_residential', 'plot_sub_commercial', 'plot_facing',
-  'plot_corner', 'plot_layout_status', /* 'plot_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'plot_area_unit',
+  'plot_sub_residential', 'plot_sub_commercial', 'plot_corner', 'plot_layout_status', /* 'plot_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'plot_area_unit',
   'plot_rate_unit', 'plot_amenities', 'plot_emi_count',
   'plot_emi_booking_percent', 'plot_lease_monthly_budget',
   'plot_lease_yearly_budget', 'plot_deposit_budget',
@@ -136,14 +129,14 @@ const LOOKUP_KEYS = Object.freeze([
   // Shop MD-driven masters — added in migration 038. Sourced from
   // `reference of forms/Shop Registration Forms.md`. (`shop_expected_tenant`
   // is a legacy key — only its seed gets topped up.)
-  'shop_facing_specific', 'shop_facing_any', 'shop_age_specific',
+  'shop_age_specific',
   'shop_condition', /* 'shop_status', — DISABLED (T-2026-081): per-property Status masters retired */ 'shop_defect_built', 'shop_defect_community',
   'shop_lease_monthly_budget', 'shop_lease_yearly_budget', 'shop_deposit_budget',
   'shop_booking_amount_fixed',
   // TDR MD-driven masters — added in migration 039. Sourced from
   // `reference of forms/TDR Registration Form.md`. (`tdr_zone` and
   // `tdr_floor` are legacy keys — only their seeds get topped up.)
-  'tdr_plot_facing', 'tdr_development_ratio', 'tdr_purchase', /* 'tdr_status', — DISABLED (T-2026-081): per-property Status masters retired */
+  'tdr_development_ratio', 'tdr_purchase', /* 'tdr_status', — DISABLED (T-2026-081): per-property Status masters retired */
   // Bank Auction MD-driven masters — added in migration 040. Sourced from
   // `reference of forms/Bank Auction Registration Form.md`.
   // (`bank_auction_pending_dues` is a legacy key — only its seed gets
@@ -155,7 +148,7 @@ const LOOKUP_KEYS = Object.freeze([
   'industrial_previous_transfer_order', 'industrial_bank_statement_period',
   // Project MD-driven masters — added in migration 044. Sourced from
   // `reference of forms/Project Registration Form.md`.
-  'project_facing', 'project_condition', 'project_defect_built',
+  'project_condition', 'project_defect_built',
   /* 'project_sale_status', — DISABLED (T-2026-081): per-property Status masters retired */
   // Land Record Management masters — added in migration 047. Sourced from
   // `reference of forms/LandRecordManagement.md`. Only the Paper Notice
@@ -290,7 +283,7 @@ const MASTER_LABELS = Object.freeze({
   district:         'Global / District',
   taluka:           'Global / Taluka',
   shivar:           'Global / Village',
-  facing:           'Global / Facing (legacy)',
+  facing:           'Global / Facing',
   // Global / Sale Forms — rendered on every sale-transaction form via the
   // shared inventory shell (isPriceBased / TXN_SALE_LIKE guard).
   bank_name:              'Global / Sale Forms / Bank Name',
@@ -342,8 +335,6 @@ const MASTER_LABELS = Object.freeze({
   bank_auction_pending_dues:   'Bank Auction Pending Dues',
   // Bunglow / X — hierarchical labels so they group in the Admin sidebar.
   bunglow_size:                 'Bunglow / Size',
-  bunglow_facing_specific:      'Bunglow / Facing (Specific)',
-  bunglow_facing_any:           'Bunglow / Facing (Any)',
   bunglow_age_specific:         'Bunglow / Age (Specific)',
   bunglow_condition:            'Bunglow / Condition',
   // bunglow_status:               'Bunglow / Status', — DISABLED (T-2026-081)
@@ -360,8 +351,6 @@ const MASTER_LABELS = Object.freeze({
   // Rowhouse / X — hierarchical labels, parallel to Bungalow.
   rowhouse_property_position:    'Rowhouse / Property Position',
   rowhouse_size:                 'Rowhouse / Size',
-  rowhouse_facing_specific:      'Rowhouse / Facing (Specific)',
-  rowhouse_facing_any:           'Rowhouse / Facing (Any)',
   rowhouse_age_specific:         'Rowhouse / Age (Specific)',
   rowhouse_age_range:            'Rowhouse / Age Range',
   rowhouse_condition:            'Rowhouse / Condition',
@@ -377,8 +366,6 @@ const MASTER_LABELS = Object.freeze({
   rowhouse_possession_after:     'Rowhouse / Possession After',
   amenities_rowhouse_furniture:  'Rowhouse / Furniture',
   // Commercial Space / X
-  commercial_facing_specific:      'Commercial Space / Facing (Specific)',
-  commercial_facing_any:           'Commercial Space / Facing (Any)',
   commercial_age_specific:         'Commercial Space / Age (Specific)',
   commercial_condition:            'Commercial Space / Condition',
   // commercial_status:               'Commercial Space / Status', — DISABLED (T-2026-081)
@@ -394,8 +381,6 @@ const MASTER_LABELS = Object.freeze({
   // Flat / X
   flat_type:                       'Global / Flat / Bunglow / Flat Type',
   flat_size:                       'Flat / Flat Size',
-  flat_facing_specific:            'Flat / Facing (Specific)',
-  flat_facing_any:                 'Flat / Facing (Any)',
   flat_age_specific:               'Flat / Age (Specific)',
   flat_condition:                  'Flat / Condition',
   // flat_status:                     'Flat / Status', — DISABLED (T-2026-081)
@@ -416,7 +401,6 @@ const MASTER_LABELS = Object.freeze({
   // Hostel / X
   hostel_category:                 'Hostel / Category',
   hostel_rooms_count:              'Hostel / Rooms Count',
-  hostel_facing:                   'Hostel / Facing',
   hostel_condition:                'Hostel / Condition',
   // hostel_status:                   'Hostel / Status', — DISABLED (T-2026-081)
   hostel_amount_budget:            'Hostel / Amount Budget',
@@ -434,7 +418,6 @@ const MASTER_LABELS = Object.freeze({
   land_category_residential:       'Land / Category (Residential)',
   land_category_commercial:        'Land / Category (Commercial)',
   land_category_industrial:        'Land / Category (Industrial)',
-  land_facing:                     'Land / Facing',
   // land_status:                     'Land / Status', — DISABLED (T-2026-081)
   land_area_unit:                  'Land / Area Unit',
   land_lease_monthly_budget:       'Land / Lease Budget (Monthly)',
@@ -443,7 +426,6 @@ const MASTER_LABELS = Object.freeze({
   // Paying Guest / X
   paying_guest_size:               'Paying Guest / Size',
   paying_guest_floor:              'Paying Guest / Floor',
-  paying_guest_facing:             'Paying Guest / Facing',
   paying_guest_condition:          'Paying Guest / Condition',
   // paying_guest_status:             'Paying Guest / Status', — DISABLED (T-2026-081)
   paying_guest_defect_built:       'Paying Guest / Defect (Built)',
@@ -452,7 +434,6 @@ const MASTER_LABELS = Object.freeze({
   plot_sub_residential:            'Plot / Sub-Type (Residential)',
   plot_sub_commercial:             'Plot / Sub-Type (Commercial)',
   plot_sub_industrial:             'Plot / Sub-Type (Industrial)',
-  plot_facing:                     'Plot / Facing',
   plot_corner:                     'Plot / Corner',
   plot_layout_status:              'Plot / Layout Status',
   // plot_status:                     'Plot / Status', — DISABLED (T-2026-081)
@@ -470,8 +451,6 @@ const MASTER_LABELS = Object.freeze({
   sez_infrastructural_facilities:  'SEZ / Infrastructural Facilities',
   sez_fiscal_incentives:           'SEZ / Fiscal Incentives',
   // Shop / X
-  shop_facing_specific:            'Shop / Facing (Specific)',
-  shop_facing_any:                 'Shop / Facing (Any)',
   shop_age_specific:               'Shop / Age (Specific)',
   shop_condition:                  'Shop / Condition',
   // shop_status:                     'Shop / Status', — DISABLED (T-2026-081)
@@ -485,7 +464,6 @@ const MASTER_LABELS = Object.freeze({
   // TDR / X — re-namespaces legacy `tdr_zone` and `tdr_floor`.
   tdr_zone:                        'TDR / Zoning of TDR',
   tdr_floor:                       'TDR / Total Floors',
-  tdr_plot_facing:                 'TDR / Plot Facing',
   tdr_development_ratio:           'TDR / Development Ratio',
   tdr_purchase:                    'TDR / TDR Purchase',
   // tdr_status:                      'TDR / Status', — DISABLED (T-2026-081)
@@ -499,7 +477,6 @@ const MASTER_LABELS = Object.freeze({
   industrial_bank_statement_period:    'Industrial Plot / Bank Statement Period',
   industrial_shed_type:                'Industrial Plot / Shed Type',
   // Project / X
-  project_facing:                  'Project / Facing',
   project_condition:               'Project / Condition',
   project_defect_built:            'Project / Defect (Built)',
   // project_sale_status:             'Project / Sale Status', — DISABLED (T-2026-081)
@@ -523,9 +500,17 @@ const MASTER_LABELS = Object.freeze({
   // Project Name — Global; single source of truth for the Project Name /
   // Name of Project dropdowns across Flat / Project / Pre-Leased / Bank Auction.
   project_name: 'Global / Project Name',
-  // Location — Global; single source of truth for the "Location" dropdown
-  // (formerly "Location with Landmark Required") on the Enquiry forms.
-  location: 'Global / Location',
+  // Area — Global; single source of truth for the "Area" dropdown on BOTH
+  // the Enquiry and Inventory forms. Renamed from "Global / Location" at the
+  // client's request; the KEY stays `location` deliberately, because every
+  // stored details.dynamicData.location value, the master_lookups rows and
+  // both the /admin and /public master routes key off it. Only the display
+  // name changed. (Formerly also "Location with Landmark Required".)
+  //
+  // NOTE: this object is mirrored in the frontend at
+  // src/shared/api/masters.js - the admin UI renders from its own copy and
+  // does NOT read this label off the wire, so the two must change together.
+  location: 'Global / Area',
   // Website-scoped masters — power the public Seller Registration + Add-
   // Property flow. Independent from the Global equivalents above.
   website_property_type:     'Website / Property Type',
@@ -1253,6 +1238,24 @@ function normaliseMasterCode(code) {
   return String(code).trim().toLowerCase().replace(/[\s-]+/g, '_');
 }
 
+
+// Retired master codes a client may still send, mapped to the code that
+// replaced them. Consulted ONLY after an exact and a normalised lookup have
+// both missed, so an active row always wins and this can never shadow live
+// data.
+//
+// `sell` -> `sale`: migration 119 renamed the Hospital / Hotel inventory
+// transaction to "Sale" and deactivated the old `sell` row. A browser tab
+// still running the pre-deploy bundle keeps posting transactionType 'sell'
+// (and transactionTypeId 35), which would otherwise fail every Hospital /
+// Hotel sale save with INVALID_MASTER_CODE until the operator refreshed.
+// Healing it here removes the deploy-order coupling between the migration and
+// the frontend build, and the caller rewrites the payload to the canonical
+// code, so nothing downstream ever sees the retired value.
+const RETIRED_MASTER_CODES = Object.freeze({
+  transaction_type: Object.freeze({ sell: 'sale' }),
+});
+
 // Tolerant, ID-first resolver used by the centralised property-classification
 // validator (services/masters/propertyMasters.js). Resolution order:
 //   1. If `id` is a positive integer → look up by primary key.
@@ -1296,6 +1299,12 @@ async function resolveActiveMasterRef(masterKey, { id, code } = {}) {
     const normalised = normaliseMasterCode(code);
     if (normalised && normalised !== String(code)) {
       byCode = await repo.findByCode(table, normalised, { discriminator });
+    }
+    // Last resort: a code this master has retired (see RETIRED_MASTER_CODES).
+    if (!byCode || !byCode.is_active) {
+      const retired = RETIRED_MASTER_CODES[masterKey] || {};
+      const alias = retired[normalised] || retired[String(code).trim().toLowerCase()];
+      if (alias) byCode = await repo.findByCode(table, alias, { discriminator });
     }
   }
   if (byCode && byCode.is_active) return toDto(byCode);

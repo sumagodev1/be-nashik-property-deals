@@ -12,12 +12,32 @@ const imageUpload = require('../files/imageUpload');
 const { assignUniqueCode, resolvePropertyTypeIdCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
 const { getDistrictShortCode } = require('../../db/queries/locations');
-// Centralised Property Type / Transaction Type / Property Variety
-// validator — see services/masters/propertyMasters.js for the contract.
-const { validatePropertyClassification } = require('../masters/propertyMasters');
 
+// Website Property Type / Transaction Type validation.
+//
+// This deliberately does NOT use validatePropertyClassification() from
+// services/masters/propertyMasters.js. That validator resolves propertyType
+// against the GLOBAL 'property_type' master, but the seller dropdowns are fed
+// from the WEBSITE-owned masters (migration 055), which the Website is
+// supposed to evolve independently of the Global vocabulary. The two spell
+// the same concepts differently:
+//
+//     website_property_type      master_property_types
+//     ---------------------      ---------------------
+//     flat_apartment             flat
+//     row_house                  rowhouse
+//
+// so every Flat / Apartment and Row House submission — 12 of the 30 possible
+// Property Type x Transaction Type x Variety combinations — was rejected with
+// 400 INVALID_MASTER_CODE before a row was ever written. Validate against the
+// same masters the form actually reads.
+//
+// Admin-side Inventory and Enquiry properties are untouched by this: they run
+// through services/{inventory,enquiry}/management.js and keep using the Global
+// classification validator.
 async function validateMasterCodes(payload) {
-  await validatePropertyClassification(payload);
+  await masters.assertActiveCode('website_property_type', payload.propertyType);
+  await masters.assertActiveCode('website_transaction_type', payload.transactionType);
   await masters.assertActiveCode('flat_type', payload.bhk);
 }
 

@@ -1,0 +1,77 @@
+-- ============================================================================
+-- 121_website_property_code_width.sql
+--
+-- Widen website_properties.property_code so a generated code can never
+-- overflow it, and bring the column into line with its two sibling tables.
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- A seller submitting a listing hit:
+--
+--     Database error (ER_DATA_TOO_LONG): Data too long for column
+--     'property_code' at row 1
+--
+-- The code generator (services/properties/propertyCode.js) is the single
+-- source of truth for this identifier and mints values like:
+--
+--     NSK-BNG-26-A8K2M7P
+--     |   |   |  |
+--     |   |   |  +-- 7-char random suffix (SUFFIX_LEN)
+--     |   |   +----- 2-digit year
+--     |   +--------- property type abbreviation, sliced to 10
+--     +------------- district short code, sliced to 10
+--
+-- Real values are 18 characters. The generator's WORST case, however, is
+-- 10 + 1 + 10 + 1 + 2 + 1 + 7 = 32 -- which was EXACTLY the declared column
+-- width. The column had zero headroom: any future change to SUFFIX_LEN or to
+-- either segment slice would start truncating rows rather than failing loudly,
+-- and older deployments minted a shorter 6-char suffix (16-17 char codes), so a
+-- database sized around the historical format has even less room than the
+-- current generator needs.
+--
+-- The three property tables had also drifted apart. All three were DECLARED
+-- VARCHAR(32) (001_initial_schema.sql lines 86 and 120, 048_enquiry_properties
+-- .sql line 29), but inventory_properties and enquiry_properties are VARCHAR(64)
+-- in practice while website_properties stayed at 32. Nothing in /migrations
+-- performs that widening, so it happened outside the migration history -- which
+-- means the narrowest column is the one the public seller form writes to, and
+-- it is the only one whose width is not guaranteed by anything.
+--
+-- Codes are a single shared namespace deliberately (see the CROSS-TABLE
+-- UNIQUENESS note in propertyCode.js -- every candidate is checked against all
+-- three tables before it is issued). One namespace should not be stored in
+-- three different widths.
+--
+-- SCHEMA CHANGE (widening only, non-destructive, idempotent in effect):
+--   MODIFY website_properties.property_code to VARCHAR(64), matching
+--   inventory_properties and enquiry_properties.
+--
+--   Widening a VARCHAR is an in-place metadata change on InnoDB for this size
+--   class and cannot truncate: every stored value is at most 32 characters and
+--   stays byte-identical. NOT NULL is preserved, and the UNIQUE index on the
+--   column is unaffected -- index entries are re-read from the same values.
+--
+--   Re-running is harmless: MODIFY to the width the column already has is a
+--   no-op, so this is safe on a database that has already been widened by hand.
+--
+-- WHAT THIS DOES NOT DO
+--   * No data change. No code is rewritten, renumbered or re-issued. Existing
+--     identifiers are business references quoted in CRM allocations and exports
+--     (see 113_crm_allocation_property_codes.sql); rewriting them would break
+--     those references.
+--   * No change to the code FORMAT. propertyCode.js keeps producing the same
+--     18-character values; this only removes the ceiling they were pressed
+--     against.
+--
+-- ROLLBACK PLAN:
+--   Narrowing back is only safe while every stored code is <= 32 characters,
+--   which is true today and stays true unless the generator changes:
+--       ALTER TABLE website_properties
+--         MODIFY property_code VARCHAR(32) NOT NULL;
+--   Leaving the column at 64 is free -- VARCHAR storage is length-prefixed, so
+--   a wider declaration costs nothing for the same content.
+-- ============================================================================
+
+ALTER TABLE website_properties
+  MODIFY property_code VARCHAR(64) NOT NULL
+    COMMENT 'Shared property identifier, e.g. NSK-BNG-26-A8K2M7P. Minted by services/properties/propertyCode.js and unique across inventory_properties, enquiry_properties and this table. Width matches those two.';

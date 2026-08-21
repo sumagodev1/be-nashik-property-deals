@@ -6,8 +6,17 @@ const { pool } = require('../pool');
 // prefix is safe / clear.
 const SORTABLE_COLUMNS = {
   created_at:    'ip.created_at',
+  // Property ID column. The list toolbar offers "Property ID (A-Z / Z-A)" and
+  // sends sort=property_code:asc|desc; without this entry buildOrderBy fell
+  // through to the title default and the route's Joi rejected the value
+  // outright with a 400 before it even got here.
+  property_code: 'ip.property_code',
   price:         'ip.price',
   location:      'ip.location',
+  // Curated Area (locality). A real column purely so it can be sorted and
+  // grouped - the same reason `location` is here. NOT area_value/area_unit,
+  // which are the property SIZE.
+  area_name:     'ip.area_name',
   property_type: 'ip.property_type',
   title:         'ip.title',
 };
@@ -67,6 +76,7 @@ async function list({
   propertyVarietyCode,
   propertyVarietyLabel,
   status,
+  area,
   location,
   priceMin,
   priceMax,
@@ -259,6 +269,15 @@ async function list({
     where.push('ip.status = ?');
     params.push(status);
   }
+  // Curated Area filter. EXACT match, not LIKE: the UI control is a
+  // dropdown of master labels, so there is no partial input to be forgiving
+  // about - and equality can use ix_inventory_properties_area_name, which a
+  // leading-wildcard LIKE cannot. (The separate free-text `location` filter
+  // below stays LIKE; it searches a geocoded address string.)
+  if (area) {
+    where.push('ip.area_name = ?');
+    params.push(area);
+  }
   if (location) {
     where.push('ip.location LIKE ?');
     params.push(`%${location}%`);
@@ -375,7 +394,7 @@ async function list({
             ip.property_type, ip.property_type_id, ip.property_type_name,
             ip.transaction_type, ip.transaction_type_id, ip.transaction_type_name,
             ip.transaction_variant, ip.property_variety_id, ip.property_variety_name,
-            ip.location, ip.district, ip.taluka, ip.shivar, ip.latitude, ip.longitude, ip.formatted_address, ip.pincode,
+            ip.location, ip.area_name, ip.district, ip.taluka, ip.shivar, ip.latitude, ip.longitude, ip.formatted_address, ip.pincode,
             ip.area_value, ip.area_unit, ip.bhk, ip.price, ip.status, ip.status_note, ip.status_changed_at,
             ip.is_draft, ip.owner_name, ip.owner_contact,
             ip.agent_name, ip.agent_contact, ip.details, ip.created_at, ip.updated_at,
@@ -452,7 +471,7 @@ async function create(payload) {
     `INSERT INTO inventory_properties
      (property_code, posting_date, available_from_date, title, description, property_type, property_type_id, property_type_name,
       transaction_type, transaction_type_id, transaction_type_name, transaction_variant, property_variety_id, property_variety_name,
-      location, district, taluka, shivar,
+      location, area_name, district, taluka, shivar,
       latitude, longitude, formatted_address, pincode,
       area_value, area_unit, bhk, price, status, is_draft,
       owner_name, owner_contact, agent_name, agent_contact, details, created_by_admin_id,
@@ -480,6 +499,7 @@ async function create(payload) {
       payload.propertyVarietyId || null,
       payload.propertyVarietyName || null,
       payload.location,
+      payload.areaName || null,
       payload.district || null,
       payload.taluka || null,
       payload.shivar || null,
@@ -537,7 +557,7 @@ async function update(id, payload) {
        property_type = ?, property_type_id = ?, property_type_name = ?,
        transaction_type = ?, transaction_type_id = ?, transaction_type_name = ?,
        transaction_variant = ?, property_variety_id = ?, property_variety_name = ?,
-       location = ?, district = ?, taluka = ?, shivar = ?,
+       area_name = ?, location = ?, district = ?, taluka = ?, shivar = ?,
        latitude = ?, longitude = ?, formatted_address = ?, pincode = ?,
        area_value = ?, area_unit = ?, bhk = ?, price = ?, status = ?, is_draft = ?,
        owner_name = ?, owner_contact = ?, agent_name = ?, agent_contact = ?, details = ?,
@@ -564,6 +584,7 @@ async function update(id, payload) {
       payload.transactionVariant || null,
       payload.propertyVarietyId || null,
       payload.propertyVarietyName || null,
+      payload.areaName || null,
       payload.location,
       payload.district || null,
       payload.taluka || null,

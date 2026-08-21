@@ -32,10 +32,50 @@ const listQuery = Joi.object({
 
 const optText = (max = 255) => Joi.string().trim().max(max).allow('', null).optional();
 
-// Phone / mobile / whatsapp — same lax character set the frontend accepts
-// (digits, spaces, and + - ( )).
+// A single NAME PART: one word, no spaces. Letters plus the punctuation that
+// legitimately appears inside names (D'Souza, Mary-Jane, an initial like
+// "K."). Digits and spaces are rejected on purpose.
+//
+// Nothing stopped an operator typing a whole name into First Name. With
+// Middle Name and Surname also filled in, the record then rendered as
+// "Mrs. Rohini mahesh gaikwad Mahesh Gaikwad" — the name doubled up in the
+// display string and in every export.
+//
+// Mirrored by NAME_PATTERN in
+// src/admin/pages/BusinessAssociates/BusinessAssociateForm.jsx.
+const NAME_RE = /^[A-Za-z][A-Za-z.'-]*$/;
+const nameMsg = (label) => label
+  + ' must be a single name (letters only, no spaces). Use the separate'
+  + ' Middle Name and Surname fields for the rest.';
+
+// Landline slots (phone1 / phone2). The character set stays lax because an
+// STD-coded landline is written many ways, but the message is now written for
+// an operator rather than Joi's default.
 const phoneField = Joi.string().trim().max(20).allow('', null)
-  .pattern(/^[0-9+\-\s()]*$/).optional();
+  .pattern(/^[0-9+\-\s()]*$/).optional()
+  .messages({ 'string.pattern.base': 'Phone number may contain only digits, spaces and + - ( )' });
+
+// Mobile slots (mobile1 / mobile2 / mobile3 / whatsapp) are 10-digit Indian
+// mobile numbers. These used the lax phoneField too, so twenty digits of
+// anything validated; the form's only complaint was "Too long".
+//
+// Mirrored by MOBILE_PATTERN in
+// src/admin/pages/BusinessAssociates/BusinessAssociateForm.jsx.
+const mobileField = Joi.string().trim().allow('', null)
+  .pattern(/^[6-9]\d{9}$/).optional()
+  .messages({
+    'string.pattern.base': 'Enter a 10-digit mobile number starting with 6-9',
+  });
+
+// Website — must carry a scheme and a dotted host. These were plain
+// optText(255), so any string validated and rows of digits were stored as
+// websites. Mirrored by URL_PATTERN in
+// src/admin/pages/BusinessAssociates/BusinessAssociateForm.jsx.
+const urlField = Joi.string().trim().max(255).allow('', null)
+  .pattern(/^https?:\/\/[^\s.]+\.[^\s]{2,}$/i).optional()
+  .messages({
+    'string.pattern.base': 'Enter a full web address, e.g. https://example.com',
+  });
 
 // Email — trim + basic shape check; both slots are optional.
 const emailField = Joi.string().trim().max(255).allow('', null)
@@ -47,9 +87,16 @@ const body = Joi.object({
   // pre-merge script that still POSTs without the field keeps working.
   generalCategory: Joi.string().valid('business_associate', 'phone_book').optional(),
   salutation: Joi.string().valid('mr', 'mrs', 'miss', 'smt').allow('', null).optional(),
-  firstName: Joi.string().trim().min(1).max(100).required(),
-  middleName: optText(100),
-  surname: optText(100),
+  firstName: Joi.string().trim().min(1).max(100).pattern(NAME_RE).required()
+    .messages({
+      'string.pattern.base': nameMsg('First name'),
+      'string.empty': 'First name is required',
+      'any.required': 'First name is required',
+    }),
+  middleName: Joi.string().trim().max(100).allow('', null).pattern(NAME_RE).optional()
+    .messages({ 'string.pattern.base': nameMsg('Middle name') }),
+  surname: Joi.string().trim().max(100).allow('', null).pattern(NAME_RE).optional()
+    .messages({ 'string.pattern.base': nameMsg('Surname') }),
   // Business Associates enhancement: two optional text fields
   // (company_name promoted out of address_line2 packing;
   // business_category added by the enhancement request). Backward-
@@ -71,16 +118,33 @@ const body = Joi.object({
   districtCode: optText(64),
   phone1: phoneField,
   phone2: phoneField,
-  mobile1: phoneField,
-  mobile2: phoneField,
-  mobile3: phoneField,
-  whatsapp: phoneField,
+  mobile1: mobileField,
+  mobile2: mobileField,
+  mobile3: mobileField,
+  whatsapp: mobileField,
   email1: emailField,
   email2: emailField,
-  website1: optText(255),
-  website2: optText(255),
+  website1: urlField,
+  website2: urlField,
   // ISO date — the frontend datepicker emits YYYY-MM-DD.
-  dateOfBirth: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).allow('', null).optional(),
+  // Date of birth: shape AND range. It was pattern-only, so a future date
+  // such as 2027-10-14 validated. ISO strings compare correctly with <,
+  // so no Date parsing is needed. Server-local today, matching the client.
+  dateOfBirth: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).allow('', null).optional()
+    .custom((value, helpers) => {
+      if (!value) return value;
+      const d = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const today = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+      if (value > today) return helpers.error('date.future');
+      if (value < '1900-01-01') return helpers.error('date.tooOld');
+      return value;
+    })
+    .messages({
+      'string.pattern.base': 'Date of birth must be in YYYY-MM-DD format',
+      'date.future': 'Date of birth cannot be in the future',
+      'date.tooOld': 'Date of birth must be on or after 1900-01-01',
+    }),
   // Notes textarea — mirrors the Phone Book column so migrated PB rows
   // keep their existing text and the unified form can capture it.
   notes: Joi.string().trim().max(500).allow('', null).optional(),

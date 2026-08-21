@@ -19,8 +19,15 @@ const idParam = Joi.object({ id: Joi.number().integer().positive().required() })
 
 const LETTERS_ONLY = /^[A-Za-z\s]+$/;
 const emailField = Joi.string().email({ tlds: { allow: false } }).max(255);
-const phoneField = Joi.string().trim().pattern(/^\d{10}$/)
-  .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number' });
+// Indian mobile numbers always begin 6, 7, 8 or 9. This was /^\d{10}$/ - any
+// ten digits - which also disagreed with the rule the seller's OWN profile
+// enforces (routes/seller/profile.js), so an admin could save an alternate
+// contact that the seller was then blocked from keeping on their next save.
+//
+// Used only by `alternateContact` below. No stored value fails the tighter
+// pattern, so no existing seller becomes unsaveable.
+const phoneField = Joi.string().trim().pattern(/^[6-9]\d{9}$/)
+  .messages({ 'string.pattern.base': 'Alternate contact must be a 10-digit mobile number starting with 6-9' });
 const nameField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY)
   .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
 
@@ -36,7 +43,18 @@ const sellersListQuery = Joi.object({
   sort: Joi.string()
     .valid('created_at:desc', 'created_at:asc', 'full_name:asc', 'full_name:desc', 'listing_count:desc')
     .default('full_name:asc'),
-});
+})
+  // The two dates were validated only for shape, never against each other, so
+  // dateFrom=2026-08-08&dateTo=2026-08-05 was accepted and returned an empty
+  // list - indistinguishable from "no sellers registered in that window".
+  // Both are ISO yyyy-mm-dd here, so a string compare is a date compare.
+  .custom((value, helpers) => {
+    if (value.dateFrom && value.dateTo && value.dateFrom > value.dateTo) {
+      return helpers.error('any.invalid');
+    }
+    return value;
+  })
+  .messages({ 'any.invalid': '"To date" cannot be earlier than "From date".' });
 
 const sellersExportQuery = sellersListQuery.fork(['page', 'pageSize'], (s) => s.optional());
 

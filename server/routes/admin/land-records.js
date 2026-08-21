@@ -24,7 +24,79 @@ const listQuery = Joi.object({
 
 const optText   = (max = 255) => Joi.string().trim().max(max).allow('', null).optional();
 const reqText   = (max = 255) => Joi.string().trim().max(max).required();
-const optNum    = () => Joi.alternatives().try(Joi.number().min(0), Joi.string().valid(''), Joi.valid(null)).optional();
+// Numeric fields carry an upper bound as well as a floor. optNum() was
+// Joi.number().min(0) with no ceiling, so a rate of 4.4e+40 validated and was
+// stored - the form then rendered it back in scientific notation.
+//
+// The ceilings are generous by design (a million guntha is 25,000 acres; a
+// rate cap of 1,000 crore per unit is far past any real figure). They exist to
+// stop runaway input, not to second-guess a valuation. Mirrored by AREA_MAX /
+// RATE_MAX in src/admin/pages/LandRecords/GaothanLandLocatorForm.jsx.
+// Ceilings are chosen to sit INSIDE the column definitions, so a value that
+// passes validation can always be stored. Getting this wrong surfaces as a raw
+// ER_WARN_DATA_OUT_OF_RANGE from MySQL, which tells an operator nothing.
+//
+//   gaothan_land_locators.area_*        decimal(12,4)  -> max 99,999,999.9999
+//   gaothan_land_locators.rate_*        decimal(14,2)  -> max 999,999,999,999.99
+//   paper_notice_records.*_value        decimal(14,4)  -> max 9,999,999,999.9999
+//   paper_notice_records.aakaar_paise   decimal(14,2)  -> max 999,999,999,999.99
+//
+// AREA_MAX / RATE_MAX are the business limits (well inside the columns);
+// DECIMAL_14_4_MAX is the storage limit for the paper-notice measures.
+const AREA_MAX = 1000000;
+const RATE_MAX = 10000000000;
+const DECIMAL_14_4_MAX = 9999999999;
+// A reference number: letters, digits and the separators these references
+// actually use. Anchored so a value of pure punctuation cannot pass.
+const REF_RE = /^[A-Za-z0-9][A-Za-z0-9/\-., ]*$/;
+const reqRefText = (max) => Joi.string().trim().min(1).max(max).pattern(REF_RE).required()
+  .custom((value, helpers) => (
+    value.length > 3 && /^(.)\1+$/.test(value) ? helpers.error('ref.repeated') : value
+  ))
+  .messages({
+    'string.pattern.base': 'May contain only letters, digits and / - . , characters',
+    'string.max': 'Must be ' + max + ' characters or fewer',
+    'string.empty': 'Gut / Survey number is required',
+    'any.required': 'Gut / Survey number is required',
+    'ref.repeated': 'Does not look like a valid reference',
+  });
+
+const refText = (max) => Joi.string().trim().max(max).allow('', null).pattern(REF_RE).optional()
+  .messages({
+    'string.pattern.base': 'May contain only letters, digits and / - . , characters',
+    'string.max': 'Must be ' + max + ' characters or fewer',
+  });
+
+// Advocate contact: landline with STD code, or a mobile. The count is checked
+// on the digits alone so separators do not change the verdict.
+const contactField = () => Joi.string().trim().max(20).allow('', null)
+  .pattern(/^[0-9+\-\s()]+$/)
+  .custom((value, helpers) => {
+    const digits = String(value).replace(/\D/g, '');
+    if (digits.length < 8 || digits.length > 15) return helpers.error('contact.digits');
+    return value;
+  })
+  .optional()
+  .messages({
+    'string.pattern.base': 'May contain only digits, spaces and + - ( )',
+    'contact.digits': 'Must contain 8 to 15 digits (landline with STD code, or mobile)',
+  });
+
+const optNum    = (max = RATE_MAX) => {
+  const range = '0 and ' + max.toLocaleString('en-IN');
+  // Messages go on the NUMBER branch, not just the alternatives wrapper. A
+  // value past Number.MAX_SAFE_INTEGER (the 4.4e+40 from the bug report)
+  // raises number.unsafe, which fires before .max() and would otherwise
+  // surface as Joi's raw 'must be a safe number'.
+  const num = Joi.number().min(0).max(max).messages({
+    'number.base': 'Must be a number between ' + range,
+    'number.min': 'Must be a number between ' + range,
+    'number.max': 'Must be a number between ' + range,
+    'number.unsafe': 'Must be a number between ' + range,
+  });
+  return Joi.alternatives().try(num, Joi.string().valid(''), Joi.valid(null)).optional()
+    .messages({ 'alternatives.match': 'Must be a number between ' + range });
+};
 
 /* ── Gaothan Land Locator ───────────────────────────────────── */
 
@@ -33,8 +105,8 @@ const gaothanBody = Joi.object({
   talukaCode:   reqText(64),
   shivarCode:   reqText(64),
   location:     reqText(255),
-  gutOrSurveyNo: reqText(255),
-  distanceFromGaothan: optText(255),
+  gutOrSurveyNo: reqRefText(20),
+  distanceFromGaothan: optText(100),
   roadApproach: Joi.boolean().default(false),
   roadApproachNote: Joi.when('roadApproach', {
     is: true,
@@ -43,10 +115,10 @@ const gaothanBody = Joi.object({
   }),
   road1: optText(255),
   road2: optText(255),
-  areaGuntha: optNum(),
-  areaAcre: optNum(),
-  ratePerGuntha: optNum(),
-  ratePerAcre: optNum(),
+  areaGuntha: optNum(AREA_MAX),
+  areaAcre: optNum(AREA_MAX),
+  ratePerGuntha: optNum(RATE_MAX),
+  ratePerAcre: optNum(RATE_MAX),
 });
 
 router.get('/gaothan', validate(listQuery, 'query'), async (req, res, next) => {
@@ -71,7 +143,8 @@ const surveyBody = Joi.object({
   districtCode: reqText(64),
   talukaCode:   reqText(64),
   shivarCode:   reqText(64),
-  gutOrSurveyNo: reqText(255),
+  // Matches gaothanBody: a gut / survey number is a short identifier.
+  gutOrSurveyNo: reqRefText(20),
   locality: reqText(255),
   roadTouch: Joi.boolean().default(false),
   roadTouchNote: Joi.when('roadTouch', {
@@ -108,26 +181,28 @@ router.delete('/survey/:id', validate(idParam, 'params'), async (req, res, next)
 
 const paperBody = Joi.object({
   paperNameCode: reqText(64),
-  pageNo: optText(64),
-  paperNoticeNo: optText(255),
+  // Reference numbers: shape as well as length. Mirrored by REF_PATTERN in
+  // src/admin/pages/LandRecords/PaperNoticeRecordForm.jsx.
+  pageNo: refText(10),
+  paperNoticeNo: refText(30),
   noticeDate: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).required(),
   advocateSalutation: Joi.string().valid('mr', 'mrs', 'smt', 'miss').required(),
   advocateName: reqText(255),
-  chamberNo: optText(64),
+  chamberNo: refText(30),
   address: optText(500),
-  contactNo: optText(20),
-  gutOrSurveyNo: reqText(255),
-  areaValue: optNum(),
+  contactNo: contactField(),
+  gutOrSurveyNo: reqRefText(20),
+  areaValue: optNum(DECIMAL_14_4_MAX),
   areaUnitCode: optText(64),
-  potKharbaValue: optNum(),
+  potKharbaValue: optNum(DECIMAL_14_4_MAX),
   potKharbaUnitCode: optText(64),
-  totalAreaValue: optNum(),
+  totalAreaValue: optNum(DECIMAL_14_4_MAX),
   totalAreaUnitCode: optText(64),
   aakaarPaise: optNum(),
-  ownersAreaValue: optNum(),
+  ownersAreaValue: optNum(DECIMAL_14_4_MAX),
   ownersAreaUnitCode: optText(64),
   ownerName: optText(255),
-  saleableAreaValue: optNum(),
+  saleableAreaValue: optNum(DECIMAL_14_4_MAX),
   saleableAreaUnitCode: optText(64),
 });
 

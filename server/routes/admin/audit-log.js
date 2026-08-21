@@ -63,6 +63,14 @@ router.get('/', validate(listQuery, 'query'), async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Filter vocabularies for the two dropdowns, derived from the log itself so
+// they cannot drift as modules are added. Same module gate as the list.
+router.get('/facets', async (req, res, next) => {
+  try {
+    res.json(await audit.facets());
+  } catch (e) { next(e); }
+});
+
 function safeJson(value) {
   if (value === null || value === undefined) return null;
   if (typeof value === 'object') return value;

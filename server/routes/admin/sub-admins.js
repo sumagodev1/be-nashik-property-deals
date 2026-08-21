@@ -27,10 +27,48 @@ router.use(
 );
 
 const emailField = Joi.string().email({ tlds: { allow: false } }).max(255);
-const passwordField = Joi.string().min(8).max(128);
+// Password: length AND composition.
+//
+// This was Joi.string().min(8).max(128), i.e. length only, while the admin
+// form has always demanded an uppercase letter, a lowercase letter, a number
+// and a symbol. Anything not going through that form - a script, a direct API
+// call, a future mobile client - could therefore set a password like
+// "aaaaaaaa" on an account that can administer the panel.
+//
+// Mirrors the `complexity` / `noSpaces` / `minLength` rules in
+// src/admin/pages/SubAdmins/SubAdminForm.jsx.
+const passwordField = Joi.string().min(8).max(128)
+  .custom((value, helpers) => {
+    if (/\s/.test(value)) return helpers.error('password.spaces');
+    const hasLower = /[a-z]/.test(value);
+    const hasUpper = /[A-Z]/.test(value);
+    const hasDigit = /\d/.test(value);
+    const hasSymbol = /[^A-Za-z0-9]/.test(value);
+    if (!(hasLower && hasUpper && hasDigit && hasSymbol)) {
+      return helpers.error('password.weak');
+    }
+    return value;
+  })
+  .messages({
+    'string.min': 'Password must be at least 8 characters',
+    'string.max': 'Password is too long (max 128)',
+    'password.spaces': 'Password cannot contain spaces',
+    'password.weak': 'Include upper, lower, number, and symbol',
+  });
+
 const LETTERS_ONLY = /^[A-Za-z\s]+$/;
+// The form also rejects runs of two or more spaces; .trim() already handles
+// the leading / trailing case it guards against.
 const nameField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY)
-  .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
+  .custom((value, helpers) => (
+    / {2,}/.test(value) ? helpers.error('name.doubleSpace') : value
+  ))
+  .messages({
+    'string.pattern.base': 'Name can only contain letters and spaces',
+    'string.min': 'Name must be at least 3 characters',
+    'string.max': 'Name must be at most 50 characters',
+    'name.doubleSpace': 'Use only single spaces between words',
+  });
 // T-2026-173: `modules` now accepts EITHER shape:
 //   - legacy string (implicit write, preserves pre-T-173 API callers)
 //   - { module_key, access_level } object (new UI shape)

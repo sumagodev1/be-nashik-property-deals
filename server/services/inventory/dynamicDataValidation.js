@@ -70,6 +70,16 @@ const priceLike = Joi.number().min(0).max(PRICE_MAX);
 const dualSide = Joi.alternatives().try(
   Joi.string().trim().max(500).allow('', null),
   Joi.number().allow(null),
+  // ENQUIRY multi-select: a dualMode paints exactly one atom — the side that
+  // carries the dropdown — and on the Enquiry surface that atom is a checkbox
+  // multi-select, so this side arrives as an ARRAY of master codes/labels
+  // ("East","West"). Either side can be the dropdown depending on how the
+  // config was authored, so both accept the list. Inventory keeps sending a
+  // scalar and is matched by the string/number branches above, unchanged.
+  Joi.array().items(
+    Joi.string().trim().max(500).allow('', null),
+    Joi.number(),
+  ).max(200),
 );
 const dualModeShape = Joi.object({
   specific: dualSide,
@@ -144,6 +154,32 @@ const codeArrayOrScalar = Joi.alternatives()
     return [v];
   });
 
+// ENQUIRY multi-select: on the Enquiry surface a dropdown that captures a
+// customer REQUIREMENT accepts several master codes at once ("2BHK or 3BHK",
+// "East or West"), so the same dynamicData key can arrive as an ARRAY there
+// while Inventory keeps sending the scalar (or dualMode object) it always has.
+// See the frontend's enquiryMultiSelectPolicy.js for which keys are eligible.
+//
+// Wrapping a key with this helper only ADDS the array shape — `base` is tried
+// unchanged for every non-array value, so Inventory payloads validate and
+// coerce exactly as before (dualModeOrScalar still turns a bare scalar into
+// { specific, any }; masterCodeField still lowercases and pattern-checks).
+// Arrays short-circuit to codeArray and are stored as-is; a scalar is NEVER
+// auto-wrapped into an array here, which is what keeps Inventory untouched.
+//
+// The array items accept a code OR a plain label, not just `masterCodeField`:
+// eight vocabularies (location/Area, project_name, hospital_type,
+// hostel_category, sez_type, bank_auction_project_type,
+// pre_leased_project_type, bunglow_tenant_preference) are rendered by the
+// frontend's TextMasterSelect and persist the master LABEL — "Adgaon", not
+// "adgaon" — plus operator-typed "Other" values. Restricting items to the
+// lowercase code pattern would reject every one of those. Length and item
+// caps still apply, so the JSON column stays bounded.
+const codeOrLabelArray = Joi.array()
+  .items(Joi.string().trim().max(255).allow('', null), Joi.number())
+  .max(200);
+const orCodeArray = (base) => Joi.alternatives().try(codeOrLabelArray, base);
+
 // The dynamicData Joi schema. `.unknown(true)` deliberately allows fields we
 // haven't explicitly enumerated — the payload is form-config driven and we
 // prefer forward-compat over a strict deny-list. Every known field still
@@ -172,12 +208,12 @@ const dynamicDataSchema = Joi.object({
   // Common dualMode fields (repeated across variants — Bunglow/Flat/Shop etc.)
   // Use dualModeOrScalar for keys whose form config renders as `select` /
   // `radio` in some variants — the scalar gets coerced to `{ specific, any }`.
-  location: Joi.alternatives().try(dualModeShape, shortText),
+  location: orCodeArray(Joi.alternatives().try(dualModeShape, shortText)),
   bunglowType: dualModeOrScalar,
-  size: Joi.alternatives().try(dualModeShape, masterCodeField),
-  facing: dualModeOrScalar,
+  size: orCodeArray(Joi.alternatives().try(dualModeShape, masterCodeField)),
+  facing: orCodeArray(dualModeOrScalar),
   age: dualModeOrScalar,
-  condition: dualModeOrScalar,
+  condition: orCodeArray(dualModeOrScalar),
 
   // Radios that are stored as plain strings
   parkingFacility: shortText,
@@ -209,7 +245,12 @@ const dynamicDataSchema = Joi.object({
     // forces `undefined`/missing parkingFacility to flow through
     // `otherwise` and get stripped, matching FE sanitizer semantics.
     is: Joi.string().valid('Available', 'Essential', 'Required').required(),
-    then: Joi.string().trim().max(64).allow('', null),
+    // `then` also accepts an ARRAY of codes: Parking Type is one of the
+    // Enquiry-surface checkbox multi-selects (a requirement may be "Allotted
+    // or Common"). The `otherwise` strip is untouched, so a parkingType sent
+    // without an affirmative parkingFacility is still dropped exactly as
+    // before, array or not.
+    then: orCodeArray(Joi.string().trim().max(64).allow('', null)),
     otherwise: Joi.any().strip(),
   }),
 
@@ -259,10 +300,10 @@ const dynamicDataSchema = Joi.object({
 
   // Counts / percentages (best-effort names — anything else falls through
   // to unknown(true))
-  yearlyHikePercent: masterCodeField, // master-backed pct picker
-  developmentRatio: masterCodeField,
-  tdrPurchase: masterCodeField,
-  bookingAmountPercent: masterCodeField,
+  yearlyHikePercent: orCodeArray(masterCodeField), // master-backed pct picker
+  developmentRatio: orCodeArray(masterCodeField),
+  tdrPurchase: orCodeArray(masterCodeField),
+  bookingAmountPercent: orCodeArray(masterCodeField),
   paymentWhitePercent: masterCodeField,
   // T-2026-120: EMI trio (Plot forms today; opt-in-per-config elsewhere).
   //   • `emiOption` is the control. Values are stored as human labels
@@ -338,11 +379,11 @@ const dynamicDataSchema = Joi.object({
   amount: priceLike.allow('', null),
 
   // Master-backed selects — the client passes a master code; validate shape.
-  bunglowSize: masterCodeField,
+  bunglowSize: orCodeArray(masterCodeField),
   // bunglowStatus: masterCodeField, — DISABLED (T-2026-081): per-property Status master retired. `.unknown(true)` on the parent schema lets any legacy value from historical records pass through untouched.
   // flatType is `select` in some flat variants, `dualMode` in others.
   flatType: dualModeOrScalar,
-  flatSize: masterCodeField,
+  flatSize: orCodeArray(masterCodeField),
   // flatStatus: masterCodeField, — DISABLED (T-2026-081)
   flatNature: masterCodeField,
 
@@ -379,8 +420,8 @@ const dynamicDataSchema = Joi.object({
   // Parent schema is `.unknown(true)` — legacy records that never carried
   // any of these keys pass through unchanged (fields render blank on hydrate).
   wing:                dualModeOrScalar,
-  floor:               dualModeOrScalar,
-  outOfFloor:          masterCodeField,
+  floor: orCodeArray(dualModeOrScalar),
+  outOfFloor: orCodeArray(masterCodeField),
   totalFlatsOnFloor:   nonNegDistance.allow('', null),
   totalFlatsInWing:    nonNegDistance.allow('', null),
   totalFlatsInPhase:   nonNegDistance.allow('', null),
@@ -389,7 +430,7 @@ const dynamicDataSchema = Joi.object({
   // `dualMode` in dual-mode purchase / rent-in / lease-in variants.
   plotType: dualModeOrScalar,
   // plotStatus: masterCodeField, — DISABLED (T-2026-081)
-  plotShape: dualModeOrScalar,
+  plotShape: orCodeArray(dualModeOrScalar),
   plotCorner: masterCodeField,
 
   // T-2026-118: Plot Corner + dynamic Plot Facing / Road Approach pairs.
@@ -411,14 +452,14 @@ const dynamicDataSchema = Joi.object({
   // and the server stores whatever the client sends. Cleaning is a client
   // responsibility (rule 5: in-memory recovery when N shrinks and grows).
   corner:         dualModeOrScalar,
-  plotFacing:     dualModeOrScalar,
-  plotFacing2:    dualModeOrScalar,
-  plotFacing3:    dualModeOrScalar,
-  plotFacing4:    dualModeOrScalar,
-  roadApproach:   dualModeOrScalar,
-  roadApproach2:  dualModeOrScalar,
-  roadApproach3:  dualModeOrScalar,
-  roadApproach4:  dualModeOrScalar,
+  plotFacing: orCodeArray(dualModeOrScalar),
+  plotFacing2: orCodeArray(dualModeOrScalar),
+  plotFacing3: orCodeArray(dualModeOrScalar),
+  plotFacing4: orCodeArray(dualModeOrScalar),
+  roadApproach: orCodeArray(dualModeOrScalar),
+  roadApproach2: orCodeArray(dualModeOrScalar),
+  roadApproach3: orCodeArray(dualModeOrScalar),
+  roadApproach4: orCodeArray(dualModeOrScalar),
   plotAreaUnit: masterCodeField,
   plotRateUnit: masterCodeField,
   plotLayoutStatus: masterCodeField,
@@ -523,7 +564,7 @@ const dynamicDataSchema = Joi.object({
   stampDuty:              priceLike.allow('', null),
   registrationCharges:    priceLike.allow('', null),
   lbt:                    priceLike.allow('', null),
-  gstId:                  masterCodeField,
+  gstId: orCodeArray(masterCodeField),
   gstPercentage:          percent.allow('', null),
   gstAmount:              priceLike.allow('', null),
   paperNotice:            priceLike.allow('', null),
@@ -532,7 +573,7 @@ const dynamicDataSchema = Joi.object({
   undertableFees:         priceLike.allow('', null),
   costToCustomer:         priceLike.allow('', null),
   // hostelStatus: masterCodeField, — DISABLED (T-2026-081)
-  hostelCategory: masterCodeField,
+  hostelCategory: orCodeArray(masterCodeField),
   hostelRoomsCount: masterCodeField,
   hostelResidence: masterCodeField,
   hostelFacing: masterCodeField,
@@ -542,10 +583,10 @@ const dynamicDataSchema = Joi.object({
   payingGuestFacing: masterCodeField,
   payingGuestCondition: masterCodeField,
   // payingGuestStatus: masterCodeField, — DISABLED (T-2026-081)
-  hospitalType: masterCodeField,
+  hospitalType: orCodeArray(masterCodeField),
   industrialShedType: masterCodeField,
   industrialPlotStatus: masterCodeField,
-  sezType: masterCodeField,
+  sezType: orCodeArray(masterCodeField),
   tdrZone: masterCodeField,
   tdrFloor: masterCodeField,
   tdrPlotFacing: masterCodeField,
@@ -558,14 +599,14 @@ const dynamicDataSchema = Joi.object({
   projectCondition: masterCodeField,
   // leasePeriod is `select` (master code) in most forms but `text`
   // (free-form like "11 months") in some — accept either.
-  leasePeriod: shortText,
+  leasePeriod: orCodeArray(shortText),
   paymentMode: masterCodeField,
   paymentPeriod: masterCodeField,
   // bankName is `select` (master code) in flat / bungalow / commercial /
   // shop configs, but `text` (free-form name) in project / bank_auction
   // configs. Accept either — a master code fits inside shortText's cap and
   // a free-text bank name is stored as-is.
-  bankName: shortText,
+  bankName: orCodeArray(shortText),
   district: masterCodeField,
   taluka: masterCodeField,
   // shivar is `dualMode` in land dual variants, `text` in single variants —
@@ -590,8 +631,8 @@ const dynamicDataSchema = Joi.object({
   // the "Bunglow Type" field (Left Corner / Middle / Right Corner) and is
   // a master-code select. All other rowhouse* fields mirror the Bungalow
   // shape.
-  rowhousePropertyPosition: masterCodeField,
-  rowhouseSize: masterCodeField,
+  rowhousePropertyPosition: orCodeArray(masterCodeField),
+  rowhouseSize: orCodeArray(masterCodeField),
   rowhouseLeaseMonthlyBudget: masterCodeField,
   rowhouseLeaseYearlyBudget: masterCodeField,
   rowhouseDepositBudget: masterCodeField,

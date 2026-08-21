@@ -13,6 +13,11 @@ const { pool } = require('../pool');
 // because the LIST SQL below LEFT JOINs the classification masters.
 const SORTABLE_COLUMNS = {
   created_at:    'ep.created_at',
+  // Property ID column. The list toolbar offers "Property ID (A-Z / Z-A)" and
+  // sends sort=property_code:asc|desc; without this entry buildOrderBy fell
+  // through to the title default and the route's Joi rejected the value
+  // outright with a 400 before it even got here.
+  property_code: 'ep.property_code',
   price:         'ep.price',
   location:      'ep.location',
   property_type: 'ep.property_type',
@@ -47,6 +52,7 @@ async function list({
   propertyVarietyCode,
   propertyVarietyLabel,
   status,
+  area,
   location,
   priceMin,
   priceMax,
@@ -179,6 +185,27 @@ async function list({
   if (status) {
     where.push('ep.status = ?');
     params.push(status);
+  }
+  // Curated Area filter. On THIS surface the Area dropdown persists into
+  // the EXISTING location column (its dualMode value is scalarized into it
+  // on submit), so the shared `area` param maps here rather than to a
+  // separate column - Enquiry needs no new column at all.
+  //
+  // EXACT match: the control is a dropdown of master labels, so there is no
+  // partial input to be forgiving about. The free-text `location` filter
+  // below keeps its LIKE, which is a different job.
+  if (area) {
+    // The Area dropdown is a checkbox MULTI-select on the Enquiry form, so a
+    // requirement covering several areas stores them comma-joined in this one
+    // column ("nashik,pune"). FIND_IN_SET keeps the filter exact — it matches
+    // whole list members only, so filtering by "pune" finds that row without
+    // a LIKE's false positives (e.g. "punawale").
+    //
+    // Single-area rows are unaffected: FIND_IN_SET('nashik', 'nashik') is a
+    // hit, exactly like the previous `=` comparison. Every pre-existing
+    // enquiry keeps matching the same filter values it always did.
+    where.push('FIND_IN_SET(?, ep.location)');
+    params.push(area);
   }
   if (location) {
     where.push('ep.location LIKE ?');

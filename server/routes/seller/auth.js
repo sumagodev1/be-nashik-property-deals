@@ -47,9 +47,24 @@ const verifyLimiter = rateLimit({
 });
 
 const LETTERS_ONLY = /^[A-Za-z\s]+$/;
-const emailField = Joi.string().email({ tlds: { allow: false } }).max(255);
-const mobileField = Joi.string().trim().pattern(/^\d{10}$/)
-  .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number' });
+// .lowercase() added: addresses are case-insensitive, but the value was
+// stored exactly as typed, so a seller who signed up as
+// "Tester@Sumagoinfotech.Com" saw that back on their profile. Joi converts
+// here (validate() runs with convert:true and assigns the result back to
+// req.body), so every write from now on lands lower-cased.
+//
+// Safe for existing rows: sellers.email is utf8mb4_unicode_ci, so the
+// login and duplicate-check lookups already match regardless of case.
+const emailField = Joi.string().trim().lowercase().email({ tlds: { allow: false } })
+  .max(255);
+// Indian mobile numbers always begin 6, 7, 8 or 9. This was /^\d{10}$/ - any
+// ten digits - so 1212121212 registered happily even though the form rejects it.
+//
+// Used only by the three REGISTRATION steps (start / verify / resend). Seller
+// login keys on email, so tightening this cannot lock out anyone who already
+// signed up with a number that would now be refused.
+const mobileField = Joi.string().trim().pattern(/^[6-9]\d{9}$/)
+  .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number starting with 6-9' });
 const nameField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY)
   .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
 const codeField = Joi.string().pattern(/^\d{6}$/);
@@ -85,6 +100,14 @@ const loginStart = Joi.object({
 const loginVerify = Joi.object({
   email: emailField.required(),
   code: codeField.required(),
+});
+// Resending a login code must NOT require a captcha. reCAPTCHA tokens are
+// single-use, the widget only lives on the email step, and "Resend OTP"
+// re-submitted the token the server had already consumed - so every resend
+// came back "Captcha verification failed" with no way to solve a fresh one.
+// Mirrors /register/resend, which is captcha-free for exactly this reason.
+const loginResend = Joi.object({
+  email: emailField.required(),
 });
 // Registration resend still keys on the mobile number captured at signup
 // (the user hasn't typed an email since registering, so we look them up
@@ -135,6 +158,33 @@ router.post('/login/start', startLimiter, validate(loginStart), async (req, res,
     const { captchaToken, ...payload } = req.body;
     res.json(await auth.loginStart(payload));
   } catch (e) { next(e); }
+});
+
+router.post('/login/resend', startLimiter, validate(loginResend), async (req, res, next) => {
+  try {
+    // Re-issues the sign-in code for a session already started by
+    // /login/start. Rate-limited by the same startLimiter, and it reveals
+    // nothing extra: an unknown or inactive address gets the same { ok: true }
+    // the start step returns in production, so this cannot be used to
+    // enumerate registered emails.
+    const sellersQ = require('../../db/queries/sellers');
+    const otpSvc = require('../../services/auth/otp');
+    const lowerEmail = String(req.body.email).trim().toLowerCase();
+    const seller = await sellersQ.findActiveVerifiedByEmail(lowerEmail);
+    if (!seller) return res.json({ ok: true });
+    const issued = await otpSvc.issue({
+      purpose: 'seller_login',
+      channel: 'email',
+      email: lowerEmail,
+      mobileNumber: seller.mobile_number,
+      label: 'sign-in',
+    });
+    const payload = { ok: true };
+    if (process.env.NODE_ENV !== 'production' && issued && issued.code) {
+      payload.devOtpCode = issued.code;
+    }
+    return res.json(payload);
+  } catch (e) { return next(e); }
 });
 
 router.post('/login/verify', verifyLimiter, validate(loginVerify), async (req, res, next) => {

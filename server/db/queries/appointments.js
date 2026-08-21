@@ -351,6 +351,34 @@ async function cancelAppointmentForConn(conn, { appointmentId, cancelledByAdminI
 // Appointment history
 // ─────────────────────────────────────────────────────────────────────
 
+/**
+ * ISO-8601 → the literal MySQL DATETIME wants.
+ *
+ * db/pool.js installs a typeCast that returns every DATETIME/TIMESTAMP READ as
+ * "YYYY-MM-DDTHH:MM:SSZ", so the browser parses the zone correctly. Feeding
+ * that same value back into a DATETIME column fails:
+ *
+ *   ER_TRUNCATED_WRONG_VALUE: Incorrect datetime value:
+ *   '2026-08-18T17:00:00Z' for column 'from_scheduled_at'
+ *
+ * which is exactly what rescheduling a booking did — `fromScheduledAt` is the
+ * appointment's existing scheduled_at, read through that typeCast. Anything
+ * already in MySQL's own shape passes through untouched.
+ */
+function toMysqlDateTime(value) {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime())
+      ? null
+      : value.toISOString().slice(0, 19).replace('T', ' ');
+  }
+  const s = String(value).trim();
+  // "2026-08-18T17:00:00Z" / "...T17:00:00.123Z" / "...T17:00:00+00:00"
+  const iso = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/);
+  if (iso) return `${iso[1]} ${iso[2]}`;
+  return s;
+}
+
 async function insertHistoryForConn(conn, {
   appointmentId, action, fromScheduledAt, toScheduledAt, adminId, actionNote,
 }) {
@@ -361,8 +389,8 @@ async function insertHistoryForConn(conn, {
     [
       Number(appointmentId),
       action,
-      fromScheduledAt || null,
-      toScheduledAt || null,
+      toMysqlDateTime(fromScheduledAt),
+      toMysqlDateTime(toScheduledAt),
       adminId || null,
       actionNote || null,
     ],

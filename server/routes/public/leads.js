@@ -61,4 +61,29 @@ router.post('/verify', captureLimiter, idempotency(), validate(verifyBody), asyn
   try { res.json(await leadService.verify(req.body)); } catch (e) { next(e); }
 });
 
+// The no-OTP path the website now uses: the visitor fills the form once and
+// the lead is captured immediately. Captcha is the spam gate here, exactly as
+// on the public Contact Us form. `email` is optional because it no longer has
+// to carry a code — the mobile number is what the team replies on.
+//
+// /start + /verify above are left in place and still work, so the OTP gate
+// can be switched back on from the frontend alone.
+const submitBody = Joi.object({
+  propertyId: Joi.number().integer().positive().required(),
+  actionType: Joi.string().valid('contact_seller', 'view_location').required(),
+  name: nameField.optional(),
+  mobile: mobileField.optional(),
+  email: emailField.optional(),
+  message: Joi.string().trim().max(2000).allow('', null).optional(),
+  captchaToken: Joi.string().allow('', null).optional(),
+}).unknown(true);
+
+router.post('/submit', captureLimiter, idempotency(), validate(submitBody), async (req, res, next) => {
+  try {
+    await verifyCaptcha(req.body.captchaToken, req.ip);
+    const { captchaToken, ...payload } = req.body;
+    res.json(await leadService.submit(payload));
+  } catch (e) { next(e); }
+});
+
 module.exports = router;

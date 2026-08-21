@@ -251,6 +251,10 @@ const listQuery = Joi.object({
   search: Joi.string().trim().max(255).allow('').optional(),
   propertyType: masterCodeField.allow('').optional(),
   transactionType: Joi.string().trim().valid('', 'rent_out', 'lease_out').optional(),
+  // Property Variety is stored in `transaction_variant` (code: resale / new /
+  // …) with `property_variety_name` carrying the label. The other five
+  // filters were already accepted here; only this one was missing.
+  propertyVariety: masterCodeField.allow('').optional(),
   district: masterCodeField.allow('').optional(),
   taluka: masterCodeField.allow('').optional(),
   shivar: masterCodeField.allow('').optional(),
@@ -269,7 +273,7 @@ const listQuery = Joi.object({
 
 async function fetchListRows(filters) {
   const {
-    propertyType, transactionType, district, taluka, shivar,
+    propertyType, transactionType, propertyVariety, district, taluka, shivar,
     endDateFrom, endDateTo, search,
   } = filters;
 
@@ -294,6 +298,12 @@ async function fetchListRows(filters) {
       where.push(`(${alias}.transaction_variant = ? OR ${alias}.transaction_type = ?)`);
       params.push(transactionType, transactionType);
     }
+    if (propertyVariety) {
+      // Match the stored code or the denormalised label, so the filter works
+      // whether the row was written with one or the other.
+      where.push(`(${alias}.transaction_variant = ? OR ${alias}.property_variety_name = ?)`);
+      params.push(propertyVariety, propertyVariety);
+    }
     if (district) { where.push(`${alias}.district = ?`); params.push(district); }
     if (taluka)   { where.push(`${alias}.taluka = ?`);   params.push(taluka); }
     if (shivar)   { where.push(`${alias}.shivar = ?`);   params.push(shivar); }
@@ -305,9 +315,20 @@ async function fetchListRows(filters) {
       // Property Variety (transaction_variant code + property_variety_name
       // label), Transaction (transaction_type + transaction_variant),
       // District, Taluka, Village/City (shivar), Owner (owner_name), and
-      // best-effort Tenant via the details JSON blob (CAST … AS CHAR — a
-      // read-only LIKE that preserves the polymorphic contacts semantics
-      // since we never reinterpret the JSON). Every referenced column
+      // best-effort Tenant via the details JSON.
+      //
+      // That last one uses JSON_SEARCH rather than CAST(details AS CHAR) LIKE.
+      // The CAST matched the raw JSON text, which includes the KEY names — so
+      // searching "land" returned every Shop, Flat and Rowhouse carrying a
+      // `landmark` key, and the operator saw results with no visible "land"
+      // anywhere. JSON_SEARCH matches string VALUES only, never keys. On the
+      // dev data the same term went from 9 rows (7 of them false) to the 2
+      // that genuinely are Land properties.
+      //
+      // JSON_VALID guards it: JSON_SEARCH raises an error on malformed JSON,
+      // and a few legacy rows still hold non-JSON text in `details`. Those
+      // rows simply do not match this branch; the real columns still apply.
+      // Every referenced column
       // exists on BOTH inventory_properties and enquiry_properties (verified),
       // so the same branch is emitted for both tables.
       const s = `%${search}%`;
@@ -323,7 +344,7 @@ async function fetchListRows(filters) {
         OR ${alias}.taluka LIKE ?
         OR ${alias}.shivar LIKE ?
         OR ${alias}.owner_name LIKE ?
-        OR CAST(${alias}.details AS CHAR) LIKE ?
+        OR (JSON_VALID(${alias}.details) AND JSON_SEARCH(${alias}.details, 'one', ?) IS NOT NULL)
         OR CAST(${alias}.agreement_end_date AS CHAR) LIKE ?
       )`);
       params.push(s, s, s, s, s, s, s, s, s, s, s, s, s);

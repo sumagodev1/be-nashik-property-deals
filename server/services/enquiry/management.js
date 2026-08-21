@@ -22,6 +22,7 @@ const ENQUIRY_STATUS_LABELS = {
 };
 const { assignUniqueCode, resolvePropertyTypeIdCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
+const audit = require('../admin/audit');
 // Centralised Property Type / Transaction Type / Property Variety
 // validator — see services/masters/propertyMasters.js for the contract.
 const { validatePropertyClassification } = require('../masters/propertyMasters');
@@ -260,7 +261,7 @@ async function updateProperty(id, payload) {
   return getProperty(id);
 }
 
-async function updateStatus(id, status, note, changedBy) {
+async function updateStatus(id, status, note, changedBy, req) {
   // T-2026-080: Enquiry now has its own status master (`enquiry_status`),
   // independent of the Inventory `status_type` vocabulary. Historical
   // enquiry rows may still carry legacy inventory codes (available/sold/
@@ -275,9 +276,48 @@ async function updateStatus(id, status, note, changedBy) {
   const existing = await enquiry.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   await enquiry.updateStatus(id, healed, note, changedBy);
+  // Status History: enquiry.updateStatus OVERWRITES status + status_note,
+  // so the property row only ever holds the latest value and every earlier
+  // change was being lost. The per-change trail is appended to audit_log
+  // instead of a new table: that table is already polymorphic
+  // (entity_type + entity_id, with ix_audit_log_entity) and carries a JSON
+  // metadata bag, which is exactly what leads.js uses for
+  // 'lead.status.changed'. Same fire-and-forget `void` idiom, so a logging
+  // failure can never fail the status change the admin just made.
+  if (req) {
+    void audit.record(req, {
+      action: 'enquiry_property.status.changed',
+      entityType: 'enquiry_property',
+      entityId: Number(id),
+      summary: `Property ${existing.property_code || `#${id}`} status: ${existing.status} → ${healed}`,
+      metadata: {
+        from: existing.status || null,
+        to: healed,
+        note: note || null,
+        entityLabel: existing.property_code || null,
+      },
+    });
+  }
   return getProperty(id);
 }
 
+// Status History read. Sourced from audit_log, so no migration was needed.
+// Deliberately NOT served from the /admin/audit-log router: that surface is
+// gated behind the grantable AUDIT_LOG module which sub-admins have NO grant
+// for on deploy, so reusing it would 403 this section for most operators.
+// Scoped here to a single property, it inherits the module gate this router
+// already applies to every other read of the same record.
+async function listStatusHistory(id) {
+  const existing = await enquiry.findById(id);
+  if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
+  return audit.list({
+    page: 1,
+    pageSize: 200,
+    action: 'enquiry_property.status.changed',
+    entityType: 'enquiry_property',
+    entityId: Number(id),
+  });
+}
 async function removeProperty(id) {
   const existing = await enquiry.findById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
@@ -577,7 +617,7 @@ function renderEnquiryCell(r, key) {
     case 'property_type':    return r.resolved_property_type_name    || r.property_type_name    || r.property_type    || '';
     case 'transaction_type': return r.resolved_transaction_type_name || r.transaction_type_name || r.transaction_type || '';
     case 'property_variety': return r.resolved_property_variety_name || r.property_variety_name || r.transaction_variant || '';
-    case 'status':           return ENQUIRY_STATUS_LABELS[r.status] || r.status || '';
+    case 'status':           return r._statusLabel || ENQUIRY_STATUS_LABELS[r.status] || r.status || '';
     case 'owner_name':       return r.owner_name || '';
     case 'agent_name':       return r.agent_name || '';
     case 'posting_date':     return formatDateShort(r.posting_date);
@@ -590,33 +630,78 @@ function renderEnquiryCell(r, key) {
   }
 }
 
-async function enrichRowsWithLocationLabels(rows) {
+async function enrichExportRows(rows) {
   const uniq = (arr) => Array.from(new Set(arr.filter(Boolean).map(String)));
-  const [districts, talukas, shivars] = await Promise.all([
+  const [districts, talukas, shivars, statusRes] = await Promise.all([
     locationsQuery.labelsForCodes('district', uniq(rows.map((r) => r.district))).catch(() => []),
     locationsQuery.labelsForCodes('taluka',   uniq(rows.map((r) => r.taluka))).catch(() => []),
     locationsQuery.labelsForCodes('shivar',   uniq(rows.map((r) => r.shivar))).catch(() => []),
+    // Enquiry has its OWN status master (T-2026-080), separate from the
+    // Inventory status_type vocabulary. listAll (not activeCodes) so the
+    // retired available/sold/rented/inactive codes still on historical rows
+    // resolve to their "(legacy)" labels instead of leaking the raw code.
+    masters.listAll('enquiry_status').catch(() => null),
   ]);
   const dMap = Object.fromEntries((districts || []).map((r) => [r.code, r.label]));
   const tMap = Object.fromEntries((talukas   || []).map((r) => [r.code, r.label]));
   const sMap = Object.fromEntries((shivars   || []).map((r) => [r.code, r.label]));
+  const stMap = Object.fromEntries((((statusRes && statusRes.data) || [])).map((r) => [r.code, r.label]));
   return rows.map((r) => ({
     ...r,
     _districtLabel: r.district ? (dMap[r.district] || r.district) : '',
     _talukaLabel:   r.taluka   ? (tMap[r.taluka]   || r.taluka)   : '',
     _shivarLabel:   r.shivar   ? (sMap[r.shivar]   || r.shivar)   : '',
+    // Master label, then the legacy hardcoded map, then the raw code - so no
+    // export can render an empty status cell.
+    _statusLabel:   r.status   ? (stMap[r.status] || ENQUIRY_STATUS_LABELS[r.status] || r.status) : '',
   }));
 }
 
-function buildEnquirySummaryCards(rows) {
-  const counts = { available: 0, sold: 0, rented: 0 };
-  for (const r of rows) if (counts[r.status] != null) counts[r.status] += 1;
-  return [
-    { label: 'Total Records', value: String(rows.length) },
-    { label: 'Available',     value: String(counts.available) },
-    { label: 'Sold',          value: String(counts.sold) },
-    { label: 'Rented',        value: String(counts.rented) },
-  ];
+// Summary cards, derived from the live enquiry_status master.
+//
+// These were a hardcoded Available / Sold / Rented trio inherited from the
+// Inventory report. Enquiry has had its own status master since T-2026-080
+// and NONE of those three codes is active on it - the live vocabulary is
+// New Enquiry, Enquiry In Discussion, Enquiry Converted, Enquiry Lost. So
+// every card on every enquiry export read 0 while Total counted the rows:
+// the breakdown was entirely blank, not merely wrong.
+//
+// One card per ACTIVE status, in the master's own sort order, so the report
+// mirrors the Status filter and follows any status the client adds later.
+// Mirrors buildInventorySummaryCards - kept as a sibling rather than shared
+// because the two surfaces read different masters and are deliberately
+// independent.
+async function buildEnquirySummaryCards(rows) {
+  const res = await masters.listAll('enquiry_status').catch(() => null);
+  const all = (res && res.data) || [];
+  const active = all
+    .filter((s) => s.isActive)
+    .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+
+  const counts = new Map();
+  for (const r of rows) { const k = String(r.status || ''); counts.set(k, (counts.get(k) || 0) + 1); }
+
+  const total = { label: 'Total Records', value: String(rows.length) };
+
+  // Master unreachable: fall back to the statuses actually present rather
+  // than printing an empty breakdown.
+  if (active.length === 0) {
+    const present = [...counts.entries()].filter(([k]) => k);
+    return [total, ...present.slice(0, 5).map(([k, v]) => ({
+      label: ENQUIRY_STATUS_LABELS[k] || k,
+      value: String(v),
+    }))];
+  }
+
+  // drawSummaryCards renders at most 6. Under that show every active status
+  // (a 0 is meaningful); above it keep Total plus the statuses present so a
+  // real number is never pushed off the strip by an empty one.
+  const cardsFor = (list) => list.map((s) => ({
+    label: s.label || s.code,
+    value: String(counts.get(s.code) || 0),
+  }));
+  if (active.length + 1 <= 6) return [total, ...cardsFor(active)];
+  return [total, ...cardsFor(active.filter((s) => counts.get(s.code)).slice(0, 5))];
 }
 
 async function buildEnquiryFilterChips(filters) {
@@ -654,7 +739,7 @@ function exportedByLabel(auth) {
 
 async function exportCsv(filters, context = {}) {
   const { rows: raw } = await enquiry.list({ ...filters, page: 1, pageSize: 100000 });
-  const rows = await enrichRowsWithLocationLabels(raw);
+  const rows = await enrichExportRows(raw);
   return csvUtil.buildCsvFromColumns({
     columns: ENQUIRY_EXPORT_COLUMNS.map((c) => ({
       label: c.label,
@@ -667,7 +752,7 @@ async function exportCsv(filters, context = {}) {
 
 async function exportXlsx(filters, context = {}) {
   const { rows: raw } = await enquiry.list({ ...filters, page: 1, pageSize: 100000 });
-  const rows = await enrichRowsWithLocationLabels(raw);
+  const rows = await enrichExportRows(raw);
   return excel.buildWorkbookFromColumns({
     sheetName: 'Enquiry Properties',
     columns: ENQUIRY_EXPORT_COLUMNS.map((c) => ({
@@ -683,7 +768,7 @@ async function exportXlsx(filters, context = {}) {
 
 async function exportPdf(filters, context = {}) {
   const { rows: raw } = await enquiry.list({ ...filters, page: 1, pageSize: 100000 });
-  const rows = await enrichRowsWithLocationLabels(raw);
+  const rows = await enrichExportRows(raw);
   const [branding, filterChips] = await Promise.all([
     getBrandingSnapshot(),
     buildEnquiryFilterChips(filters || {}),
@@ -699,7 +784,7 @@ async function exportPdf(filters, context = {}) {
     }),
     branding,
     exportedBy: exportedByLabel(context.auth),
-    summaryCards: buildEnquirySummaryCards(rows),
+    summaryCards: await buildEnquirySummaryCards(rows),
     filterChips,
     emptyMessage: 'No records found for the selected filters.',
   });
@@ -711,6 +796,7 @@ module.exports = {
   createProperty,
   updateProperty,
   updateStatus,
+  listStatusHistory,
   removeProperty,
   addImages,
   removeImage,

@@ -31,6 +31,18 @@ const { getPropertyTypeIdCode } = require('../../db/queries/masters');
 // unlikely for the expected inventory size.
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const SUFFIX_LEN = 7;
+
+// Narrowest property_code column in the schema. Migration 121 widens
+// website_properties to VARCHAR(64) to match inventory_properties and
+// enquiry_properties, but a generated code is clamped to this regardless so
+// a database that has not run 121 yet cannot fail an insert with
+// ER_DATA_TOO_LONG - which is exactly what a seller's submit hit.
+//
+// The old worst case was 10 + 1 + 10 + 1 + 2 + 1 + 7 = 32: equal to the
+// declared width, so there was no room for SUFFIX_LEN or either slice to
+// grow. Enforcing the bound here keeps that a code concern rather than
+// something that only surfaces as a database error at insert time.
+const MAX_CODE_LEN = 32;
 const MAX_ATTEMPTS = 8;
 
 // Fallback map used when master_property_types.id_code is NULL (e.g. a newly
@@ -52,6 +64,15 @@ const PROPERTY_TYPE_ID_CODES = {
   pre_leased_property:  'PLP',
   project_registration: 'PRJ',
   rowhouse:             'RWH',
+  // Website-owned Property Type codes (master_key 'website_property_type',
+  // migration 055). The Website deliberately runs its own vocabulary, and it
+  // spells two types differently from the Global masters — 'flat_apartment'
+  // vs 'flat', 'row_house' vs 'rowhouse'. Without these aliases a seller
+  // listing resolved to 'UNK' and was issued a code like NSK-UNK-26-XXXXXXX.
+  // Mapped to the same abbreviations as their Global twins so a Flat is FLT
+  // no matter which surface registered it.
+  flat_apartment:       'FLT',
+  row_house:            'RWH',
   sez_land:             'SZL',
   sez_plot:             'SZP',
   shop:                 'SHP',
@@ -121,9 +142,22 @@ async function resolvePropertyTypeIdCode(propertyTypeCode) {
  */
 function generatePropertyCode(districtCode, propertyTypeIdCode, now = new Date()) {
   const yy = String(now.getFullYear() % 100).padStart(2, '0');
-  const dc = String(districtCode || 'UNK').toUpperCase().slice(0, 10);
-  const tc = String(propertyTypeIdCode || 'UNK').toUpperCase().slice(0, 10);
-  return `${dc}-${tc}-${yy}-${randomSuffix()}`;
+  const suffix = randomSuffix();
+  let dc = String(districtCode || 'UNK').toUpperCase().slice(0, 10);
+  let tc = String(propertyTypeIdCode || 'UNK').toUpperCase().slice(0, 10);
+
+  // The year and the random suffix carry the uniqueness, so they are never
+  // trimmed - shortening the suffix would raise the collision rate. Only the
+  // two human-readable segments give ground, district first, so the type
+  // abbreviation an operator reads stays intact. For every real input
+  // (3-letter district, 2-3 letter type) this is a no-op.
+  const budget = MAX_CODE_LEN - (yy.length + suffix.length + 3);
+  if (dc.length + tc.length > budget) {
+    dc = dc.slice(0, Math.max(1, budget - tc.length));
+    if (dc.length + tc.length > budget) tc = tc.slice(0, Math.max(1, budget - dc.length));
+  }
+
+  return `${dc}-${tc}-${yy}-${suffix}`;
 }
 
 /**
