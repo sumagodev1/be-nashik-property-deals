@@ -481,7 +481,14 @@ async function create(payload) {
       -- lands the correct "normal property" flag for every existing caller
       -- that predates T-136. total_units_planned is NULL when unset.
       is_builder_master, total_units_planned)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     -- 39 placeholders for 39 columns. Keep the two in step: area_name
+     -- (migration 120) was added to the column list and to the params array
+     -- but not here, leaving 38. mysql2 substitutes positionally and stops
+     -- when the placeholders run out, so the last one reached MySQL as a
+     -- literal question mark and every inventory CREATE died with
+     -- ER_PARSE_ERROR. The UPDATE below is a separate statement, which is
+     -- why editing a property kept working.
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.propertyCode,
       payload.postingDate || null,
