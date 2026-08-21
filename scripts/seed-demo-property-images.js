@@ -4,9 +4,11 @@
  *
  * WHY
  * ---
- * Website properties #24-#35 were seeded without any images. The public site
+ * Website properties #14-#35 were seeded without any images. The public site
  * falls back to one bundled placeholder when `images` is empty, so every one of
- * those listings rendered the same picture. This gives each a photo that suits
+ * those listings rendered the same picture. Note the public list API paginates on
+ * `pageSize` (default 12, max 48), not `limit` - querying with `limit` silently
+ * returns only the first page. This gives each a photo that suits
  * its property type.
  *
  * LICENSING
@@ -48,6 +50,16 @@ const PROPERTY_KIND = 'website';
 const RENDER = '?auto=format&fit=crop&w=1600&q=80&fm=jpg';
 
 const TARGETS = [
+  { id: 14, label: '2 BHK in Panchavati near temple',   photo: 'photo-1628592102751-ba83b0314276', alt: 'Modern living room with television and armchair' },
+  { id: 15, label: '3 BHK premium on Gangapur Road',    photo: 'photo-1772797583328-f83bc3f94f80', alt: 'Bright living room with wooden accents' },
+  { id: 16, label: '1 BHK in College Road',             photo: 'photo-1560448205-17d3a46c84de', alt: 'Compact living room with armchair and coffee table' },
+  { id: 17, label: 'Spacious 2 BHK in Indira Nagar',    photo: 'photo-1738168246881-40f35f8aba0a', alt: 'Living room with large green couch' },
+  { id: 18, label: '4 BHK duplex near Anandvalli',      photo: 'photo-1737233459465-8eaf6c7d8856', alt: 'Open living and dining area' },
+  { id: 19, label: 'Independent villa Mahatma Nagar',   photo: 'photo-1722421492323-eaf9c401befe', alt: 'Three storey house with stone cladding' },
+  { id: 20, label: 'Furnished villa for rent Tidke',    photo: 'photo-1721815693498-cc28507c0ba2', alt: 'Two storey house with balconies' },
+  { id: 21, label: 'NA plot in Adgaon 2400 sq ft',      photo: 'photo-1652089799111-cf30e90a5586', alt: 'Bare plot of dirt and grass' },
+  { id: 22, label: 'Corner plot in Pathardi Phata',     photo: 'photo-1626606441820-93d9a3e414a9', alt: 'Open grass plot' },
+  { id: 23, label: 'Ground-floor shop on M.G. Road',    photo: 'photo-1770226415002-dbbd40327ec7', alt: 'Shop frontage with window display' },
   { id: 24, label: 'Shop in CIDCO commercial complex',   photo: 'photo-1764795850238-7a024db5e3ee', alt: 'Modern retail store interior' },
   { id: 25, label: 'Office space in Satpur MIDC',        photo: 'photo-1631193816258-28b44b21e78b', alt: 'Open plan office with rows of desks' },
   { id: 26, label: 'Commercial showroom Ambad Link Rd',  photo: 'photo-1759050486852-fdfe2fdc7bea', alt: 'Modern showroom with arched ceiling' },
