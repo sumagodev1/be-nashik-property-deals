@@ -6,25 +6,16 @@
  * without forcing every caller to know whether SMS is actually configured.
  *
  * Behavior:
- *   - In development (NODE_ENV !== 'production'): the OTP service already
- *     logs the code to stdout and returns it on the start-response as
- *     `devOtpCode`. So `trySendSms` here is a no-op success in dev.
- *   - In production: no provider is wired, so this returns { ok: false }
- *     with a clear marker. Wire your provider (Twilio, MSG91, AWS SNS,
- *     Fast2SMS, etc.) at the marked TODO before going live.
+ *   No provider is wired in any environment, so this returns { ok: false }
+ *   with a clear marker. Wire your provider (Twilio, MSG91, AWS SNS,
+ *   Fast2SMS, etc.) at the marked TODO before going live.
  *
  * Keep the failure soft (return false / never throw) so OTP issuance still
- * succeeds and the row is persisted — the user can request a resend, and
- * the dev-OTP path still works during integration testing.
+ * succeeds and the row is persisted - the user can request a resend.
  */
 
 // eslint-disable-next-line no-unused-vars
 async function trySendSms({ mobileNumber, body }) {
-  if (process.env.NODE_ENV !== 'production') {
-    // Dev mode: caller already logged + returned `devOtpCode`. No real SMS needed.
-    return { ok: true, dev: true };
-  }
-
   // TODO(SMS-gateway): wire a real provider here.
   // Example with Twilio (uncomment + install `twilio`):
   //

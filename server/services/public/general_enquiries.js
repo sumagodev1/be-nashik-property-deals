@@ -54,7 +54,7 @@ async function start({ name, mobile, email }) {
   }
   const buyerEmail = String(email).trim().toLowerCase();
 
-  const issued = await otp.issue({
+  await otp.issue({
     purpose: 'buyer_lead',
     channel: 'email',
     email: buyerEmail,
@@ -63,7 +63,6 @@ async function start({ name, mobile, email }) {
   });
   return {
     ok: true,
-    ...(issued && issued.code && process.env.NODE_ENV !== 'production' ? { devOtpCode: issued.code } : {}),
   };
 }
 

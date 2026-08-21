@@ -137,7 +137,7 @@ router.post('/register/resend', startLimiter, validate(registerResend), async (r
     if (!seller || seller.is_verified || !seller.email) {
       return res.json({ ok: true });
     }
-    const issued = await otp.issue({
+    await otp.issue({
       purpose: 'seller_register',
       channel: 'email',
       email: String(seller.email).toLowerCase(),
@@ -145,9 +145,6 @@ router.post('/register/resend', startLimiter, validate(registerResend), async (r
       label: 'registration',
     });
     const payload = { ok: true };
-    if (process.env.NODE_ENV !== 'production' && issued && issued.code) {
-      payload.devOtpCode = issued.code;
-    }
     res.json(payload);
   } catch (e) { next(e); }
 });
@@ -172,7 +169,7 @@ router.post('/login/resend', startLimiter, validate(loginResend), async (req, re
     const lowerEmail = String(req.body.email).trim().toLowerCase();
     const seller = await sellersQ.findActiveVerifiedByEmail(lowerEmail);
     if (!seller) return res.json({ ok: true });
-    const issued = await otpSvc.issue({
+    await otpSvc.issue({
       purpose: 'seller_login',
       channel: 'email',
       email: lowerEmail,
@@ -180,9 +177,6 @@ router.post('/login/resend', startLimiter, validate(loginResend), async (req, re
       label: 'sign-in',
     });
     const payload = { ok: true };
-    if (process.env.NODE_ENV !== 'production' && issued && issued.code) {
-      payload.devOtpCode = issued.code;
-    }
     return res.json(payload);
   } catch (e) { return next(e); }
 });

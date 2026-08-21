@@ -24,16 +24,12 @@ const RATE_PER_HOUR = Number(process.env.OTP_RATE_PER_HOUR) || 5;
 // the weakest link.
 const BCRYPT_COST = 12;
 
-// Static dev OTP — same code every time so manual testing doesn't require
-// hunting through email/SMS during development. Override via env if you want
-// a different fixed code for your local. In production we always generate a
-// CSPRNG-backed random 6-digit code.
-const DEV_STATIC_OTP = (process.env.DEV_STATIC_OTP || '123456').padStart(6, '0');
-
+// Always a CSPRNG-backed random 6-digit code. There is deliberately no
+// fixed-code shortcut for development. The NODE_ENV check that used to sit
+// here meant any deploy that lost its NODE_ENV would issue 123456 to every
+// user AND echo it back in the API response - an authentication bypass, not
+// a testing convenience.
 function generateCode() {
-  if (process.env.NODE_ENV !== 'production') {
-    return DEV_STATIC_OTP;
-  }
   return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
 }
 
@@ -48,11 +44,9 @@ function expiresAt() {
  *
  * Rate-limited per (purpose, key) bucket. Throws HttpError on limit.
  *
- * In NODE_ENV !== 'production' the plain OTP code is logged to stdout AND
- * returned to the caller via `{ code }` so dev flows can complete without
- * a real SMTP/SMS provider. In production the caller MUST discard the code
- * before sending the response — see the `withDevCode` helpers in the
- * caller services.
+ * The plaintext code never leaves this module: it is hashed into the row,
+ * placed in the outgoing message, then dropped. Callers receive only
+ * `{ sent: true }`, so no route can leak a code even by accident.
  */
 async function issue({
   purpose,
@@ -83,15 +77,6 @@ async function issue({
     expiresAt: expiresAt(),
   });
 
-  if (process.env.NODE_ENV !== 'production') {
-    // eslint-disable-next-line no-console
-    console.log(
-      `[otp] purpose=${purpose} channel=${channel} ` +
-        `${channel === 'sms' ? `mobile=${mobileNumber}` : `email=${email}`} ` +
-        `code=${code} (DEV ONLY — never log in production)`,
-    );
-  }
-
   if (channel === 'sms') {
     await trySendSms({
       mobileNumber,
@@ -106,7 +91,7 @@ async function issue({
     });
   }
 
-  return { code };
+  return { sent: true };
 }
 
 async function enforceRateLimitsEmail(purpose, email) {

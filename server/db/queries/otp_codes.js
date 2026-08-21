@@ -59,20 +59,6 @@ async function countRecentForMobile({ purpose, mobileNumber, sinceSeconds }) {
   return Number(n);
 }
 
-async function devFindLatest({ email, mobileNumber, purpose }) {
-  const where = [];
-  const params = [];
-  if (email) { where.push('email = ?'); params.push(email); }
-  if (mobileNumber) { where.push('mobile_number = ?'); params.push(mobileNumber); }
-  if (purpose) { where.push('purpose = ?'); params.push(purpose); }
-  if (where.length === 0) return null;
-  const sql = `SELECT id, purpose, code_hash, attempts, expires_at, consumed_at, created_at
-               FROM otp_codes WHERE ${where.join(' AND ')}
-               ORDER BY id DESC LIMIT 1`;
-  const [rows] = await pool.query(sql, params);
-  return rows[0] || null;
-}
-
 module.exports = {
   create,
   findLatestUnconsumed,
@@ -81,5 +67,4 @@ module.exports = {
   consume,
   countRecentForEmail,
   countRecentForMobile,
-  devFindLatest,
 };

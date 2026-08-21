@@ -65,7 +65,7 @@ async function registerStart(payload) {
     sellerId = await sellers.create({ ...payload, email });
   }
 
-  const issued = await otp.issue({
+  await otp.issue({
     purpose: 'seller_register',
     channel: 'email',
     email,
@@ -75,10 +75,7 @@ async function registerStart(payload) {
 
     // expiresInMinutes mirrors sign-in: the screen states the code's real
     // validity instead of a hardcoded number that drifts from OTP_TTL_MINUTES.
-  return withDevCode(
-    { mobileNumber: payload.mobileNumber, email, sellerId, expiresInMinutes: otp.TTL_MINUTES },
-    issued,
-  );
+  return { mobileNumber: payload.mobileNumber, email, sellerId, expiresInMinutes: otp.TTL_MINUTES };
 }
 
 async function registerVerify({ mobileNumber, code }) {
@@ -176,7 +173,7 @@ async function loginStart({ email }) {
     }
     throw new HttpError(404, 'NOT_FOUND', 'No account found for this email.');
   }
-  const issued = await otp.issue({
+  await otp.issue({
     purpose: 'seller_login',
     channel: 'email',
     email: lowerEmail,
@@ -186,10 +183,7 @@ async function loginStart({ email }) {
   // expiresInMinutes is the code's REAL validity (OTP_TTL_MINUTES). The
   // login screen only showed a 30-second countdown, which is the resend
   // cooldown - it was being read as "the code expires in 30 seconds".
-  return withDevCode(
-    { ok: true, emailHint: maskEmail(seller.email), expiresInMinutes: otp.TTL_MINUTES },
-    issued,
-  );
+  return { ok: true, emailHint: maskEmail(seller.email), expiresInMinutes: otp.TTL_MINUTES };
 }
 
 async function loginVerify({ email, code }) {
@@ -240,13 +234,6 @@ async function issueTokenWithRefresh(seller) {
   const { token, user } = issueToken(seller);
   const refreshToken = await refresh.issue({ subjectKind: 'seller', subjectId: seller.id });
   return { token, user, refreshToken };
-}
-
-function withDevCode(payload, issued) {
-  if (process.env.NODE_ENV !== 'production' && issued && issued.code) {
-    return { ...payload, devOtpCode: issued.code };
-  }
-  return payload;
 }
 
 function toUser(seller) {

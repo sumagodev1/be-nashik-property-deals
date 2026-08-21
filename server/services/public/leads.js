@@ -45,7 +45,7 @@ async function start({ propertyId, name, mobile, email }) {
   }
   const buyerEmail = String(email).trim().toLowerCase();
 
-  const issued = await otp.issue({
+  await otp.issue({
     purpose: 'buyer_lead',
     channel: 'email',
     email: buyerEmail,
@@ -56,7 +56,6 @@ async function start({ propertyId, name, mobile, email }) {
   return {
     ok: true,
     property: { id: prop.id, code: prop.property_code, title: prop.title },
-    ...(issued && issued.code && process.env.NODE_ENV !== 'production' ? { devOtpCode: issued.code } : {}),
   };
 }
 
