@@ -830,11 +830,17 @@ async function renderBuilderUnitsSections(propertyKind, row, unitDescriptors, se
 // ── Property URL builder ─────────────────────────────────────────────
 
 function buildPropertyUrl(propertyKind, propertyId) {
-  const publicBase = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
-  const adminBase  = (process.env.ADMIN_PANEL_URL || publicBase || '').replace(/\/$/, '');
+  // These are PAGE links, so they must never fall back to PUBLIC_BASE_URL.
+  // That variable is the BACKEND origin - it exists to serve /uploads - and
+  // it serves none of these routes: a share mail built from it handed the
+  // recipient a raw JSON 404. Two separate origins are needed instead, and
+  // when neither is configured the correct result is no link at all, which
+  // is how this behaved before PUBLIC_BASE_URL was ever set.
+  const siteBase  = (process.env.PUBLIC_SITE_URL || '').replace(/\/$/, '');
+  const adminBase = (process.env.ADMIN_PANEL_URL || '').replace(/\/$/, '');
   if (propertyKind === 'website') {
-    if (publicBase) return `${publicBase}/properties/${propertyId}`;
-    if (adminBase)  return `${adminBase}/admin/website-properties/${propertyId}`;
+    if (siteBase)  return `${siteBase}/properties/${propertyId}`;
+    if (adminBase) return `${adminBase}/admin/website-properties/${propertyId}`;
     return null;
   }
   if (adminBase) return `${adminBase}/admin/${propertyKind === 'enquiry' ? 'enquiry' : 'inventory'}/${propertyId}/view`;
@@ -1106,7 +1112,7 @@ async function shareProperty(propertyKind, propertyId, {
   // The Share dialog checkbox is labelled "Property Video URL", but nothing
   // here ever rendered that value: includePropertyUrl only drove
   // buildPropertyUrl() (a link back to the property PAGE, itself null unless
-  // ADMIN_PANEL_URL / PUBLIC_BASE_URL are configured), and the completion
+  // ADMIN_PANEL_URL / PUBLIC_SITE_URL are configured), and the completion
   // pass walks top-level columns + details.dynamicData - so a link stored at
   // details.propertyLink was missed by every path. Rendered as a real anchor
   // below so it is clickable in the mail client.
@@ -1182,7 +1188,7 @@ async function shareProperty(propertyKind, propertyId, {
     // Rows that exist but whose file could not be read from disk.
     unreadableFiles,
     // True when the operator asked for the property link but no base URL is
-    // configured (PUBLIC_BASE_URL / ADMIN_PANEL_URL), so the mail went out
+    // configured (ADMIN_PANEL_URL / PUBLIC_SITE_URL), so the mail went out
     // without one. Previously indistinguishable from "link included".
     propertyUrlOmitted: Boolean(includePropertyUrl && !propertyUrl),
     sectionsRendered: renderedSections.filter((s) => s.lines.length > 0).map((s) => s.title),
