@@ -79,12 +79,29 @@
 --   which the form continues to write regardless.
 -- ============================================================================
 
-ALTER TABLE inventory_properties
-  ADD COLUMN IF NOT EXISTS area_name VARCHAR(255) NULL
-    COMMENT 'Curated Area (locality) picked from the `location` master, shown as "Global / Area". Optional, NULL renders as NA. NOT the property size - see area_value / area_unit for that. Mirrors details.dynamicData.area.'
-    AFTER location;
+-- Guarded via the 096-pattern rather than ADD COLUMN IF NOT EXISTS: that form
+-- is MariaDB-only and is a hard syntax error on MySQL 8, which the deploy
+-- target runs. The guard makes re-apply a no-op on both engines.
+SET @exist := (
+  SELECT COUNT(1) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'inventory_properties'
+    AND COLUMN_NAME = 'area_name'
+);
+SET @sql := IF(@exist = 0,
+  'ALTER TABLE inventory_properties ADD COLUMN area_name VARCHAR(255) NULL COMMENT ''Curated Area (locality) picked from the `location` master, shown as "Global / Area". Optional, NULL renders as NA. NOT the property size - see area_value / area_unit for that. Mirrors details.dynamicData.area.'' AFTER location',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- The dashboard facet groups on this column, so it needs an index. Plain
 -- non-unique: many properties legitimately share one Area.
-ALTER TABLE inventory_properties
-  ADD INDEX IF NOT EXISTS ix_inventory_properties_area_name (area_name);
+SET @exist := (
+  SELECT COUNT(1) FROM information_schema.STATISTICS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'inventory_properties'
+    AND INDEX_NAME = 'ix_inventory_properties_area_name'
+);
+SET @sql := IF(@exist = 0,
+  'ALTER TABLE inventory_properties ADD INDEX ix_inventory_properties_area_name (area_name)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
