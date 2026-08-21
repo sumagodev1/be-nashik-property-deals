@@ -7,7 +7,12 @@ const { renderEmail, BRAND } = require('../email/emailTemplate');
 const { trySendSms } = require('../sms/sender');
 const { HttpError } = require('../../middleware/errors');
 
-const TTL_MINUTES = Number(process.env.OTP_TTL_MINUTES) || 10;
+// 2 minutes. Every user-facing string - the email body, the SMS, and the
+// notice on the OTP screen - is derived from this one value, so changing it
+// here changes what we tell people as well. Keep it that way: the previous
+// mismatch (screen said one thing, the row expired on another schedule) is
+// what made this confusing to begin with.
+const TTL_MINUTES = Number(process.env.OTP_TTL_MINUTES) || 2;
 const MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS) || 5;
 const RATE_PER_MINUTE = Number(process.env.OTP_RATE_PER_MINUTE) || 1;
 const RATE_PER_HOUR = Number(process.env.OTP_RATE_PER_HOUR) || 5;

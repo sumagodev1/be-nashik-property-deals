@@ -73,8 +73,10 @@ async function registerStart(payload) {
     label: 'registration',
   });
 
+    // expiresInMinutes mirrors sign-in: the screen states the code's real
+    // validity instead of a hardcoded number that drifts from OTP_TTL_MINUTES.
   return withDevCode(
-    { mobileNumber: payload.mobileNumber, email, sellerId },
+    { mobileNumber: payload.mobileNumber, email, sellerId, expiresInMinutes: otp.TTL_MINUTES },
     issued,
   );
 }
