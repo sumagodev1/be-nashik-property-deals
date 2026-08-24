@@ -180,7 +180,8 @@ function wrapHtml(title, tableRows, extraHtml) {
           </tr>
           <tr>
             <td style="padding:20px 24px;">
-              <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:100%;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:100%;table-layout:fixed;">
+                <colgroup><col width="34%" style="width:34%;"/><col width="66%" style="width:66%;"/></colgroup>
                 ${tableRows}
               </table>
               ${extraHtml || ''}
@@ -201,16 +202,18 @@ function wrapHtml(title, tableRows, extraHtml) {
 
 function rowHtml(label, value) {
   const v = (value === null || value === undefined || value === '') ? '—' : String(value);
+  const cellValue = escHtml(v).replace(/\r?\n/g, '<br/>');
   return `<tr>
-    <td style="padding:6px 12px 6px 0;color:#6b7280;vertical-align:top;white-space:nowrap;font-size:13px;">${escHtml(label)}</td>
-    <td style="padding:6px 0;color:#111827;font-size:13px;">${escHtml(v)}</td>
+    <td width="34%" style="width:34%;padding:8px 14px 8px 0;color:#6b7280;vertical-align:top;white-space:normal;word-wrap:break-word;overflow-wrap:break-word;font-size:13px;line-height:1.45;">${escHtml(label)}</td>
+    <td width="66%" style="width:66%;padding:8px 0;color:#111827;vertical-align:top;white-space:normal;word-wrap:break-word;overflow-wrap:break-word;font-size:13px;line-height:1.5;">${cellValue}</td>
   </tr>`;
 }
 
 function textLines(pairs) {
   return pairs.map(([k, v]) => {
     const val = (v === null || v === undefined || v === '') ? '—' : String(v);
-    return `${k}: ${val}`;
+    const wrappedValue = val.replace(/\r?\n/g, '\n  ');
+    return `${k}: ${wrappedValue}`;
   }).join('\n');
 }
 

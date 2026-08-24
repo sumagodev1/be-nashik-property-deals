@@ -661,7 +661,7 @@ async function buildCompletionSections(propertyKind, row, dyn, details, alreadyR
 // collectImageAttachments / collectDocumentAttachments helpers; this
 // only adds an in-body reference so the recipient can see how many
 // files are attached and what they are called.
-function buildFileListSection(title, rows, itemLabel, hrefFor) {
+function buildFileListSection(title, rows, itemLabel, hrefFor, options = {}) {
   const lines = [];
   if (!Array.isArray(rows) || rows.length === 0) return { title, lines };
   lines.push({ label: 'Count', value: String(rows.length) });
@@ -673,10 +673,22 @@ function buildFileListSection(title, rows, itemLabel, hrefFor) {
     // before — so a deployment with no PUBLIC_BASE_URL configured shows text
     // rather than a broken relative link in someone's inbox.
     const href = typeof hrefFor === 'function' ? hrefFor(f) : null;
-    lines.push(href ? { label: `${itemLabel} ${i + 1}`, value: String(name), href }
-      : { label: `${itemLabel} ${i + 1}`, value: String(name) });
+    const cid = typeof options.cidFor === 'function' ? options.cidFor(f) : null;
+    lines.push({
+      label: `${itemLabel} ${i + 1}`,
+      value: String(name),
+      ...(href ? { href } : {}),
+      ...(cid ? { cid } : {}),
+    });
   });
   return { title, lines };
+}
+
+// Content IDs make the same uploaded photo visible inside HTML share emails
+// as well as available as a normal attachment. The CID is deterministic for
+// the property/file row, so the body and Nodemailer attachment always match.
+function imageContentId(propertyKind, propertyId, fileId) {
+  return `npd-${propertyKind}-property-${propertyId}-image-${fileId}@nasikpropertydeals`;
 }
 
 // Absolute, publicly reachable URL for an uploaded IMAGE, or null.
@@ -858,6 +870,24 @@ function esc(s) {
 
 function renderTextBody({ userMessage, renderedSections, propertyUrl, videoUrl }) {
   const parts = [];
+  const allLabels = renderedSections
+    .flatMap((section) => (Array.isArray(section.lines) ? section.lines : []))
+    .map((line) => String(line.label || ''));
+  // Keep the plain-text fallback readable in clients that do not render HTML.
+  // A bounded label column prevents one unusually long dynamic label from
+  // pushing every value too far to the right while preserving alignment for
+  // the normal property fields.
+  const labelWidth = Math.max(
+    18,
+    Math.min(36, allLabels.reduce((max, label) => Math.max(max, label.length), 0)),
+  );
+  const alignedLine = (line) => {
+    const label = `${String(line.label || '')}:`.padEnd(labelWidth + 1, ' ');
+    const continuationIndent = ' '.repeat(labelWidth + 3);
+    const value = String(line.value == null ? '' : line.value)
+      .replace(/\r?\n/g, `\n${continuationIndent}`);
+    return line.href ? `${label}  ${value} — ${line.href}` : `${label}  ${value}`;
+  };
   if (userMessage) parts.push(userMessage);
   for (const section of renderedSections) {
     if (section.lines.length === 0) continue;
@@ -866,7 +896,7 @@ function renderTextBody({ userMessage, renderedSections, propertyUrl, videoUrl }
     parts.push('-'.repeat(section.title.length));
     for (const line of section.lines) {
       // Text clients get the URL spelled out — most linkify a bare http(s).
-      parts.push(line.href ? `${line.label}: ${line.value} — ${line.href}` : `${line.label}: ${line.value}`);
+      parts.push(alignedLine(line));
     }
   }
   if (videoUrl) {
@@ -882,21 +912,37 @@ function renderTextBody({ userMessage, renderedSections, propertyUrl, videoUrl }
 
 function renderHtmlBody({ userMessage, renderedSections, propertyUrl, videoUrl }) {
   const parts = [];
-  parts.push('<div style="font-family:Arial,Helvetica,sans-serif;color:#111;font-size:14px;line-height:1.6;">');
+  parts.push('<div style="font-family:Arial,Helvetica,sans-serif;color:#111;font-size:14px;line-height:1.6;width:100%;max-width:640px;margin:0 auto;">');
   if (userMessage) {
     parts.push(`<p style="white-space:pre-wrap;margin:0 0 16px;">${esc(userMessage)}</p>`);
   }
   for (const section of renderedSections) {
     if (section.lines.length === 0) continue;
-    parts.push(`<h3 style="font-size:15px;margin:18px 0 8px;color:#0F172A;">${esc(section.title)}</h3>`);
-    parts.push('<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%;max-width:640px;">');
+    parts.push(`<h3 style="font-size:15px;line-height:1.35;margin:22px 0 8px;padding:0 0 7px;color:#0F172A;border-bottom:2px solid #C62828;">${esc(section.title)}</h3>`);
+    parts.push(
+      '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" '
+      + 'style="border-collapse:collapse;width:100%;table-layout:fixed;">'
+      + '<colgroup><col width="34%" style="width:34%;"/><col width="66%" style="width:66%;"/></colgroup>',
+    );
     for (const line of section.lines) {
+      if (line.cid) {
+        parts.push(
+          '<tr>'
+          + '<td colspan="2" style="padding:8px 0 12px;vertical-align:top;word-wrap:break-word;overflow-wrap:break-word;">'
+          + `<div style="margin-bottom:4px;color:#64748B;font-weight:600;">${esc(line.label)}</div>`
+          + `<img src="cid:${esc(line.cid)}" alt="${esc(line.value)}" style="display:block;max-width:280px;max-height:180px;width:auto;height:auto;border-radius:6px;border:1px solid #E2E8F0;object-fit:cover;"/>`
+          + `<div style="margin-top:4px;color:#64748B;font-size:12px;">${esc(line.value)}</div>`
+          + '</td>'
+          + '</tr>',
+        );
+        continue;
+      }
       parts.push(
         '<tr>'
-        + `<td style="padding:6px 12px 6px 0;color:#64748B;vertical-align:top;white-space:nowrap;">${esc(line.label)}</td>`
-        + `<td style="padding:6px 0;color:#0F172A;font-weight:600;">${
+        + `<td width="34%" style="width:34%;padding:9px 14px 9px 0;color:#64748B;vertical-align:top;white-space:normal;word-wrap:break-word;overflow-wrap:break-word;">${esc(line.label)}</td>`
+        + `<td width="66%" style="width:66%;padding:9px 0;color:#0F172A;font-weight:600;vertical-align:top;white-space:normal;word-wrap:break-word;overflow-wrap:break-word;line-height:1.5;">${
           line.href
-            ? `<a href="${esc(line.href)}" style="color:#1A5E90;text-decoration:underline;" target="_blank" rel="noopener noreferrer">${esc(line.value)}</a>`
+            ? `<a href="${esc(line.href)}" style="color:#1A5E90;text-decoration:underline;word-wrap:break-word;overflow-wrap:break-word;" target="_blank" rel="noopener noreferrer">${esc(line.value)}</a>`
             : esc(line.value)
         }</td>`
         + '</tr>',
@@ -938,6 +984,7 @@ async function collectImageAttachments(propertyKind, propertyId) {
         filename: f.original_name || path.basename(absolute),
         path: absolute,
         contentType: f.mime_type || 'application/octet-stream',
+        cid: imageContentId(propertyKind, propertyId, f.id),
       });
     } catch { unreadable += 1; }
   }
@@ -1136,7 +1183,13 @@ async function shareProperty(propertyKind, propertyId, {
       : Promise.resolve([]),
   ]);
 
-  const imagesBodySection = buildFileListSection('Images', imageRows, 'Image', publicImageHref);
+  const imagesBodySection = buildFileListSection(
+    'Images',
+    imageRows,
+    'Image',
+    publicImageHref,
+    { cidFor: (f) => imageContentId(propertyKind, propertyId, f.id) },
+  );
   // No link builder for documents — private files, see publicImageHref.
   const documentsBodySection = buildFileListSection('Documents', documentRows, 'Document');
   if (imagesBodySection.lines.length > 0) renderedSections.push(imagesBodySection);

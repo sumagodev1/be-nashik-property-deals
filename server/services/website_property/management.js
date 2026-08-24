@@ -79,13 +79,17 @@ async function listProperties(query) {
 }
 
 async function getProperty(id) {
-  const row = await wp.findById(id);
+  // Route params arrive as strings. Keep the same numeric property id for the
+  // website row and its property_files lookup so the Admin detail response
+  // cannot accidentally query a different/empty media key.
+  const propertyId = Number(id);
+  const row = await wp.findById(propertyId);
   if (!row) throw new HttpError(404, 'NOT_FOUND', 'Property not found');
   const [images, documents] = await Promise.all([
-    propertyFiles.listForProperty(null, 'website', id),
-    documentUpload.listPropertyDocuments('website', id),
+    propertyFiles.listForProperty(null, 'website', propertyId),
+    documentUpload.listPropertyDocuments('website', propertyId),
   ]);
-  return toDetail(row, images, documents);
+  return toDetail(row, Array.isArray(images) ? images : [], Array.isArray(documents) ? documents : []);
 }
 
 async function createProperty(payload) {
@@ -368,7 +372,7 @@ function parseDetailsField(raw) {
   try { return JSON.parse(raw) || {}; } catch { return {}; }
 }
 
-function toDetail(row, images, documents = []) {
+function toDetail(row, images = [], documents = []) {
   return {
     ...toListItem(row),
     description: row.description,
