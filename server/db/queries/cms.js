@@ -112,34 +112,33 @@ async function listAllSidebarAds({ page = 1, pageSize = 10 } = {}) {
     `SELECT COUNT(*) AS total FROM cms_sidebar_ads`,
   );
   const [rows] = await pool.query(
-    `SELECT id, image_url, title, subtitle, cta_text, cta_url,
+    `SELECT id, image_url, title, subtitle, cta_text,
             start_date, end_date, sort_order, is_active,
             created_at, updated_at
      FROM cms_sidebar_ads
-     ORDER BY sort_order ASC, id DESC
+     ORDER BY sort_order ASC, id ASC
      LIMIT ? OFFSET ?`,
     [ps, offset],
   );
   return { data: rows, total: Number(total), page: p, pageSize: ps };
 }
 
-async function findActiveSidebarAd() {
+async function findActiveSidebarAds() {
   const [rows] = await pool.query(
-    `SELECT id, image_url, title, subtitle, cta_text, cta_url,
+    `SELECT id, image_url, title, subtitle, cta_text,
             start_date, end_date, sort_order
      FROM cms_sidebar_ads
      WHERE is_active = 1
        AND (start_date IS NULL OR start_date <= CURDATE())
        AND (end_date   IS NULL OR end_date   >= CURDATE())
-     ORDER BY sort_order ASC, id DESC
-     LIMIT 1`,
+     ORDER BY sort_order ASC, id ASC`,
   );
-  return rows[0] || null;
+  return rows;
 }
 
 async function findSidebarAdById(id) {
   const [rows] = await pool.query(
-    `SELECT id, image_url, title, subtitle, cta_text, cta_url,
+    `SELECT id, image_url, title, subtitle, cta_text,
             start_date, end_date, sort_order, is_active,
             created_at, updated_at
      FROM cms_sidebar_ads
@@ -150,15 +149,65 @@ async function findSidebarAdById(id) {
   return rows[0] || null;
 }
 
+async function isSidebarAdCurrentlyRunning({ isActive, startDate, endDate }) {
+  const [[row]] = await pool.query(
+    `SELECT CASE
+       WHEN ? = 1
+        AND (? IS NULL OR ? <= CURDATE())
+        AND (? IS NULL OR ? >= CURDATE())
+       THEN 1 ELSE 0
+     END AS is_running`,
+    [isActive ? 1 : 0, startDate || null, startDate || null, endDate || null, endDate || null],
+  );
+  return Boolean(row && row.is_running);
+}
+
+async function countCurrentlyRunningSidebarAds({ excludeId = null } = {}) {
+  const params = [];
+  let excludeSql = '';
+  if (excludeId != null) {
+    excludeSql = ' AND id <> ?';
+    params.push(excludeId);
+  }
+  const [[{ total }]] = await pool.query(
+    `SELECT COUNT(*) AS total
+     FROM cms_sidebar_ads
+     WHERE is_active = 1
+       AND (start_date IS NULL OR start_date <= CURDATE())
+       AND (end_date   IS NULL OR end_date   >= CURDATE())${excludeSql}`,
+    params,
+  );
+  return Number(total);
+}
+
+async function findCurrentlyRunningSidebarAdBySerialNumber(serialNumber, { excludeId = null } = {}) {
+  const params = [serialNumber];
+  let excludeSql = '';
+  if (excludeId != null) {
+    excludeSql = ' AND id <> ?';
+    params.push(excludeId);
+  }
+  const [rows] = await pool.query(
+    `SELECT id
+     FROM cms_sidebar_ads
+     WHERE is_active = 1
+       AND (start_date IS NULL OR start_date <= CURDATE())
+       AND (end_date   IS NULL OR end_date   >= CURDATE())
+       AND sort_order = ?${excludeSql}
+     LIMIT 1`,
+    params,
+  );
+  return rows[0] || null;
+}
+
 async function createSidebarAd({
   imageUrl,
   title,
   subtitle,
   ctaText,
-  ctaUrl,
   startDate,
   endDate,
-  sortOrder,
+  serialNumber,
   isActive,
 }) {
   const [result] = await pool.query(
@@ -171,10 +220,10 @@ async function createSidebarAd({
       title,
       subtitle || null,
       ctaText || null,
-      ctaUrl || null,
+      '/login',
       startDate || null,
       endDate || null,
-      sortOrder,
+      serialNumber,
       isActive ? 1 : 0,
     ],
   );
@@ -186,10 +235,9 @@ async function updateSidebarAd(id, {
   title,
   subtitle,
   ctaText,
-  ctaUrl,
   startDate,
   endDate,
-  sortOrder,
+  serialNumber,
   isActive,
 }) {
   // image_url uses COALESCE, NOT a bare placeholder.
@@ -203,22 +251,112 @@ async function updateSidebarAd(id, {
   // if a caller ever does pass imageUrl.
   await pool.query(
     `UPDATE cms_sidebar_ads
-     SET image_url = COALESCE(?, image_url), title = ?, subtitle = ?, cta_text = ?, cta_url = ?,
-         start_date = ?, end_date = ?, sort_order = ?, is_active = ?
+     SET image_url = COALESCE(?, image_url), title = ?, subtitle = ?,
+         cta_text = ?, cta_url = ?, start_date = ?, end_date = ?,
+         sort_order = ?, is_active = ?
      WHERE id = ?`,
     [
       imageUrl ?? null,
       title,
       subtitle || null,
       ctaText || null,
-      ctaUrl || null,
+      '/login',
       startDate || null,
       endDate || null,
-      sortOrder,
+      serialNumber,
       isActive ? 1 : 0,
       id,
     ],
   );
+}
+
+// Update a sidebar ad and swap its serial with the current owner, if any.
+// This keeps Serial Number positions unique when an admin moves an ad to an
+// occupied position (for example, 1 -> 3 moves the old 3 -> 1).
+async function updateSidebarAdWithSerialSwap(id, {
+  imageUrl,
+  title,
+  subtitle,
+  ctaText,
+  startDate,
+  endDate,
+  serialNumber,
+  isActive,
+}) {
+  const conn = await pool.getConnection();
+  const targetId = Number(id);
+  const nextSerialNumber = Number(serialNumber);
+  try {
+    await conn.beginTransaction();
+
+    const [targetRows] = await conn.query(
+      `SELECT id, sort_order
+       FROM cms_sidebar_ads
+       WHERE id = ?
+       LIMIT 1
+       FOR UPDATE`,
+      [targetId],
+    );
+    const target = targetRows[0];
+    if (!target) throw new Error('Sidebar ad not found');
+
+    const currentSerialNumber = Number(target.sort_order ?? 1);
+    let conflictId = null;
+    if (currentSerialNumber !== nextSerialNumber) {
+      const [conflictRows] = await conn.query(
+        `SELECT id
+         FROM cms_sidebar_ads
+         WHERE id <> ? AND sort_order = ?
+         ORDER BY id ASC
+         LIMIT 1
+         FOR UPDATE`,
+        [targetId, nextSerialNumber],
+      );
+      conflictId = conflictRows[0]?.id ?? null;
+      if (conflictId != null) {
+        // Use a temporary value so the swap remains safe even if a unique
+        // index is added to sort_order in a future schema revision.
+        await conn.query(
+          `UPDATE cms_sidebar_ads SET sort_order = ? WHERE id = ?`,
+          [-targetId, conflictId],
+        );
+      }
+    }
+
+    await conn.query(
+      `UPDATE cms_sidebar_ads
+       SET image_url = COALESCE(?, image_url), title = ?, subtitle = ?,
+           cta_text = ?, cta_url = ?, start_date = ?, end_date = ?,
+           sort_order = ?, is_active = ?
+       WHERE id = ?`,
+      [
+        imageUrl ?? null,
+        title,
+        subtitle || null,
+        ctaText || null,
+        '/login',
+        startDate || null,
+        endDate || null,
+        nextSerialNumber,
+        isActive ? 1 : 0,
+        targetId,
+      ],
+    );
+
+    if (conflictId != null) {
+      await conn.query(
+        `UPDATE cms_sidebar_ads SET sort_order = ? WHERE id = ?`,
+        [currentSerialNumber, conflictId],
+      );
+    }
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 async function deleteSidebarAd(id) {
@@ -235,9 +373,13 @@ module.exports = {
   updateBanner,
   deleteBanner,
   listAllSidebarAds,
-  findActiveSidebarAd,
+  findActiveSidebarAds,
   findSidebarAdById,
+  isSidebarAdCurrentlyRunning,
+  countCurrentlyRunningSidebarAds,
+  findCurrentlyRunningSidebarAdBySerialNumber,
   createSidebarAd,
   updateSidebarAd,
+  updateSidebarAdWithSerialSwap,
   deleteSidebarAd,
 };

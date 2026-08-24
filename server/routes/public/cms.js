@@ -22,26 +22,24 @@ router.get('/', async (req, res, next) => {
 });
 
 /**
- * Currently-active sidebar advertisement (used by <StickySidebarAd />).
- * Picks the single row where is_active = 1 AND today ∈ [start_date, end_date],
- * ordered by sort_order then id. If no row qualifies, returns 204 so the
- * website silently falls back to its static promo — visitors never see an
- * empty sidebar regardless of admin scheduling gaps.
+ * Currently-running sidebar advertisements (used by <StickySidebarAd />).
+ * Returns every row where is_active = 1 and today's date is inside the
+ * start/end window, ordered by serial number. If no row qualifies, returns
+ * 204 so the website can use its static fallback promo.
  */
 router.get('/sidebar-ad', async (req, res, next) => {
   try {
-    const row = await cms.findActiveSidebarAd();
-    if (!row) return res.status(204).end();
+    const rows = await cms.findActiveSidebarAds();
+    if (rows.length === 0) return res.status(204).end();
     res.json({
-      data: {
+      data: rows.map((row) => ({
         id: row.id,
         imageUrl: row.image_url ? toAbsolutePublicUrl(row.image_url) : null,
         title: row.title,
         subtitle: row.subtitle,
-        ctaText: row.cta_text,
-        ctaUrl: row.cta_url,
-        sortOrder: row.sort_order,
-      },
+        ctaText: row.cta_text || "Post Property, It's FREE",
+        serialNumber: Number(row.sort_order ?? 1),
+      })),
     });
   } catch (e) { next(e); }
 });

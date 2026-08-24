@@ -160,6 +160,8 @@ router.put('/settings', validate(settingsBody), async (req, res, next) => {
 
 // ISO YYYY-MM-DD (strict). null / '' allowed for "no boundary on this side."
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_SIDEBAR_AD_SERIAL_NUMBER = 5;
+const DEFAULT_SIDEBAR_CTA_TEXT = "Post Property, It's FREE";
 const optionalIsoDate = () => Joi.alternatives().try(
   Joi.string().trim().pattern(ISO_DATE_RE).max(10),
   Joi.valid(null, ''),
@@ -168,11 +170,16 @@ const optionalIsoDate = () => Joi.alternatives().try(
 const sidebarAdUpdateBody = Joi.object({
   title: Joi.string().trim().min(1).max(120),
   subtitle: Joi.string().trim().max(240).allow('', null),
-  ctaText: Joi.string().trim().max(60).allow('', null),
-  ctaUrl: Joi.string().trim().max(500).allow('', null),
+  ctaText: Joi.string().trim().min(1).max(60)
+    .messages({ 'string.empty': 'Call to action is required.' }),
   startDate: optionalIsoDate(),
   endDate: optionalIsoDate(),
-  sortOrder: Joi.number().integer().min(0).max(9999),
+  serialNumber: Joi.number().integer().min(1).max(MAX_SIDEBAR_AD_SERIAL_NUMBER)
+    .messages({ 'number.max': 'Serial Number cannot be greater than 5.' }),
+  // Accept the old API name during rollout, but never expose it in the new
+  // CMS UI or response DTO.
+  sortOrder: Joi.number().integer().min(1).max(MAX_SIDEBAR_AD_SERIAL_NUMBER)
+    .messages({ 'number.max': 'Serial Number cannot be greater than 5.' }),
   isActive: Joi.boolean(),
 }).min(1);
 
@@ -203,11 +210,10 @@ router.post('/sidebar-ads', imageUploadMiddleware, async (req, res, next) => {
 
     const title = (req.body.title || '').toString().trim();
     const subtitle = (req.body.subtitle || '').toString().trim();
-    const ctaText = (req.body.ctaText || '').toString().trim();
-    const ctaUrl = (req.body.ctaUrl || '').toString().trim();
+    const ctaText = (req.body.ctaText || DEFAULT_SIDEBAR_CTA_TEXT).toString().trim();
     const startDate = normalizeDate(req.body.startDate);
     const endDate = normalizeDate(req.body.endDate);
-    const sortOrder = Number(req.body.sortOrder ?? 0);
+    const serialNumber = Number(req.body.serialNumber ?? req.body.sortOrder ?? 1);
     const isActive = req.body.isActive === 'false' ? false : true;
 
     if (!title) {
@@ -219,17 +225,17 @@ router.post('/sidebar-ads', imageUploadMiddleware, async (req, res, next) => {
     if (subtitle.length > 240) {
       throw new HttpError(400, 'VALIDATION_ERROR', 'Subtitle too long (max 240)');
     }
-    if (ctaText.length > 60) {
-      throw new HttpError(400, 'VALIDATION_ERROR', 'CTA text too long (max 60)');
+    if (!ctaText) {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'Call to action is required.');
     }
-    if (ctaUrl.length > 500) {
-      throw new HttpError(400, 'VALIDATION_ERROR', 'CTA URL too long (max 500)');
+    if (ctaText.length > 60) {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'Call to action too long (max 60)');
     }
     if (startDate && endDate && endDate < startDate) {
       throw new HttpError(400, 'VALIDATION_ERROR', 'endDate must be on or after startDate');
     }
-    if (!Number.isFinite(sortOrder) || sortOrder < 0 || sortOrder > 9999) {
-      throw new HttpError(400, 'VALIDATION_ERROR', 'sortOrder must be 0-9999');
+    if (!Number.isInteger(serialNumber) || serialNumber < 1 || serialNumber > MAX_SIDEBAR_AD_SERIAL_NUMBER) {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'Serial Number cannot be greater than 5.');
     }
 
     const created = await cms.createSidebarAd({
@@ -237,10 +243,9 @@ router.post('/sidebar-ads', imageUploadMiddleware, async (req, res, next) => {
       title,
       subtitle,
       ctaText,
-      ctaUrl,
       startDate,
       endDate,
-      sortOrder,
+      serialNumber,
       isActive,
     });
     res.status(201).json(created);

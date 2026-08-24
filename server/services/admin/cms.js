@@ -4,6 +4,14 @@ const banners = require('../files/cmsBannerUpload');
 const { toAbsolutePublicUrl } = require('../files/publicUrl');
 const { isValidSettingKey, CMS_SETTING_KEYS } = require('../../constants/cms');
 
+const MAX_RUNNING_SIDEBAR_ADS = 5;
+const MAX_SIDEBAR_AD_SERIAL_NUMBER = 5;
+const DEFAULT_SIDEBAR_CTA_TEXT = "Post Property, It's FREE";
+const SIDEBAR_AD_LIMIT_MESSAGE =
+  '5 sidebar advertisements are already active on the website. Please disable an existing advertisement before adding or activating a new one.';
+const SIDEBAR_AD_SERIAL_LIMIT_MESSAGE =
+  'Serial Number cannot be greater than 5.';
+
 // ---------- banners ----------
 
 async function listBanners(query = {}) {
@@ -125,9 +133,37 @@ async function getSidebarAd(id) {
   return toSidebarAd(row);
 }
 
-async function getActiveSidebarAd() {
-  const row = await cmsRepo.findActiveSidebarAd();
-  return row ? toSidebarAd(row) : null;
+async function getActiveSidebarAds() {
+  const rows = await cmsRepo.findActiveSidebarAds();
+  return rows.map(toSidebarAd);
+}
+
+async function ensureSidebarAdCapacity({ id = null, existing = null, startDate, endDate, isActive, serialNumber }) {
+  if (!Number.isInteger(serialNumber) || serialNumber < 1 || serialNumber > MAX_SIDEBAR_AD_SERIAL_NUMBER) {
+    throw new HttpError(400, 'SIDEBAR_AD_SERIAL_OUT_OF_RANGE', SIDEBAR_AD_SERIAL_LIMIT_MESSAGE);
+  }
+  const candidateRunning = await cmsRepo.isSidebarAdCurrentlyRunning({ isActive, startDate, endDate });
+  if (!candidateRunning) return;
+
+  // Updating an already-running ad does not increase the running count. This
+  // also keeps legacy over-limit data editable and deactivatable.
+  const existingRunning = existing
+    ? await cmsRepo.isSidebarAdCurrentlyRunning({
+      isActive: existing.is_active,
+      startDate: existing.start_date,
+      endDate: existing.end_date,
+    })
+    : false;
+
+  if (!existingRunning) {
+    const runningCount = await cmsRepo.countCurrentlyRunningSidebarAds({ excludeId: id });
+    if (runningCount >= MAX_RUNNING_SIDEBAR_ADS) {
+      throw new HttpError(409, 'SIDEBAR_AD_LIMIT_REACHED', SIDEBAR_AD_LIMIT_MESSAGE);
+    }
+  }
+
+  // If an occupied serial is selected during an edit, the repository swaps
+  // the two positions atomically so the edited ad takes the requested serial.
 }
 
 async function createSidebarAd({
@@ -135,12 +171,21 @@ async function createSidebarAd({
   title,
   subtitle,
   ctaText,
-  ctaUrl,
   startDate,
   endDate,
-  sortOrder,
+  serialNumber,
   isActive,
 }) {
+  const nextIsActive = isActive !== false;
+  const nextCtaText = String(ctaText || DEFAULT_SIDEBAR_CTA_TEXT).trim();
+  const nextSerialNumber = Number.isFinite(serialNumber) ? serialNumber : 1;
+  await ensureSidebarAdCapacity({
+    startDate,
+    endDate,
+    isActive: nextIsActive,
+    serialNumber: nextSerialNumber,
+  });
+
   // Image is optional for sidebar ads — admins may want a text-only promo,
   // and the website renders a sensible layout either way. If a file IS
   // present we persist it through the existing cms upload pipeline.
@@ -153,12 +198,11 @@ async function createSidebarAd({
       imageUrl: persisted ? persisted.publicUrl : null,
       title,
       subtitle,
-      ctaText,
-      ctaUrl,
+      ctaText: nextCtaText,
       startDate,
       endDate,
-      sortOrder: Number.isFinite(sortOrder) ? sortOrder : 0,
-      isActive: isActive !== false,
+      serialNumber: nextSerialNumber,
+      isActive: nextIsActive,
     });
     return getSidebarAd(id);
   } catch (err) {
@@ -170,17 +214,30 @@ async function createSidebarAd({
 async function updateSidebarAd(id, payload) {
   const existing = await cmsRepo.findSidebarAdById(id);
   if (!existing) throw new HttpError(404, 'NOT_FOUND', 'Sidebar ad not found');
+  const next = {
+    startDate: 'startDate' in payload ? payload.startDate : existing.start_date,
+    endDate: 'endDate' in payload ? payload.endDate : existing.end_date,
+    ctaText: 'ctaText' in payload
+      ? String(payload.ctaText || '').trim()
+      : (existing.cta_text || DEFAULT_SIDEBAR_CTA_TEXT),
+    serialNumber: 'serialNumber' in payload
+      ? payload.serialNumber
+      : ('sortOrder' in payload
+        ? payload.sortOrder
+        : (existing.sort_order == null ? 1 : Number(existing.sort_order))),
+    isActive: typeof payload.isActive === 'boolean' ? payload.isActive : Boolean(existing.is_active),
+  };
+  await ensureSidebarAdCapacity({ id, existing, ...next });
   // PUT is partial — only fields present in payload overwrite existing values.
-  await cmsRepo.updateSidebarAd(id, {
+  await cmsRepo.updateSidebarAdWithSerialSwap(id, {
     imageUrl: 'imageUrl' in payload ? payload.imageUrl : existing.image_url,
     title: 'title' in payload ? payload.title : existing.title,
     subtitle: 'subtitle' in payload ? payload.subtitle : existing.subtitle,
-    ctaText: 'ctaText' in payload ? payload.ctaText : existing.cta_text,
-    ctaUrl: 'ctaUrl' in payload ? payload.ctaUrl : existing.cta_url,
-    startDate: 'startDate' in payload ? payload.startDate : existing.start_date,
-    endDate: 'endDate' in payload ? payload.endDate : existing.end_date,
-    sortOrder: Number.isFinite(payload.sortOrder) ? payload.sortOrder : existing.sort_order,
-    isActive: typeof payload.isActive === 'boolean' ? payload.isActive : Boolean(existing.is_active),
+    ctaText: next.ctaText || DEFAULT_SIDEBAR_CTA_TEXT,
+    startDate: next.startDate,
+    endDate: next.endDate,
+    serialNumber: next.serialNumber,
+    isActive: next.isActive,
   });
   return getSidebarAd(id);
 }
@@ -200,14 +257,13 @@ function toSidebarAd(row) {
     imageUrl: row.image_url ? toAbsolutePublicUrl(row.image_url) : null,
     title: row.title,
     subtitle: row.subtitle,
-    ctaText: row.cta_text,
-    ctaUrl: row.cta_url,
+    ctaText: row.cta_text || DEFAULT_SIDEBAR_CTA_TEXT,
     // Date columns come back as JS Date instances from mysql2. Coerce to
     // ISO `YYYY-MM-DD` so the frontend's <input type="date"> can bind to
     // them directly without locale weirdness.
     startDate: row.start_date ? toIsoDate(row.start_date) : null,
     endDate: row.end_date ? toIsoDate(row.end_date) : null,
-    sortOrder: Number(row.sort_order || 0),
+    serialNumber: Number(row.sort_order ?? 1),
     isActive: row.is_active != null ? Boolean(row.is_active) : true,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -235,7 +291,7 @@ module.exports = {
   writeSettings,
   listSidebarAds,
   getSidebarAd,
-  getActiveSidebarAd,
+  getActiveSidebarAds,
   createSidebarAd,
   updateSidebarAd,
   deleteSidebarAd,

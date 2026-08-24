@@ -2,13 +2,13 @@
 -- Migration 025: CMS-managed sidebar advertisement.
 --
 -- Powers the <StickySidebarAd /> right-column promo on the public
--- website. The public endpoint returns ONE active row per request
--- (newest active, within the start/end date window). If no row
+-- website. The public endpoint returns every currently-running row
+-- (within the start/end date window), ordered by serial number. If no row
 -- qualifies, the website falls back to a static promo — the slot
 -- is never empty, so admin downtime never affects the page.
 --
--- Columns mirror the fields the admin form exposes
--- (Frontend/src/admin/pages/Cms/SidebarAdsList.jsx). Image lives on
+-- Columns mirror the fields the admin form exposes plus legacy CTA columns
+-- retained for backward-compatible data. Image lives on
 -- disk via the existing cms upload pipeline (uploads/public/cms/),
 -- so we only store the URL — same pattern as cms_banners.
 -- ===========================================================
