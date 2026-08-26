@@ -23,7 +23,11 @@ const captureLimiter = rateLimit({
 // OTP code on /verify. `email` still needs to be present on /start so the
 // OTP has somewhere to be delivered.
 const emailField = Joi.string().max(255).allow('', null);
-const mobileField = Joi.string().trim().max(20).allow('', null);
+const mobileField = Joi.string().pattern(/^[6-9]\d{9}$/).allow('', null)
+  .messages({
+    'string.base': 'Enter a valid 10-digit mobile number starting with 6-9',
+    'string.pattern.base': 'Enter a valid 10-digit mobile number starting with 6-9',
+  });
 const nameField = Joi.string().trim().max(255).allow('', null);
 const codeField = Joi.string().pattern(/^\d{6}$/);
 

@@ -115,11 +115,21 @@ async function remove(id) {
 }
 
 // ── Bulk upload helpers ─────────────────────────────────────────────────
-const PHONE_10 = /^\d{10}$/;
+const MOBILE_RE = /^[6-9]\d{9}$/;
+const PHONE_RE = /^\d{8,15}$/;
+const MOBILE_ERROR = 'Enter a valid 10-digit mobile number starting with 6-9';
+const PHONE_ERROR = 'Enter a valid phone number with 8-15 digits';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function normContact(v) {
   return typeof v === 'string' ? v.trim() : (v == null ? '' : String(v).trim());
+}
+
+// Number validation must inspect the original cell value. Trimming here
+// would make a value containing spaces look valid even though the API contract
+// is digits-only.
+function rawContact(v) {
+  return v == null ? '' : String(v);
 }
 
 async function bulkCheckDuplicates(items) {
@@ -180,15 +190,17 @@ async function bulkCheckDuplicates(items) {
 
 function validateOne(payload) {
   const firstName = normContact(payload.firstName);
-  const mobile1   = normContact(payload.mobile1);
-  const phone1    = normContact(payload.phone1);
-  const whatsapp  = normContact(payload.whatsapp);
   const email1    = normContact(payload.email1);
   if (!firstName)  return 'Name is required.';
-  if (!mobile1)    return 'Mobile Number is required.';
-  if (!PHONE_10.test(mobile1))            return 'Mobile Number must be exactly 10 digits.';
-  if (phone1   && !PHONE_10.test(phone1))   return 'Phone Number must be exactly 10 digits.';
-  if (whatsapp && !PHONE_10.test(whatsapp)) return 'WhatsApp Number must be exactly 10 digits.';
+  if (!rawContact(payload.mobile1)) return 'Mobile Number is required.';
+  for (const field of ['mobile1', 'mobile2', 'mobile3', 'whatsapp']) {
+    const value = rawContact(payload[field]);
+    if (value && !MOBILE_RE.test(value)) return MOBILE_ERROR;
+  }
+  for (const field of ['phone1', 'phone2']) {
+    const value = rawContact(payload[field]);
+    if (value && !PHONE_RE.test(value)) return PHONE_ERROR;
+  }
   if (email1   && !EMAIL_RE.test(email1))   return 'Email is not a valid address.';
   return null;
 }

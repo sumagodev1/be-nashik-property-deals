@@ -22,8 +22,16 @@ const listQuery = Joi.object({
 
 const optText = (max = 255) => Joi.string().trim().max(max).allow('', null).optional();
 
-const phoneField = Joi.string().trim().max(20).allow('', null)
-  .pattern(/^[0-9+\-\s()]*$/).optional();
+const phoneField = Joi.string().pattern(/^\d{8,15}$/).allow('', null).optional()
+  .messages({
+    'string.base': 'Enter a valid phone number with 8-15 digits',
+    'string.pattern.base': 'Enter a valid phone number with 8-15 digits',
+  });
+const mobileField = Joi.string().pattern(/^[6-9]\d{9}$/).allow('', null).optional()
+  .messages({
+    'string.base': 'Enter a valid 10-digit mobile number starting with 6-9',
+    'string.pattern.base': 'Enter a valid 10-digit mobile number starting with 6-9',
+  });
 
 const emailField = Joi.string().trim().max(255).allow('', null)
   .pattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/).optional();
@@ -42,10 +50,10 @@ const body = Joi.object({
   districtCode: optText(64),
   phone1: phoneField,
   phone2: phoneField,
-  mobile1: phoneField,
-  mobile2: phoneField,
-  mobile3: phoneField,
-  whatsapp: phoneField,
+  mobile1: mobileField,
+  mobile2: mobileField,
+  mobile3: mobileField,
+  whatsapp: mobileField,
   email1: emailField,
   email2: emailField,
   website1: optText(255),
@@ -88,9 +96,9 @@ router.delete('/:id', validate(idParam, 'params'), async (req, res, next) => {
 
 const bulkCheckBody = Joi.object({
   items: Joi.array().max(5000).items(Joi.object({
-    mobile1:  phoneField,
+    mobile1:  mobileField,
     phone1:   phoneField,
-    whatsapp: phoneField,
+    whatsapp: mobileField,
     email1:   emailField,
   }).unknown(true)).required(),
 });

@@ -26,8 +26,11 @@ const emailField = Joi.string().email({ tlds: { allow: false } }).max(255);
 //
 // Used only by `alternateContact` below. No stored value fails the tighter
 // pattern, so no existing seller becomes unsaveable.
-const phoneField = Joi.string().trim().pattern(/^[6-9]\d{9}$/)
-  .messages({ 'string.pattern.base': 'Alternate contact must be a 10-digit mobile number starting with 6-9' });
+const phoneField = Joi.string().pattern(/^[6-9]\d{9}$/)
+  .messages({
+    'string.base': 'Enter a valid 10-digit mobile number starting with 6-9',
+    'string.pattern.base': 'Enter a valid 10-digit mobile number starting with 6-9',
+  });
 const nameField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY)
   .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
 

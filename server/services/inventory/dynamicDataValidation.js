@@ -24,9 +24,14 @@
 
 const Joi = require('joi');
 
-// Reused patterns — kept aligned with the top-level property Joi (mobile
-// pattern, name pattern).
-const PHONE_RE = /^\d{10}$/;
+// Reused patterns — kept aligned with the top-level property Joi (mobile and
+// phone patterns, name pattern).
+const MOBILE_RE = /^[6-9]\d{9}$/;
+const PHONE_RE = /^\d{8,15}$/;
+const MOBILE_ERROR = 'Enter a valid 10-digit mobile number starting with 6-9';
+const PHONE_ERROR = 'Enter a valid phone number with 8-15 digits';
+const GUT_SURVEY_MAX_LENGTH = 10;
+const GUT_SURVEY_ERROR = 'Gut No. / Survey No. must not exceed 10 characters.';
 const NAME_RE = /^[A-Za-z\s]+$/;
 const MASTER_CODE_RE = /^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$/;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -113,8 +118,18 @@ const unitNumberShape = Joi.object({
 // treats the whole section as optional.
 const nameField = Joi.string().trim().min(0).max(50).pattern(NAME_RE).allow('', null)
   .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
-const phoneItem = Joi.string().trim().pattern(PHONE_RE).allow('', null)
-  .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number' });
+const phoneItem = Joi.string().pattern(PHONE_RE).allow('', null)
+  .messages({ 'string.base': PHONE_ERROR, 'string.pattern.base': PHONE_ERROR });
+const mobileItem = Joi.string().pattern(MOBILE_RE).allow('', null)
+  .messages({ 'string.base': MOBILE_ERROR, 'string.pattern.base': MOBILE_ERROR });
+// Gut / Survey identifiers are text references. Only their total length is
+// constrained; letters, numbers, slashes, hyphens, and other existingly
+// accepted characters are intentionally not filtered here.
+const gutSurveyField = Joi.string().max(GUT_SURVEY_MAX_LENGTH).allow('', null)
+  .messages({
+    'string.base': GUT_SURVEY_ERROR,
+    'string.max': GUT_SURVEY_ERROR,
+  });
 const emailItem = Joi.string().trim().email({ tlds: { allow: false } }).max(120).allow('', null)
   .messages({ 'string.email': 'Enter a valid email address' });
 const contactShape = Joi.object({
@@ -130,7 +145,7 @@ const contactShape = Joi.object({
   // The 100-char cap covers all three shapes without further branching.
   relation: Joi.string().trim().max(100).allow('', null),
   phones: Joi.array().items(phoneItem).max(10).default([]),
-  mobiles: Joi.array().items(phoneItem).max(10).default([]),
+  mobiles: Joi.array().items(mobileItem).max(10).default([]),
   emails: Joi.array().items(emailItem).max(10).default([]),
   addresses: Joi.array().items(mediumText).max(10).default([]),
 }).unknown(false);
@@ -204,6 +219,39 @@ const dynamicDataSchema = Joi.object({
   address: mediumText,
   addressLine1: mediumText,
   addressLine2: mediumText,
+  gutOldNo: gutSurveyField,
+  gutNewNo: gutSurveyField,
+  gutSpecificOldNo: gutSurveyField,
+  gutSpecificNewNo: gutSurveyField,
+  gutAnyOldNo: gutSurveyField,
+  gutAnyNewNo: gutSurveyField,
+  gutNoOld: gutSurveyField,
+  gutNoNew: gutSurveyField,
+  gutNumber: gutSurveyField,
+  plotNoCtsNoSurveyNo: gutSurveyField,
+  surveyNo: gutSurveyField,
+  surveyNumber: gutSurveyField,
+  mobile: mobileItem,
+  mobileNo: mobileItem,
+  mobileNumber: mobileItem,
+  primaryMobileNumber: mobileItem,
+  whatsapp: mobileItem,
+  whatsappNo: mobileItem,
+  whatsappNumber: mobileItem,
+  contactNumber: mobileItem,
+  primaryContactNumber: mobileItem,
+  contactPersonNumber: mobileItem,
+  contactPersonNo: mobileItem,
+  bankAuctionContactPersonNumber: mobileItem,
+  contactNo: phoneItem,
+  phone: phoneItem,
+  phoneNo: phoneItem,
+  phoneNumber: phoneItem,
+  primaryPhoneNumber: phoneItem,
+  telephone: phoneItem,
+  telephoneNumber: phoneItem,
+  landline: phoneItem,
+  landlineNumber: phoneItem,
 
   // Common dualMode fields (repeated across variants — Bunglow/Flat/Shop etc.)
   // Use dualModeOrScalar for keys whose form config renders as `select` /
@@ -698,6 +746,163 @@ const dynamicDataSchema = Joi.object({
   // for future variants without letting a client bug flood the JSON column.
   .max(300);
 
+// `details` is intentionally a forward-compatible JSON bag, so the schema
+// above cannot be a closed list of every future form key. Number-like keys
+// therefore get a second, key-aware pass. This covers both known aliases and
+// older/alternate keys nested under details.contacts or another form section
+// without imposing a schema on unrelated property fields.
+function normaliseCommunicationKey(key) {
+  // Labels occasionally arrive as JSON keys (for example `Phone No.` or
+  // `WhatsApp Contact Number`), so remove punctuation as well as separators.
+  return String(key || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+}
+
+function communicationRuleForKey(key) {
+  const normalized = normaliseCommunicationKey(key);
+  if (!normalized) return null;
+
+  // Plural keys are the arrays used by the contact-card payload.
+  if (normalized === 'mobiles') return { kind: 'mobile', array: true, message: MOBILE_ERROR };
+  if (normalized === 'phones') return { kind: 'phone', array: true, message: PHONE_ERROR };
+
+  // Mobile / WhatsApp / contact-person fields are mobile-number fields.
+  if (/^(?:primary|owner|seller|buyer|purchaser|agent|bankauction)?mobile(?:number|no)?\d*$/.test(normalized)
+      || /^whatsapp(?:number|no|contactnumber|contactno)?$/.test(normalized)
+      || /^(?:primary|owner|seller|buyer|purchaser|agent|bankauction)?contactperson(?:mobile(?:number|no)?|number|no)$/.test(normalized)
+      || /^(?:primary|owner|seller|buyer|purchaser|agent)?contactnumber$/.test(normalized)) {
+    return { kind: 'mobile', array: false, message: MOBILE_ERROR };
+  }
+
+  // Explicit Phone / Telephone / Landline / Contact No. fields accept either
+  // a landline with STD code or a mobile, but remain digits-only.
+  if (/^(?:primary|owner|seller|buyer|purchaser|agent|bankauction)?phone(?:number|no)?\d*$/.test(normalized)
+      || /^(?:telephone|landline)(?:number|no)?\d*$/.test(normalized)
+      || /^(?:primary|owner|seller|buyer|purchaser|agent|bankauction)?contactno\d*$/.test(normalized)
+      || /^(?:primary|owner|seller|buyer|purchaser|agent|bankauction)?contactpersonphone(?:number|no)?$/.test(normalized)) {
+    return { kind: 'phone', array: false, message: PHONE_ERROR };
+  }
+
+  return null;
+}
+
+const GUT_SURVEY_KEYS = new Set([
+  'gutoldno',
+  'gutnewno',
+  'gutspecificoldno',
+  'gutspecificnewno',
+  'gutanyoldno',
+  'gutanynewno',
+  'gutnoold',
+  'gutnonew',
+  'gutnumber',
+  'plotnoctsnosurveyno',
+  'surveyno',
+  'surveynumber',
+]);
+
+function isGutSurveyKey(key) {
+  const normalized = normaliseCommunicationKey(key);
+  if (!normalized) return false;
+
+  // Covers current camelCase keys as well as snake_case / label-like keys
+  // after punctuation and separators are removed.
+  if (GUT_SURVEY_KEYS.has(normalized)) return true;
+
+  // Keep unrelated fields such as "Survey Date" outside this rule.
+  return (normalized.includes('gut') || normalized.includes('survey'))
+    && (normalized.includes('no')
+      || normalized.includes('number')
+      || normalized.includes('sr')
+      || normalized.includes('cts'));
+}
+
+function validateGutSurveyNumbers(value, pathPrefix = '') {
+  const prefix = Array.isArray(pathPrefix)
+    ? pathPrefix.map((part) => String(part))
+    : (pathPrefix ? String(pathPrefix).split('.').filter(Boolean) : []);
+  const errors = [];
+  const addError = (path) => errors.push({ path: path.join('.'), message: GUT_SURVEY_ERROR });
+
+  const validateScalar = (candidate, path) => {
+    if (candidate === undefined || candidate === null || candidate === '') return;
+    if (typeof candidate !== 'string' || candidate.length > GUT_SURVEY_MAX_LENGTH) {
+      addError(path);
+    }
+  };
+
+  const walk = (current, path) => {
+    if (Array.isArray(current)) {
+      current.forEach((item, index) => walk(item, path.concat(index)));
+      return;
+    }
+    if (!current || typeof current !== 'object') return;
+
+    Object.entries(current).forEach(([key, child]) => {
+      const childPath = path.concat(key);
+      if (isGutSurveyKey(key)) {
+        validateScalar(child, childPath);
+      } else {
+        walk(child, childPath);
+      }
+    });
+  };
+
+  walk(value, prefix);
+  return errors;
+}
+
+function validateCommunicationNumbers(value, pathPrefix = '') {
+  const prefix = Array.isArray(pathPrefix)
+    ? pathPrefix.map((part) => String(part))
+    : (pathPrefix ? String(pathPrefix).split('.').filter(Boolean) : []);
+  const errors = [];
+
+  const addError = (path, message) => {
+    errors.push({ path: path.join('.'), message });
+  };
+
+  const validateScalar = (candidate, path, rule) => {
+    // Missing keys and genuinely empty optional slots are allowed. Whitespace
+    // is deliberately NOT trimmed: spaces are invalid input for both rules.
+    if (candidate === undefined || candidate === null || candidate === '') return;
+    if (typeof candidate !== 'string') {
+      addError(path, rule.message);
+      return;
+    }
+    const pattern = rule.kind === 'mobile' ? MOBILE_RE : PHONE_RE;
+    if (!pattern.test(candidate)) addError(path, rule.message);
+  };
+
+  const walk = (current, path) => {
+    if (Array.isArray(current)) {
+      current.forEach((item, index) => walk(item, path.concat(index)));
+      return;
+    }
+    if (!current || typeof current !== 'object') return;
+
+    Object.entries(current).forEach(([key, child]) => {
+      const childPath = path.concat(key);
+      const rule = communicationRuleForKey(key);
+      if (!rule) {
+        walk(child, childPath);
+        return;
+      }
+      if (rule.array) {
+        if (!Array.isArray(child)) {
+          addError(childPath, rule.message);
+          return;
+        }
+        child.forEach((item, index) => validateScalar(item, childPath.concat(index), rule));
+        return;
+      }
+      validateScalar(child, childPath, rule);
+    });
+  };
+
+  walk(value, prefix);
+  return errors;
+}
+
 // Cross-field checks: Any `*Min` / `*Max` numeric pair must satisfy Max >= Min.
 // Runs after Joi validation of individual fields — inside a `.custom()` on
 // the wrapper below so both feed the same error list.
@@ -740,12 +945,41 @@ function validateDynamicData(dynamicData) {
   // default arrays) but never surface errors — every property field is
   // optional and the API accepts any partial payload. If Joi rejects, fall
   // back to the raw input so nothing is lost.
-  const { value } = dynamicDataSchema.validate(dynamicData, {
+  const { value, error } = dynamicDataSchema.validate(dynamicData, {
     abortEarly: false,
     stripUnknown: false,
     convert: true,
   });
-  return { value: value ?? dynamicData, errors: [] };
+  // The dynamic schema intentionally remains permissive for unrelated
+  // category fields, but number fields must never be bypassable through the
+  // JSON blob. The recursive pass also catches number-like keys that were
+  // added after this schema was authored, including legacy details.contacts.
+  const errors = [];
+  const seen = new Set();
+  const addError = (entry) => {
+    const key = `${entry.path}\u0000${entry.message}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    errors.push(entry);
+  };
+  validateCommunicationNumbers(dynamicData).forEach(addError);
+  validateGutSurveyNumbers(dynamicData).forEach(addError);
+
+  // Keep Joi's type/shape failures for known number fields as a backstop. The
+  // recursive validator normally reports the same path, so deduplication
+  // keeps the API response stable and easy for the frontend to route.
+  (error?.details || [])
+    .filter((detail) => detail.path
+      .some((part) => communicationRuleForKey(part) || isGutSurveyKey(part)))
+    .forEach((detail) => addError({
+      path: detail.path.join('.'),
+      message: detail.message,
+    }));
+  return { value: value ?? dynamicData, errors };
 }
 
-module.exports = { validateDynamicData };
+module.exports = {
+  validateDynamicData,
+  validateCommunicationNumbers,
+  validateGutSurveyNumbers,
+};

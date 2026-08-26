@@ -11,6 +11,8 @@ const refresh = require('../auth/refresh');
 // marked verified (i.e., a genuine new seller signup).
 const adminNotifications = require('../email/adminNotifications');
 
+const NO_ACCOUNT_MESSAGE = 'No account found for this email. Please register first';
+
 /**
  * Start registration: validate uniqueness, upsert an unverified seller record,
  * issue an EMAIL OTP. Same mobile re-attempt updates the pending record.
@@ -151,31 +153,8 @@ async function loginStart({ email }) {
   // Login is now keyed by email (the OTP destination). Mobile is still the
   // unique seller key in the DB, but the user only needs to remember the
   // address they registered with.
-  //
-  // Same three-case branching:
-  //   1. Verified but inactive → ACCOUNT_DEACTIVATED (403)
-  //   2. No verified account   → NOT_FOUND (dev) / silent OK (prod, anti-enum)
-  //   3. Verified + active     → issue OTP to that email
   const lowerEmail = String(email).trim().toLowerCase();
-  const verified = await sellers.findVerifiedByEmail(lowerEmail);
-  if (verified && !verified.is_active) {
-    throw new HttpError(
-      403,
-      'ACCOUNT_DEACTIVATED',
-      'Your account has been deactivated by the admin. Please contact support to restore access.',
-    );
-  }
-  const seller = await sellers.findActiveVerifiedByEmail(lowerEmail);
-  if (!seller) {
-    // In production, don't reveal whether the email is registered — silently
-    // claim "OTP sent" so attackers can't enumerate which addresses exist.
-    // In dev/staging, return a clear 404 so the developer gets fast feedback
-    // instead of advancing to an OTP step that's guaranteed to fail.
-    if (process.env.NODE_ENV === 'production') {
-      return { ok: true };
-    }
-    throw new HttpError(404, 'NOT_FOUND', 'No account found for this email.');
-  }
+  const seller = await requireActiveVerifiedSeller(lowerEmail);
   const issued = await otp.issue({
     purpose: 'seller_login',
     channel: 'email',
@@ -190,21 +169,24 @@ async function loginStart({ email }) {
   };
 }
 
+async function loginResend({ email }) {
+  const lowerEmail = String(email).trim().toLowerCase();
+  const seller = await requireActiveVerifiedSeller(lowerEmail);
+  const issued = await otp.issue({
+    purpose: 'seller_login',
+    channel: 'email',
+    email: lowerEmail,
+    mobileNumber: seller.mobile_number,
+    label: 'sign-in',
+  });
+  return { ok: true, expiresAt: issued.expiresAt };
+}
+
 async function loginVerify({ email, code }) {
   const lowerEmail = String(email).trim().toLowerCase();
-  // Same deactivation guard — somebody who already had a session start
-  // (OTP requested before deactivation) shouldn't slip through the verify
-  // step afterwards either.
-  const verified = await sellers.findVerifiedByEmail(lowerEmail);
-  if (verified && !verified.is_active) {
-    throw new HttpError(
-      403,
-      'ACCOUNT_DEACTIVATED',
-      'Your account has been deactivated by the admin. Please contact support to restore access.',
-    );
-  }
-  const seller = await sellers.findActiveVerifiedByEmail(lowerEmail);
-  if (!seller) throw new HttpError(400, 'OTP_INVALID', 'Code is invalid or has expired.');
+  // Re-check the account before accepting an OTP. An account may have been
+  // deleted or deactivated after /login/start issued the code.
+  const seller = await requireActiveVerifiedSeller(lowerEmail);
   await otp.verify({
     purpose: 'seller_login',
     channel: 'email',
@@ -212,6 +194,15 @@ async function loginVerify({ email, code }) {
     code,
   });
   return issueTokenWithRefresh(seller);
+}
+
+async function requireActiveVerifiedSeller(email) {
+  // This single lookup enforces all login prerequisites: the row must be
+  // verified, active, and not soft-deleted. Every login endpoint calls this
+  // before it can issue an OTP or accept one.
+  const seller = await sellers.findActiveVerifiedByEmail(email);
+  if (!seller) throw new HttpError(404, 'NOT_FOUND', NO_ACCOUNT_MESSAGE);
+  return seller;
 }
 
 // Mask the local part of an email so we can hint at the OTP destination
@@ -254,4 +245,4 @@ function toUser(seller) {
   };
 }
 
-module.exports = { registerStart, registerVerify, loginStart, loginVerify, toUser };
+module.exports = { registerStart, registerVerify, loginStart, loginResend, loginVerify, toUser };

@@ -11,7 +11,11 @@ const { shareProperty } = require('../../services/properties/shareProperty');
 // service to keep the shape rules (contact/phone/email/dualMode/etc.)
 // authored in one place. Enquiry rows use the same DynamicPropertyForm
 // engine on the frontend, so the payload shape is identical.
-const { validateDynamicData } = require('../../services/inventory/dynamicDataValidation');
+const {
+  validateDynamicData,
+  validateCommunicationNumbers,
+  validateGutSurveyNumbers,
+} = require('../../services/inventory/dynamicDataValidation');
 const { computeLandPricing } = require('../../services/inventory/landPricingCompute');
 const { computeLandFrontage } = require('../../services/inventory/landFrontageCompute');
 const {
@@ -67,7 +71,11 @@ const titleField = Joi.string().trim().max(255).allow('', null)
 const descField = Joi.string().trim().max(2000).allow('', null);
 const locField = Joi.string().trim().max(255).allow('', null);
 const propertyTypeField = Joi.string().trim().max(255).allow('', null);
-const phoneField = Joi.string().trim().max(20).allow('', null);
+const mobileField = Joi.string().pattern(/^[6-9]\d{9}$/).allow('', null)
+  .messages({
+    'string.base': 'Enter a valid 10-digit mobile number starting with 6-9',
+    'string.pattern.base': 'Enter a valid 10-digit mobile number starting with 6-9',
+  });
 const personField = Joi.string().trim().max(255).allow('', null);
 
 // Mirror of the helper in inventory-properties.js — see the comment there
@@ -227,9 +235,9 @@ const propertyBody = Joi.object({
   // Promoted from the first contact card in `details.dynamicData.contacts[0]`
   // by the FE before submit so the DB flat columns match the FE input.
   ownerName: requiredWhenNotDraft(personField, 'Owner Contact Name is required.'),
-  ownerContact: requiredWhenNotDraft(phoneField, 'Owner Contact Number is required.'),
+  ownerContact: requiredWhenNotDraft(mobileField, 'Owner Contact Number is required.'),
   agentName: personField.optional(),
-  agentContact: phoneField.optional(),
+  agentContact: mobileField.optional(),
   details: Joi.object().unknown(true).max(200).optional().allow(null),
 }).unknown(true);
 
@@ -313,6 +321,14 @@ function normalizeEnquiryMultiSelects(dyn) {
 function validateDynamicDataMiddleware(req, res, next) {
   try {
     const body = req.body || {};
+    // `details` is an open JSON bag for backward-compatible form variants.
+    // Validate every existing mobile/phone-shaped key here as well as inside
+    // dynamicData, so legacy details.contacts and older hardcoded sections
+    // cannot bypass the number rules on create, update, or draft save.
+    const detailNumberErrors = [
+      ...validateCommunicationNumbers(body.details, 'details'),
+      ...validateGutSurveyNumbers(body.details, 'details'),
+    ];
     // Enquiry-only Nature array coercion runs for drafts too so the stored
     // shape stays consistent whether or not the record is a draft.
     if (body.details && body.details.dynamicData) {
@@ -329,7 +345,6 @@ function validateDynamicDataMiddleware(req, res, next) {
         message: 'Agreement End Date cannot be earlier than Agreement Start Date.',
       }]));
     }
-    if (body.isDraft) return next();
     const dyn = body.details && body.details.dynamicData;
     // Product-mandatory dynamic-form field: Address lives on
     // `details.dynamicData.address` (no top-level column). Enforce it here
@@ -345,21 +360,33 @@ function validateDynamicDataMiddleware(req, res, next) {
       });
     }
     if (!dyn) {
-      if (mandatoryDynErrors.length > 0) {
-        return next(new HttpError(400, 'VALIDATION_ERROR', summarizeDetailMessages(mandatoryDynErrors), mandatoryDynErrors));
+      const details = [
+        ...detailNumberErrors,
+        ...(body.isDraft ? [] : mandatoryDynErrors),
+      ];
+      if (details.length > 0) {
+        return next(new HttpError(400, 'VALIDATION_ERROR', summarizeDetailMessages(details), details));
       }
       return next();
     }
     const { value, errors } = validateDynamicData(dyn);
-    if (errors.length > 0 || mandatoryDynErrors.length > 0) {
+    const dynamicNumberErrors = errors.map((e) => ({
+      path: `details.dynamicData.${e.path}`,
+      message: e.message,
+    }));
+    const numberAndShapeErrors = [...detailNumberErrors, ...dynamicNumberErrors]
+      .filter((entry, index, all) => all.findIndex((candidate) =>
+        candidate.path === entry.path && candidate.message === entry.message) === index);
+    if (numberAndShapeErrors.length > 0 || (!body.isDraft && mandatoryDynErrors.length > 0)) {
       const details = [
-        ...mandatoryDynErrors,
-        ...errors.map((e) => ({
-          path: `details.dynamicData.${e.path}`,
-          message: e.message,
-        })),
+        ...(body.isDraft ? [] : mandatoryDynErrors),
+        ...numberAndShapeErrors,
       ];
       return next(new HttpError(400, 'VALIDATION_ERROR', summarizeDetailMessages(details), details));
+    }
+    if (body.isDraft) {
+      req.body.details.dynamicData = value;
+      return next();
     }
     // Advanced Land Pricing recompute (2026-08-05): recompute the
     // derived-value fields on Land Sale / Purchase and SEZ Land Sale /

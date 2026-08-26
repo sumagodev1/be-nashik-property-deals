@@ -56,10 +56,11 @@ const PHONE_RE = /^[6-9]\d{9}$/;
 const URL_RE   = /^https?:\/\/[^\s]+$/i;
 
 const optionalLen = (max) => Joi.string().trim().max(max).allow('', null);
-const optionalPhone = () => Joi.string().trim().length(10).pattern(PHONE_RE).allow('', null)
+const optionalPhone = () => Joi.string().pattern(PHONE_RE).allow('', null)
   .messages({
+    'string.base': 'Enter a valid 10-digit mobile number starting with 6-9',
     'string.pattern.base': 'Enter a valid 10-digit mobile number starting with 6-9',
-    'string.length': 'Mobile number must be exactly 10 digits',
+    'string.length': 'Enter a valid 10-digit mobile number starting with 6-9',
   });
 const optionalEmail = () => Joi.string().trim().max(255).email({ tlds: { allow: false } }).allow('', null);
 const optionalUrl = () => Joi.string().trim().max(500).pattern(URL_RE).allow('', null)

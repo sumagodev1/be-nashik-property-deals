@@ -9,6 +9,7 @@ const sellerProperties = require('../../services/seller/properties');
 const { AREA_UNITS } = require('../../constants/property');
 const masterCodeField = Joi.string().trim().lowercase().pattern(/^[a-z0-9][a-z0-9_-]{0,62}[a-z0-9]$/);
 const { HttpError } = require('../../middleware/errors');
+const { validateCommunicationNumbers } = require('../../services/inventory/dynamicDataValidation');
 
 const router = express.Router();
 
@@ -56,6 +57,21 @@ const propertyBody = Joi.object({
   details: Joi.object().unknown(true).max(50).optional().allow(null),
 }).unknown(true);
 
+// Seller property details are an open, forward-compatible JSON bag. The
+// current seller form has no owner-contact fields, but validating by key here
+// prevents a direct API caller (or a future form variant) from storing a
+// malformed mobile/phone/WhatsApp value in that bag.
+function validatePropertyCommunicationNumbers(req, res, next) {
+  const errors = validateCommunicationNumbers(req.body?.details, 'details');
+  if (errors.length === 0) return next();
+  return next(new HttpError(
+    400,
+    'VALIDATION_ERROR',
+    errors.map((entry) => entry.message).join('; '),
+    errors,
+  ));
+}
+
 router.get('/', validate(listQuery, 'query'), async (req, res, next) => {
   try { res.json(await sellerProperties.listOwn(Number(req.auth.sub), req.query)); }
   catch (e) { next(e); }
@@ -73,13 +89,13 @@ router.get('/:id', validate(idParam, 'params'), async (req, res, next) => {
   catch (e) { next(e); }
 });
 
-router.post('/', idempotency(), validate(propertyBody), async (req, res, next) => {
+router.post('/', idempotency(), validate(propertyBody), validatePropertyCommunicationNumbers, async (req, res, next) => {
   try {
     res.status(201).json(await sellerProperties.createOwn(Number(req.auth.sub), req.body));
   } catch (e) { next(e); }
 });
 
-router.put('/:id', validate(idParam, 'params'), validate(propertyBody), async (req, res, next) => {
+router.put('/:id', validate(idParam, 'params'), validate(propertyBody), validatePropertyCommunicationNumbers, async (req, res, next) => {
   try {
     res.json(await sellerProperties.updateOwn(Number(req.auth.sub), req.params.id, req.body));
   } catch (e) { next(e); }

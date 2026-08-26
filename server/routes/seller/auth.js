@@ -63,8 +63,11 @@ const emailField = Joi.string().trim().lowercase().email({ tlds: { allow: false 
 // Used only by the three REGISTRATION steps (start / verify / resend). Seller
 // login keys on email, so tightening this cannot lock out anyone who already
 // signed up with a number that would now be refused.
-const mobileField = Joi.string().trim().pattern(/^[6-9]\d{9}$/)
-  .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number starting with 6-9' });
+const mobileField = Joi.string().pattern(/^[6-9]\d{9}$/)
+  .messages({
+    'string.base': 'Enter a valid 10-digit mobile number starting with 6-9',
+    'string.pattern.base': 'Enter a valid 10-digit mobile number starting with 6-9',
+  });
 const nameField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY)
   .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
 const codeField = Joi.string().pattern(/^\d{6}$/);
@@ -159,25 +162,9 @@ router.post('/login/start', startLimiter, validate(loginStart), async (req, res,
 
 router.post('/login/resend', startLimiter, validate(loginResend), async (req, res, next) => {
   try {
-    // Re-issues the sign-in code for a session already started by
-    // /login/start. Rate-limited by the same startLimiter, and it reveals
-    // nothing extra: an unknown or inactive address gets the same { ok: true }
-    // the start step returns in production, so this cannot be used to
-    // enumerate registered emails.
-    const sellersQ = require('../../db/queries/sellers');
-    const otpSvc = require('../../services/auth/otp');
-    const lowerEmail = String(req.body.email).trim().toLowerCase();
-    const seller = await sellersQ.findActiveVerifiedByEmail(lowerEmail);
-    if (!seller) return res.json({ ok: true });
-    const issued = await otpSvc.issue({
-      purpose: 'seller_login',
-      channel: 'email',
-      email: lowerEmail,
-      mobileNumber: seller.mobile_number,
-      label: 'sign-in',
-    });
-    const payload = { ok: true, expiresAt: issued.expiresAt };
-    return res.json(payload);
+    // Re-issues the sign-in code only for an active, verified seller. The
+    // same backend account guard used by /login/start runs before OTP issue.
+    return res.json(await auth.loginResend(req.body));
   } catch (e) { return next(e); }
 });
 

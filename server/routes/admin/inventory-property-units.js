@@ -38,8 +38,10 @@ const express = require('express');
 const Joi = require('joi');
 
 const { validate } = require('../../middleware/validate');
+const { HttpError } = require('../../middleware/errors');
 const idempotency = require('../../middleware/idempotency');
 const units = require('../../services/inventory/units');
+const { validateCommunicationNumbers } = require('../../services/inventory/dynamicDataValidation');
 // T-2026-146: Builder Property Unit Status is now master-driven
 // (master_lookups.master_key='builder_status'). We validate the code
 // against the master at write time rather than a hardcoded enum so
@@ -100,6 +102,17 @@ const unitUpdateBody = Joi.object({
   details: Joi.object().unknown(true).max(200).optional(),
 }).unknown(true);
 
+function validateUnitCommunicationNumbers(req, res, next) {
+  const errors = validateCommunicationNumbers(req.body?.details, 'details');
+  if (errors.length === 0) return next();
+  return next(new HttpError(
+    400,
+    'VALIDATION_ERROR',
+    errors.map((entry) => entry.message).join('; '),
+    errors,
+  ));
+}
+
 // Dashboard fast-path — status flip only.
 const statusBody = Joi.object({
   status: Joi.string().trim().pattern(STATUS_CODE_PATTERN).required().messages({
@@ -114,7 +127,7 @@ router.get('/', validate(masterIdParam, 'params'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/', idempotency(), validate(masterIdParam, 'params'), validate(unitBody, 'body'),
+router.post('/', idempotency(), validate(masterIdParam, 'params'), validate(unitBody, 'body'), validateUnitCommunicationNumbers,
   async (req, res, next) => {
     try {
       // T-2026-146: reject unknown/inactive builder_status codes at write
@@ -136,7 +149,7 @@ router.get('/:unitId', validate(masterAndUnitIdParam, 'params'), async (req, res
   } catch (err) { next(err); }
 });
 
-router.patch('/:unitId', validate(masterAndUnitIdParam, 'params'), validate(unitUpdateBody, 'body'),
+router.patch('/:unitId', validate(masterAndUnitIdParam, 'params'), validate(unitUpdateBody, 'body'), validateUnitCommunicationNumbers,
   async (req, res, next) => {
     try {
       // T-2026-146: only guard status if the update payload actually

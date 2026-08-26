@@ -26,8 +26,11 @@ const emailField = Joi.string().trim().lowercase().email({ tlds: { allow: false 
 // ten digits - while the profile form already enforced the stricter rule, so
 // an alternate contact of 1212121212 was refused by the UI but accepted by a
 // direct API call. No stored alternate_contact fails the tighter pattern.
-const phoneField = Joi.string().trim().pattern(/^[6-9]\d{9}$/)
-  .messages({ 'string.pattern.base': 'Enter a valid 10-digit mobile number starting with 6-9' });
+const phoneField = Joi.string().pattern(/^[6-9]\d{9}$/)
+  .messages({
+    'string.base': 'Enter a valid 10-digit mobile number starting with 6-9',
+    'string.pattern.base': 'Enter a valid 10-digit mobile number starting with 6-9',
+  });
 const nameField = Joi.string().trim().min(3).max(50).pattern(LETTERS_ONLY)
   .messages({ 'string.pattern.base': 'Name can only contain letters and spaces' });
 

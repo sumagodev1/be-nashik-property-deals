@@ -48,12 +48,13 @@ const nameMsg = (label) => label
   + ' must be a single name (letters only, no spaces). Use the separate'
   + ' Middle Name and Surname fields for the rest.';
 
-// Landline slots (phone1 / phone2). The character set stays lax because an
-// STD-coded landline is written many ways, but the message is now written for
-// an operator rather than Joi's default.
-const phoneField = Joi.string().trim().max(20).allow('', null)
-  .pattern(/^[0-9+\-\s()]*$/).optional()
-  .messages({ 'string.pattern.base': 'Phone number may contain only digits, spaces and + - ( )' });
+// Phone slots accept digits only, including an optional STD code, and contain
+// 8-15 digits.
+const phoneField = Joi.string().pattern(/^\d{8,15}$/).allow('', null).optional()
+  .messages({
+    'string.base': 'Enter a valid phone number with 8-15 digits',
+    'string.pattern.base': 'Enter a valid phone number with 8-15 digits',
+  });
 
 // Mobile slots (mobile1 / mobile2 / mobile3 / whatsapp) are 10-digit Indian
 // mobile numbers. These used the lax phoneField too, so twenty digits of
@@ -61,10 +62,10 @@ const phoneField = Joi.string().trim().max(20).allow('', null)
 //
 // Mirrored by MOBILE_PATTERN in
 // src/admin/pages/BusinessAssociates/BusinessAssociateForm.jsx.
-const mobileField = Joi.string().trim().allow('', null)
-  .pattern(/^[6-9]\d{9}$/).optional()
+const mobileField = Joi.string().pattern(/^[6-9]\d{9}$/).allow('', null).optional()
   .messages({
-    'string.pattern.base': 'Enter a 10-digit mobile number starting with 6-9',
+    'string.base': 'Enter a valid 10-digit mobile number starting with 6-9',
+    'string.pattern.base': 'Enter a valid 10-digit mobile number starting with 6-9',
   });
 
 // Website — must carry a scheme and a dotted host. These were plain
@@ -204,9 +205,9 @@ router.delete('/:id', validate(idParam, 'params'), async (req, res, next) => {
 
 const bulkCheckBody = Joi.object({
   items: Joi.array().max(5000).items(Joi.object({
-    mobile1:  phoneField,
+    mobile1:  mobileField,
     phone1:   phoneField,
-    whatsapp: phoneField,
+    whatsapp: mobileField,
     email1:   emailField,
   }).unknown(true)).required(),
 });

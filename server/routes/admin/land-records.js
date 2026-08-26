@@ -67,19 +67,13 @@ const refText = (max) => Joi.string().trim().max(max).allow('', null).pattern(RE
     'string.max': 'Must be ' + max + ' characters or fewer',
   });
 
-// Advocate contact: landline with STD code, or a mobile. The count is checked
-// on the digits alone so separators do not change the verdict.
-const contactField = () => Joi.string().trim().max(20).allow('', null)
-  .pattern(/^[0-9+\-\s()]+$/)
-  .custom((value, helpers) => {
-    const digits = String(value).replace(/\D/g, '');
-    if (digits.length < 8 || digits.length > 15) return helpers.error('contact.digits');
-    return value;
-  })
+// Advocate contact: landline with STD code, or a mobile. Digits only,
+// with 8-15 digits.
+const contactField = () => Joi.string().pattern(/^\d{8,15}$/).allow('', null)
   .optional()
   .messages({
-    'string.pattern.base': 'May contain only digits, spaces and + - ( )',
-    'contact.digits': 'Must contain 8 to 15 digits (landline with STD code, or mobile)',
+    'string.base': 'Enter a valid phone number with 8-15 digits',
+    'string.pattern.base': 'Enter a valid phone number with 8-15 digits',
   });
 
 const optNum    = (max = RATE_MAX) => {
