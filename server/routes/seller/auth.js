@@ -137,14 +137,14 @@ router.post('/register/resend', startLimiter, validate(registerResend), async (r
     if (!seller || seller.is_verified || !seller.email) {
       return res.json({ ok: true });
     }
-    await otp.issue({
+    const issued = await otp.issue({
       purpose: 'seller_register',
       channel: 'email',
       email: String(seller.email).toLowerCase(),
       mobileNumber: req.body.mobileNumber,
       label: 'registration',
     });
-    const payload = { ok: true };
+    const payload = { ok: true, expiresAt: issued.expiresAt };
     res.json(payload);
   } catch (e) { next(e); }
 });
@@ -169,14 +169,14 @@ router.post('/login/resend', startLimiter, validate(loginResend), async (req, re
     const lowerEmail = String(req.body.email).trim().toLowerCase();
     const seller = await sellersQ.findActiveVerifiedByEmail(lowerEmail);
     if (!seller) return res.json({ ok: true });
-    await otpSvc.issue({
+    const issued = await otpSvc.issue({
       purpose: 'seller_login',
       channel: 'email',
       email: lowerEmail,
       mobileNumber: seller.mobile_number,
       label: 'sign-in',
     });
-    const payload = { ok: true };
+    const payload = { ok: true, expiresAt: issued.expiresAt };
     return res.json(payload);
   } catch (e) { return next(e); }
 });

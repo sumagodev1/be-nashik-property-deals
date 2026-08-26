@@ -65,7 +65,7 @@ async function registerStart(payload) {
     sellerId = await sellers.create({ ...payload, email });
   }
 
-  await otp.issue({
+  const issued = await otp.issue({
     purpose: 'seller_register',
     channel: 'email',
     email,
@@ -73,9 +73,12 @@ async function registerStart(payload) {
     label: 'registration',
   });
 
-    // expiresInMinutes mirrors sign-in: the screen states the code's real
-    // validity instead of a hardcoded number that drifts from OTP_TTL_MINUTES.
-  return { mobileNumber: payload.mobileNumber, email, sellerId, expiresInMinutes: otp.TTL_MINUTES };
+  return {
+    mobileNumber: payload.mobileNumber,
+    email,
+    sellerId,
+    expiresAt: issued.expiresAt,
+  };
 }
 
 async function registerVerify({ mobileNumber, code }) {
@@ -173,17 +176,18 @@ async function loginStart({ email }) {
     }
     throw new HttpError(404, 'NOT_FOUND', 'No account found for this email.');
   }
-  await otp.issue({
+  const issued = await otp.issue({
     purpose: 'seller_login',
     channel: 'email',
     email: lowerEmail,
     mobileNumber: seller.mobile_number,
     label: 'sign-in',
   });
-  // expiresInMinutes is the code's REAL validity (OTP_TTL_MINUTES). The
-  // login screen only showed a 30-second countdown, which is the resend
-  // cooldown - it was being read as "the code expires in 30 seconds".
-  return { ok: true, emailHint: maskEmail(seller.email), expiresInMinutes: otp.TTL_MINUTES };
+  return {
+    ok: true,
+    emailHint: maskEmail(seller.email),
+    expiresAt: issued.expiresAt,
+  };
 }
 
 async function loginVerify({ email, code }) {

@@ -7,12 +7,11 @@ const { renderEmail, BRAND } = require('../email/emailTemplate');
 const { trySendSms } = require('../sms/sender');
 const { HttpError } = require('../../middleware/errors');
 
-// 2 minutes. Every user-facing string - the email body, the SMS, and the
-// notice on the OTP screen - is derived from this one value, so changing it
-// here changes what we tell people as well. Keep it that way: the previous
-// mismatch (screen said one thing, the row expired on another schedule) is
-// what made this confusing to begin with.
-const TTL_MINUTES = Number(process.env.OTP_TTL_MINUTES) || 2;
+// Seller OTP validity is intentionally fixed at exactly 120 seconds. The
+// browser displays the expiry timestamp returned by this service, while the
+// database expiry remains the security boundary during verification.
+const TTL_SECONDS = 120;
+const TTL_MINUTES = TTL_SECONDS / 60;
 const MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS) || 5;
 const RATE_PER_MINUTE = Number(process.env.OTP_RATE_PER_MINUTE) || 1;
 const RATE_PER_HOUR = Number(process.env.OTP_RATE_PER_HOUR) || 5;
@@ -34,8 +33,14 @@ function generateCode() {
 }
 
 function expiresAt() {
-  const d = new Date(Date.now() + TTL_MINUTES * 60 * 1000);
-  return d.toISOString().slice(0, 19).replace('T', ' ');
+  return new Date(Date.now() + TTL_SECONDS * 1000);
+}
+
+function toIsoTimestamp(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  const millis = Date.parse(String(value));
+  return Number.isFinite(millis) ? new Date(millis).toISOString() : null;
 }
 
 /**
@@ -46,7 +51,7 @@ function expiresAt() {
  *
  * The plaintext code never leaves this module: it is hashed into the row,
  * placed in the outgoing message, then dropped. Callers receive only
- * `{ sent: true }`, so no route can leak a code even by accident.
+ * `{ sent: true, expiresAt }`, so no route can leak a code even by accident.
  */
 async function issue({
   purpose,
@@ -69,13 +74,20 @@ async function issue({
 
   const code = generateCode();
   const codeHash = await bcrypt.hash(code, BCRYPT_COST);
-  await otpQueries.create({
+  const expiry = expiresAt();
+  const otpId = await otpQueries.create({
     purpose,
     email: channel === 'email' ? email : null,
     mobileNumber: channel === 'sms' ? mobileNumber : mobileNumber || null,
     codeHash,
-    expiresAt: expiresAt(),
+    expiresAt: expiry.toISOString().slice(0, 23).replace('T', ' '),
   });
+  // Return the value read back from MySQL so the browser countdown and the
+  // database verification boundary use the same exact timestamp.
+  const persistedExpiry = typeof otpQueries.findExpiryById === 'function'
+    ? toIsoTimestamp(await otpQueries.findExpiryById(otpId))
+    : null;
+  const expiresAtIso = persistedExpiry || expiry.toISOString();
 
   if (channel === 'sms') {
     await trySendSms({
@@ -91,7 +103,7 @@ async function issue({
     });
   }
 
-  return { sent: true };
+  return { sent: true, expiresAt: expiresAtIso };
 }
 
 async function enforceRateLimitsEmail(purpose, email) {
@@ -141,6 +153,15 @@ async function verify({ purpose, channel = 'email', email, mobileNumber, code })
   }
   if (!row) throw new HttpError(400, 'OTP_INVALID', 'Code is invalid or has expired.');
 
+  const fallbackExpiryMillis = Date.parse(String(row.expires_at));
+  const isExpired = row.is_expired === 1
+    || row.is_expired === true
+    || (row.is_expired == null
+      && (!Number.isFinite(fallbackExpiryMillis) || fallbackExpiryMillis <= Date.now()));
+  if (isExpired) {
+    throw new HttpError(400, 'OTP_EXPIRED', 'OTP has expired. Please resend a new OTP.');
+  }
+
   if (row.attempts >= MAX_ATTEMPTS) {
     throw new HttpError(429, 'OTP_LOCKED', 'Too many wrong attempts. Request a new code.');
   }
@@ -151,7 +172,10 @@ async function verify({ purpose, channel = 'email', email, mobileNumber, code })
     throw new HttpError(400, 'OTP_INVALID', 'Code is invalid or has expired.');
   }
 
-  await otpQueries.consume(row.id);
+  const consumed = await otpQueries.consumeIfUnexpired(row.id);
+  if (!consumed) {
+    throw new HttpError(400, 'OTP_EXPIRED', 'OTP has expired. Please resend a new OTP.');
+  }
   return true;
 }
 
