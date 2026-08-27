@@ -295,8 +295,8 @@ async function sendTestEmail(id, { recipient } = {}) {
       to,
       replyTo: t.replyTo,
       subject: 'Nashik Property Deals — Email Configuration Test',
-      text: `This is a test email from the Nashik Property Deals admin console.\n\nIf you received this message, the SMTP configuration is working correctly.\n\nSent: ${new Date().toISOString()}\n`,
-      html: `<p>This is a test email from the <strong>Nashik Property Deals</strong> admin console.</p><p>If you received this message, the SMTP configuration is working correctly.</p><p style="color:#888;font-size:12px">Sent: ${new Date().toISOString()}</p>`,
+      text: `This is a test email from the Nasik Property Deals admin console.\n\nIf you received this message, the SMTP configuration is working correctly.\n\nSent: ${new Date().toISOString()}\n`,
+      html: `<p>This is a test email from the <strong>Nahik Property Deals</strong> admin console.</p><p>If you received this message, the SMTP configuration is working correctly.</p><p style="color:#888;font-size:12px">Sent: ${new Date().toISOString()}</p>`,
     });
     return { ok: true, sentTo: to };
   } catch (err) {
