@@ -1,5 +1,17 @@
 const { pool } = require('../pool');
 
+// Property dashboards use Indian calendar dates. `created_at` is stored as
+// UTC and every pool connection is deliberately pinned to UTC, so date
+// buckets must translate the stored instant to the application's calendar
+// before grouping or applying a selected date range. Keeping the offset here
+// (rather than relying on the host process timezone or MySQL timezone tables)
+// makes the API and the browser's Nashik date presets agree at midnight.
+const DASHBOARD_IST_OFFSET_MINUTES = 330;
+const DASHBOARD_IST_OFFSET_MS = DASHBOARD_IST_OFFSET_MINUTES * 60 * 1000;
+const LOCAL_DAILY_BUCKET_SQL = "DATE_FORMAT(DATE_ADD(created_at, INTERVAL 330 MINUTE), '%Y-%m-%d')";
+const LOCAL_WEEKLY_BUCKET_SQL = "DATE_FORMAT(DATE_SUB(DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE)), INTERVAL WEEKDAY(DATE(DATE_ADD(created_at, INTERVAL 330 MINUTE))) DAY), '%Y-%m-%d')";
+const LOCAL_MONTHLY_BUCKET_SQL = "DATE_FORMAT(DATE_ADD(created_at, INTERVAL 330 MINUTE), '%Y-%m')";
+
 /**
  * All counts ignore soft-deleted rows.
  */
@@ -210,71 +222,40 @@ async function topAreasInventory({ limit = 10 } = {}) {
  * granularity. Buckets are continuous — days/weeks/months with zero rows
  * are backfilled so the chart x-axis stays gap-free.
  */
-async function listingsByBucket({ granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
-  let bucketSql;
-  let labelFn;
-  let buckets;
-
-  if (granularity === 'weekly') {
-    // Last 12 ISO weeks (Mon-start).
-    bucketSql = "DATE_FORMAT(DATE_SUB(created_at, INTERVAL WEEKDAY(created_at) DAY), '%Y-%m-%d')";
-    buckets = buildWeekBuckets(12);
-    labelFn = (b) => b;
-  } else if (granularity === 'monthly') {
-    bucketSql = "DATE_FORMAT(created_at, '%Y-%m')";
-    buckets = buildMonthBuckets(12);
-    labelFn = (b) => b;
-  } else if (granularity === 'custom' && dateFrom && dateTo) {
-    bucketSql = "DATE_FORMAT(created_at, '%Y-%m-%d')";
-    buckets = buildDayBucketsBetween(dateFrom, dateTo);
-    labelFn = (b) => b;
-  } else {
-    bucketSql = "DATE_FORMAT(created_at, '%Y-%m-%d')";
-    const days = granularity === 'daily' && dateFrom && dateTo ? null : 30;
-    buckets = days ? buildDayBuckets(days) : buildDayBucketsBetween(dateFrom, dateTo);
-    labelFn = (b) => b;
-  }
-
-  // Both queries filter to the earliest bucket boundary to keep result rows small.
-  const since = bucketToDate(buckets.length > 0 ? buckets[0] : null);
+async function listingsByBucket({ days = 30, granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
+  const spec = makeBucketSpec({ granularity, dateFrom, dateTo, days });
 
   const [websiteRows] = await pool.query(
-    `SELECT ${bucketSql} AS bucket, COUNT(*) AS count
+    `SELECT ${spec.bucketSql} AS bucket, COUNT(*) AS count
      FROM website_properties
-     WHERE deleted_at IS NULL AND created_at >= ?
+     WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ?
      GROUP BY bucket
      ORDER BY bucket ASC`,
-    [since],
+    spec.bounds,
   );
   const [inventoryRows] = await pool.query(
-    `SELECT ${bucketSql} AS bucket, COUNT(*) AS count
+    `SELECT ${spec.bucketSql} AS bucket, COUNT(*) AS count
      FROM inventory_properties
-     WHERE deleted_at IS NULL AND created_at >= ?
+     WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ?
      GROUP BY bucket
      ORDER BY bucket ASC`,
-    [since],
+    spec.bounds,
   );
 
   const websiteMap = Object.fromEntries(websiteRows.map((r) => [String(r.bucket), Number(r.count)]));
   const inventoryMap = Object.fromEntries(inventoryRows.map((r) => [String(r.bucket), Number(r.count)]));
 
-  return buckets.map((b) => ({
-    bucket: labelFn(b),
+  return spec.buckets.map((b) => ({
+    bucket: b,
     website: websiteMap[b] || 0,
     inventory: inventoryMap[b] || 0,
   }));
 }
 
 function buildDayBuckets(days) {
-  const out = [];
-  const start = new Date();
-  start.setUTCDate(start.getUTCDate() - (days - 1));
-  for (let i = 0; i < days; i += 1) {
-    const d = new Date(start);
-    d.setUTCDate(start.getUTCDate() + i);
-    out.push(d.toISOString().slice(0, 10));
-  }
-  return out;
+  const count = Math.max(1, Number(days) || 30);
+  const today = dashboardLocalDateToday();
+  return buildDayBucketsBetween(addDays(today, -(count - 1)), today);
 }
 
 function buildDayBucketsBetween(fromYmd, toYmd) {
@@ -285,50 +266,137 @@ function buildDayBucketsBetween(fromYmd, toYmd) {
   for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
     out.push(new Date(d).toISOString().slice(0, 10));
   }
-  // Cap absurdly long ranges to protect the chart axis.
-  return out.length > 366 ? out.slice(-366) : out;
+  // Do not truncate a valid custom range. Every returned bucket represents
+  // one selected calendar date; silently dropping the older part would make
+  // the API count disagree with the selected range and the chart.
+  return out;
 }
 
 function buildWeekBuckets(weeks) {
-  const out = [];
-  const now = new Date();
-  // Find current week's Monday in UTC.
-  const day = (now.getUTCDay() + 6) % 7;
-  const monday = new Date(now);
-  monday.setUTCDate(now.getUTCDate() - day);
-  monday.setUTCHours(0, 0, 0, 0);
-  for (let i = weeks - 1; i >= 0; i -= 1) {
-    const d = new Date(monday);
-    d.setUTCDate(monday.getUTCDate() - i * 7);
-    out.push(d.toISOString().slice(0, 10));
-  }
-  return out;
-}
-
-/**
- * Turn a bucket key into a date MySQL can compare against a DATETIME column.
- *
- * Monthly buckets are 'YYYY-MM'. Passing that straight into
- * `created_at >= ?` makes MySQL raise "Truncated incorrect datetime value"
- * and fall back to lenient coercion; under strict SQL mode it is an error,
- * which would break every monthly chart. Daily and weekly buckets are
- * already 'YYYY-MM-DD' and pass through untouched.
- */
-function bucketToDate(bucket) {
-  if (!bucket) return new Date().toISOString().slice(0, 10);
-  const s = String(bucket);
-  if (/^\d{4}-\d{2}$/.test(s)) return `${s}-01`;
-  return s;
+  const count = Math.max(1, Number(weeks) || 12);
+  const currentMonday = weekStart(addDays(dashboardLocalDateToday(), 0));
+  const first = addDays(currentMonday, -(count - 1) * 7);
+  return Array.from({ length: count }, (_, index) => addDays(first, index * 7));
 }
 
 function buildMonthBuckets(months) {
+  const count = Math.max(1, Number(months) || 12);
+  const today = dashboardLocalDateToday();
+  const current = monthKey(today);
+  return Array.from({ length: count }, (_, index) => addMonths(current, -(count - 1) + index));
+}
+
+function buildWeekBucketsBetween(fromYmd, toYmd) {
+  const start = weekStart(fromYmd);
+  const end = weekStart(toYmd);
+  if (!start || !end || start > end) return [];
   const out = [];
-  const now = new Date();
-  for (let i = months - 1; i >= 0; i -= 1) {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
-    out.push(d.toISOString().slice(0, 7));
-  }
+  for (let current = start; current <= end; current = addDays(current, 7)) out.push(current);
   return out;
+}
+
+function buildMonthBucketsBetween(fromYmd, toYmd) {
+  const start = monthKey(fromYmd);
+  const end = monthKey(toYmd);
+  if (!start || !end || start > end) return [];
+  const out = [];
+  for (let current = start; current <= end; current = addMonths(current, 1)) out.push(current);
+  return out;
+}
+
+function makeBucketSpec({ granularity = 'daily', dateFrom = null, dateTo = null, days = 30 } = {}) {
+  const hasExplicitRange = Boolean(dateFrom && dateTo);
+  let bucketSql = LOCAL_DAILY_BUCKET_SQL;
+  let buckets;
+  let bucketGranularity = 'daily';
+
+  if (granularity === 'weekly') {
+    bucketSql = LOCAL_WEEKLY_BUCKET_SQL;
+    bucketGranularity = 'weekly';
+    buckets = hasExplicitRange ? buildWeekBucketsBetween(dateFrom, dateTo) : buildWeekBuckets(12);
+  } else if (granularity === 'monthly') {
+    bucketSql = LOCAL_MONTHLY_BUCKET_SQL;
+    bucketGranularity = 'monthly';
+    // An explicit range is still filtered to the exact selected dates; the
+    // buckets only describe how those rows are grouped.
+    buckets = hasExplicitRange ? buildMonthBucketsBetween(dateFrom, dateTo) : buildMonthBuckets(12);
+  } else if (granularity === 'custom' && hasExplicitRange) {
+    buckets = buildDayBucketsBetween(dateFrom, dateTo);
+  } else if (granularity === 'daily' && hasExplicitRange) {
+    buckets = buildDayBucketsBetween(dateFrom, dateTo);
+  } else {
+    buckets = buildDayBuckets(days);
+  }
+
+  const first = buckets[0] || dashboardLocalDateToday();
+  const last = buckets[buckets.length - 1] || first;
+  const lowerDate = hasExplicitRange ? dateFrom : bucketStartDate(first, bucketGranularity);
+  const upperDate = hasExplicitRange
+    ? addDays(dateTo, 1)
+    : nextBucketStartDate(last, bucketGranularity);
+
+  return {
+    bucketSql,
+    buckets,
+    bounds: [localDateStartUtc(lowerDate), localDateStartUtc(upperDate)],
+  };
+}
+
+function dashboardLocalDateToday() {
+  return formatYmd(new Date(Date.now() + DASHBOARD_IST_OFFSET_MS));
+}
+
+function formatYmd(date) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+}
+
+function dateValue(ymd) {
+  const value = new Date(`${ymd}T00:00:00Z`);
+  return Number.isNaN(value.getTime()) ? null : value;
+}
+
+function addDays(ymd, amount) {
+  const value = dateValue(ymd);
+  if (!value) return '';
+  value.setUTCDate(value.getUTCDate() + amount);
+  return formatYmd(value);
+}
+
+function weekStart(ymd) {
+  const value = dateValue(ymd);
+  if (!value) return '';
+  const day = (value.getUTCDay() + 6) % 7;
+  value.setUTCDate(value.getUTCDate() - day);
+  return formatYmd(value);
+}
+
+function monthKey(ymd) {
+  const match = String(ymd || '').match(/^(\d{4})-(\d{2})/);
+  return match ? `${match[1]}-${match[2]}` : '';
+}
+
+function addMonths(key, amount) {
+  const match = String(key || '').match(/^(\d{4})-(\d{2})$/);
+  if (!match) return '';
+  const value = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1 + amount, 1));
+  return `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function bucketStartDate(bucket, granularity) {
+  if (granularity === 'monthly') return `${bucket}-01`;
+  return bucket;
+}
+
+function nextBucketStartDate(bucket, granularity) {
+  if (granularity === 'weekly') return addDays(bucket, 7);
+  if (granularity === 'monthly') return `${addMonths(bucket, 1)}-01`;
+  return addDays(bucket, 1);
+}
+
+function localDateStartUtc(ymd) {
+  const value = dateValue(ymd) || dateValue(dashboardLocalDateToday());
+  value.setUTCMinutes(value.getUTCMinutes() - DASHBOARD_IST_OFFSET_MINUTES);
+  return `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}-${String(value.getUTCDate()).padStart(2, '0')} ${String(value.getUTCHours()).padStart(2, '0')}:${String(value.getUTCMinutes()).padStart(2, '0')}:00`;
 }
 
 async function sellersByArea({ limit = 10 } = {}) {
@@ -350,35 +418,18 @@ async function sellersByArea({ limit = 10 } = {}) {
  *
  * Returns: [{ bucket, owners, agents }, ...]
  */
-async function sellerOnboardingByBucket({ granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
-  let bucketSql;
-  let buckets;
-
-  if (granularity === 'weekly') {
-    bucketSql = "DATE_FORMAT(DATE_SUB(created_at, INTERVAL WEEKDAY(created_at) DAY), '%Y-%m-%d')";
-    buckets = buildWeekBuckets(12);
-  } else if (granularity === 'monthly') {
-    bucketSql = "DATE_FORMAT(created_at, '%Y-%m')";
-    buckets = buildMonthBuckets(12);
-  } else if (granularity === 'custom' && dateFrom && dateTo) {
-    bucketSql = "DATE_FORMAT(created_at, '%Y-%m-%d')";
-    buckets = buildDayBucketsBetween(dateFrom, dateTo);
-  } else {
-    bucketSql = "DATE_FORMAT(created_at, '%Y-%m-%d')";
-    buckets = buildDayBuckets(30);
-  }
-
-  const since = bucketToDate(buckets.length > 0 ? buckets[0] : null);
+async function sellerOnboardingByBucket({ days = 30, granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
+  const spec = makeBucketSpec({ granularity, dateFrom, dateTo, days });
 
   const [rows] = await pool.query(
-    `SELECT ${bucketSql} AS bucket,
+    `SELECT ${spec.bucketSql} AS bucket,
             SUM(user_type = 'owner') AS owners,
             SUM(user_type = 'agent') AS agents
      FROM sellers
-     WHERE deleted_at IS NULL AND created_at >= ?
+     WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ?
      GROUP BY bucket
      ORDER BY bucket ASC`,
-    [since],
+    spec.bounds,
   );
 
   const lookup = Object.fromEntries(rows.map((r) => [
@@ -386,7 +437,7 @@ async function sellerOnboardingByBucket({ granularity = 'daily', dateFrom = null
     { o: Number(r.owners || 0), a: Number(r.agents || 0) },
   ]));
 
-  return buckets.map((b) => ({
+  return spec.buckets.map((b) => ({
     bucket: b,
     owners: lookup[b]?.o || 0,
     agents: lookup[b]?.a || 0,
@@ -569,7 +620,7 @@ async function topAreasEnquiry({ limit = 10 } = {}) {
  * listingsByBucket but the result is a single `count` series (no cross-
  * surface mixing).
  */
-async function listingsByBucketSingle(table, { granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
+async function listingsByBucketSingle(table, { days = 30, granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
   // Whitelist the table name — this string is interpolated into SQL below,
   // so an unexpected value would be a SQL injection. All callers pass a
   // literal ('website_properties' | 'inventory_properties' |
@@ -579,36 +630,19 @@ async function listingsByBucketSingle(table, { granularity = 'daily', dateFrom =
     throw new Error(`Unsupported table for listingsByBucketSingle: ${table}`);
   }
 
-  let bucketSql;
-  let buckets;
-
-  if (granularity === 'weekly') {
-    bucketSql = "DATE_FORMAT(DATE_SUB(created_at, INTERVAL WEEKDAY(created_at) DAY), '%Y-%m-%d')";
-    buckets = buildWeekBuckets(12);
-  } else if (granularity === 'monthly') {
-    bucketSql = "DATE_FORMAT(created_at, '%Y-%m')";
-    buckets = buildMonthBuckets(12);
-  } else if (granularity === 'custom' && dateFrom && dateTo) {
-    bucketSql = "DATE_FORMAT(created_at, '%Y-%m-%d')";
-    buckets = buildDayBucketsBetween(dateFrom, dateTo);
-  } else {
-    bucketSql = "DATE_FORMAT(created_at, '%Y-%m-%d')";
-    buckets = buildDayBuckets(30);
-  }
-
-  const since = bucketToDate(buckets.length > 0 ? buckets[0] : null);
+  const spec = makeBucketSpec({ days, granularity, dateFrom, dateTo });
 
   const [rows] = await pool.query(
-    `SELECT ${bucketSql} AS bucket, COUNT(*) AS count
+    `SELECT ${spec.bucketSql} AS bucket, COUNT(*) AS count
      FROM ${table}
-     WHERE deleted_at IS NULL AND created_at >= ?
+     WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ?
      GROUP BY bucket
      ORDER BY bucket ASC`,
-    [since],
+    spec.bounds,
   );
 
   const map = Object.fromEntries(rows.map((r) => [String(r.bucket), Number(r.count)]));
-  return buckets.map((b) => ({ bucket: b, count: map[b] || 0 }));
+  return spec.buckets.map((b) => ({ bucket: b, count: map[b] || 0 }));
 }
 
 async function listingsByPropertyTypeSingle(table) {

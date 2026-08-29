@@ -15,7 +15,7 @@ async function charts({ days = 30, granularity = 'daily', dateFrom = null, dateT
     sellerOnboarding,
     sellersByArea,
   ] = await Promise.all([
-    dashboardRepo.listingsByBucket({ granularity, dateFrom, dateTo }),
+    dashboardRepo.listingsByBucket({ days, granularity, dateFrom, dateTo }),
     dashboardRepo.listingsByPropertyType(),
     dashboardRepo.listingsByTransactionType(),
     dashboardRepo.topAreas({ limit: 10 }),
@@ -23,7 +23,7 @@ async function charts({ days = 30, granularity = 'daily', dateFrom = null, dateT
     dashboardRepo.topAreasInventory({ limit: 10 }),
     // Use the bucket version so weekly/monthly/custom granularity now applies
     // to the sellers chart too (was previously fixed at daily-30d).
-    dashboardRepo.sellerOnboardingByBucket({ granularity, dateFrom, dateTo }),
+    dashboardRepo.sellerOnboardingByBucket({ days, granularity, dateFrom, dateTo }),
     dashboardRepo.sellersByArea({ limit: 10 }),
   ]);
   return {
@@ -52,7 +52,7 @@ async function websiteKpi() {
   return dashboardRepo.websiteCounters();
 }
 
-async function websiteCharts({ granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
+async function websiteCharts({ days = 30, granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
   const [
     listingsOverTime,
     propertyTypeDistribution,
@@ -60,7 +60,7 @@ async function websiteCharts({ granularity = 'daily', dateFrom = null, dateTo = 
     propertyVarietyDistribution,
     topAreas,
   ] = await Promise.all([
-    dashboardRepo.listingsByBucketSingle('website_properties', { granularity, dateFrom, dateTo }),
+    dashboardRepo.listingsByBucketSingle('website_properties', { days, granularity, dateFrom, dateTo }),
     dashboardRepo.listingsByPropertyTypeSingle('website_properties'),
     dashboardRepo.listingsByTransactionTypeSingle('website_properties'),
     dashboardRepo.listingsByPropertyVarietySingle('website_properties'),
@@ -73,7 +73,7 @@ async function websiteCharts({ granularity = 'daily', dateFrom = null, dateTo = 
     propertyVarietyDistribution,
     topAreas,
     granularity,
-    range: { dateFrom, dateTo },
+    range: { days, dateFrom, dateTo },
   };
 }
 
@@ -81,7 +81,7 @@ async function inventoryKpi() {
   return dashboardRepo.inventoryCounters();
 }
 
-async function inventoryCharts({ granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
+async function inventoryCharts({ days = 30, granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
   const [
     listingsOverTime,
     propertyTypeDistribution,
@@ -89,7 +89,7 @@ async function inventoryCharts({ granularity = 'daily', dateFrom = null, dateTo 
     propertyVarietyDistribution,
     topAreas,
   ] = await Promise.all([
-    dashboardRepo.listingsByBucketSingle('inventory_properties', { granularity, dateFrom, dateTo }),
+    dashboardRepo.listingsByBucketSingle('inventory_properties', { days, granularity, dateFrom, dateTo }),
     dashboardRepo.listingsByPropertyTypeSingle('inventory_properties'),
     dashboardRepo.listingsByTransactionTypeSingle('inventory_properties'),
     dashboardRepo.listingsByPropertyVarietySingle('inventory_properties'),
@@ -102,7 +102,7 @@ async function inventoryCharts({ granularity = 'daily', dateFrom = null, dateTo 
     propertyVarietyDistribution,
     topAreas,
     granularity,
-    range: { dateFrom, dateTo },
+    range: { days, dateFrom, dateTo },
   };
 }
 
@@ -110,7 +110,7 @@ async function enquiryKpi() {
   return dashboardRepo.enquiryCounters();
 }
 
-async function enquiryCharts({ granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
+async function enquiryCharts({ days = 30, granularity = 'daily', dateFrom = null, dateTo = null } = {}) {
   const [
     listingsOverTime,
     propertyTypeDistribution,
@@ -118,7 +118,7 @@ async function enquiryCharts({ granularity = 'daily', dateFrom = null, dateTo = 
     propertyVarietyDistribution,
     topAreas,
   ] = await Promise.all([
-    dashboardRepo.listingsByBucketSingle('enquiry_properties', { granularity, dateFrom, dateTo }),
+    dashboardRepo.listingsByBucketSingle('enquiry_properties', { days, granularity, dateFrom, dateTo }),
     dashboardRepo.listingsByPropertyTypeSingle('enquiry_properties'),
     dashboardRepo.listingsByTransactionTypeSingle('enquiry_properties'),
     dashboardRepo.listingsByPropertyVarietySingle('enquiry_properties'),
@@ -131,7 +131,7 @@ async function enquiryCharts({ granularity = 'daily', dateFrom = null, dateTo = 
     propertyVarietyDistribution,
     topAreas,
     granularity,
-    range: { dateFrom, dateTo },
+    range: { days, dateFrom, dateTo },
   };
 }
 
