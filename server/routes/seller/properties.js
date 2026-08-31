@@ -47,6 +47,7 @@ const propertyBody = Joi.object({
   district: masterCodeField.optional().allow('', null),
   taluka: masterCodeField.optional().allow('', null),
   shivar: masterCodeField.optional().allow('', null),
+  postingDate: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional().allow('', null),
   pincode: Joi.string().trim().max(10).optional().allow('', null),
   latitude: Joi.number().min(-90).max(90).optional().allow(null, ''),
   longitude: Joi.number().min(-180).max(180).optional().allow(null, ''),

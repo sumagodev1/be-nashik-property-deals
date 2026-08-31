@@ -15,6 +15,7 @@ const csvUtil = require('../files/csv');
 const { getBrandingSnapshot } = require('../files/branding');
 const locationsQuery = require('../../db/queries/locations');
 const { getDistrictShortCode } = locationsQuery;
+const { attachLocationNames } = require('../locationLabels');
 const ENQUIRY_STATUS_LABELS = {
   available: 'Available', sold: 'Sold', rented: 'Rented',
   under_offer: 'Under Offer', on_hold: 'On Hold', pending: 'Pending',
@@ -153,8 +154,9 @@ function csvField(value) {
 
 async function listProperties(query) {
   const { rows, total } = await enquiry.list(query);
+  const data = await attachLocationNames(rows, toListItem);
   return {
-    data: rows.map(toListItem),
+    data,
     page: query.page,
     pageSize: query.pageSize,
     total,
@@ -411,7 +413,7 @@ function toListItem(row) {
   return {
     id: row.id,
     propertyCode: row.property_code,
-    postingDate: row.posting_date,
+    postingDate: formatIsoDate(row.posting_date),
     availableFromDate: row.available_from_date,
     title: row.title,
     description: row.description ?? null,
@@ -623,9 +625,9 @@ function renderEnquiryCell(r, key) {
     case 'posting_date':     return formatDateShort(r.posting_date);
     case 'available_from_date': return formatDateShort(r.available_from_date);
     case 'created_at':       return formatDateTime(r.created_at);
-    case 'district':         return r._districtLabel || r.district || '';
-    case 'taluka':           return r._talukaLabel   || r.taluka   || '';
-    case 'village':          return r._shivarLabel   || r.shivar   || '';
+    case 'district':         return r._districtLabel || '-';
+    case 'taluka':           return r._talukaLabel   || '-';
+    case 'village':          return r._shivarLabel   || '-';
     default:                 return '';
   }
 }
@@ -642,17 +644,26 @@ async function enrichExportRows(rows) {
     // resolve to their "(legacy)" labels instead of leaking the raw code.
     masters.listAll('enquiry_status').catch(() => null),
   ]);
-  const dMap = Object.fromEntries((districts || []).map((r) => [r.code, r.label]));
-  const tMap = Object.fromEntries((talukas   || []).map((r) => [r.code, r.label]));
-  const sMap = Object.fromEntries((shivars   || []).map((r) => [r.code, r.label]));
+  const locationMap = (list) => {
+    const byCode = {};
+    const byId = {};
+    for (const item of list || []) {
+      if (item?.code !== null && item?.code !== undefined) byCode[String(item.code)] = item.label;
+      if (item?.id !== null && item?.id !== undefined) byId[String(item.id)] = item.label;
+    }
+    return { ...byId, ...byCode };
+  };
+  const dMap = locationMap(districts);
+  const tMap = locationMap(talukas);
+  const sMap = locationMap(shivars);
   const stMap = Object.fromEntries((((statusRes && statusRes.data) || [])).map((r) => [r.code, r.label]));
   return rows.map((r) => ({
     ...r,
-    _districtLabel: r.district ? (dMap[r.district] || r.district) : '',
-    _talukaLabel:   r.taluka   ? (tMap[r.taluka]   || r.taluka)   : '',
-    _shivarLabel:   r.shivar   ? (sMap[r.shivar]   || r.shivar)   : '',
-    // Master label, then the legacy hardcoded map, then the raw code - so no
-    // export can render an empty status cell.
+    _districtLabel: r.district ? (dMap[String(r.district)] || '') : '',
+    _talukaLabel:   r.taluka   ? (tMap[String(r.taluka)]   || '') : '',
+    _shivarLabel:   r.shivar   ? (sMap[String(r.shivar)]   || '') : '',
+    // Location cells use only the resolved master label; an unresolved code
+    // is represented by '-' in renderEnquiryCell.
     _statusLabel:   r.status   ? (stMap[r.status] || ENQUIRY_STATUS_LABELS[r.status] || r.status) : '',
   }));
 }

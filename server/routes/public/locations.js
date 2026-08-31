@@ -370,7 +370,18 @@ router.get('/labels',
         : [];
       const rows = await locationsRepo.labelsForCodes(req.query.key, codes);
       const map = {};
-      for (const r of rows) map[r.code] = r.label;
+      const requested = new Set(codes.map(String));
+      const byCode = Object.fromEntries((rows || []).map((r) => [String(r.code), r.label]));
+      const byId = Object.fromEntries((rows || []).map((r) => [String(r.id), r.label]));
+      for (const r of rows) {
+        // Return the key in the same representation the caller supplied.
+        // This supports both government codes and legacy/master row ids
+        // without changing the value used by report filtering.
+        if (requested.has(String(r.code))) map[String(r.code)] = byCode[String(r.code)];
+        if (requested.has(String(r.id)) && map[String(r.id)] === undefined) {
+          map[String(r.id)] = byCode[String(r.id)] ?? byId[String(r.id)];
+        }
+      }
       res.json({ data: map });
     } catch (err) { next(err); }
   },

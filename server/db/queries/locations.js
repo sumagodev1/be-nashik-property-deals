@@ -174,12 +174,13 @@ async function labelsForCodes(masterKey, codes) {
   const capped = codes.slice(0, 500).map((c) => String(c));
   const placeholders = capped.map(() => '?').join(', ');
   const [rows] = await pool.query(
-    `SELECT code, label
+    `SELECT id, code, label
        FROM master_lookups
       WHERE master_key = ?
         AND deleted_at IS NULL
-        AND code IN (${placeholders})`,
-    [masterKey, ...capped],
+        AND (code IN (${placeholders})
+             OR CAST(id AS CHAR) IN (${placeholders}))`,
+    [masterKey, ...capped, ...capped],
   );
   return rows;
 }

@@ -135,6 +135,10 @@ const listQuery = Joi.object({
   maxBudget: Joi.number().min(0).optional(),
   dateFrom: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateTo: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  // Reports-only bounds against the actual posting_date column. The
+  // existing dateFrom/dateTo pair remains the Created Date contract.
+  postingDateFrom: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  postingDateTo: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
   // T-2026-117: Draft Status list filter. Mirror of the identically-named
   // block in routes/admin/inventory-properties.js — the two lists share a
   // single query-string key (`draftStatus`) so FE and BE stay symmetric

@@ -35,6 +35,8 @@ async function list({
   priceMax,
   dateFrom,
   dateTo,
+  postingDateFrom,
+  postingDateTo,
   sort,
 }) {
   const offset = (page - 1) * pageSize;
@@ -80,6 +82,11 @@ async function list({
   if (priceMax !== undefined) { where.push('wp.price <= ?'); params.push(priceMax); }
   if (dateFrom) { where.push('wp.created_at >= ?'); params.push(dateFrom); }
   if (dateTo) { where.push('wp.created_at < DATE_ADD(?, INTERVAL 1 DAY)'); params.push(dateTo); }
+  // Reports Posting Date Wise uses the source's canonical posting_date. Keep
+  // it separate from dateFrom/dateTo, which remain legacy Created Date
+  // filters for the existing Website list and dashboard callers.
+  if (postingDateFrom) { where.push('wp.posting_date >= ?'); params.push(postingDateFrom); }
+  if (postingDateTo) { where.push('wp.posting_date < DATE_ADD(?, INTERVAL 1 DAY)'); params.push(postingDateTo); }
 
   const whereSql = `WHERE ${where.join(' AND ')}`;
   const orderSql = buildOrderBy(sort);
@@ -95,7 +102,7 @@ async function list({
        wp.district, wp.taluka, wp.shivar, wp.pincode,
        wp.area_value, wp.area_unit, wp.bhk, wp.price, wp.details,
        wp.approval_status, wp.is_active, wp.is_featured,
-       wp.approved_at, wp.rejection_reason, wp.created_at, wp.updated_at,
+       wp.approved_at, wp.rejection_reason, wp.posting_date, wp.created_at, wp.updated_at,
        wp.seller_id, s.full_name AS seller_name, s.user_type AS seller_type, s.email AS seller_email, s.mobile_number AS seller_mobile,
        (SELECT COUNT(*) FROM leads l WHERE l.website_property_id = wp.id AND l.deleted_at IS NULL) AS leads_count
      FROM website_properties wp
@@ -131,13 +138,14 @@ async function create(payload) {
     : null;
   const [result] = await pool.query(
     `INSERT INTO website_properties
-     (property_code, seller_id, title, description, property_type, transaction_type, location,
+     (property_code, posting_date, seller_id, title, description, property_type, transaction_type, location,
       district, taluka, shivar, pincode,
       latitude, longitude, area_value, area_unit, bhk, price,
       approval_status, is_active, details)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, COALESCE(?, CURRENT_DATE), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.propertyCode,
+      payload.postingDate || null,
       payload.sellerId,
       payload.title,
       payload.description || null,
@@ -190,6 +198,7 @@ async function update(id, payload) {
   // fresh code still overwrites. `details` now follows the same idiom.
   await pool.query(
     `UPDATE website_properties SET
+       posting_date = COALESCE(?, posting_date),
        title = ?, description = ?, property_type = ?, transaction_type = ?, location = ?,
        district = COALESCE(?, district),
        taluka   = COALESCE(?, taluka),
@@ -199,6 +208,7 @@ async function update(id, payload) {
        details  = COALESCE(?, details)
      WHERE id = ? AND deleted_at IS NULL`,
     [
+      payload.postingDate === undefined ? null : (payload.postingDate || null),
       payload.title,
       payload.description || null,
       payload.propertyType,

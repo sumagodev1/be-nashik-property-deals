@@ -146,16 +146,13 @@ const TOP_LEVEL_MAP = {
   // Posting Date columns:
   //   * inventory_properties.posting_date        (migration 081 rename)
   //   * enquiry_properties.posting_date          (migration 081 rename)
-  //   * website_properties.registration_date     (unchanged — website is
-  //                                                out of scope for the
-  //                                                Posting Date rollout)
+  //   * website_properties.posting_date          (added by migration 126)
   // `resolveTopLevelColumn` picks the right column per module kind so a
   // sections payload that says `postingDate` resolves correctly on all
-  // three surfaces. `registrationDate` is kept as a legacy alias that
-  // still works for callers on the pre-rename contract (website + any
-  // old inventory/enquiry FE build that hasn't shipped).
+  // three surfaces. `registrationDate` is kept as a legacy alias, but now
+  // resolves to the canonical posting_date column on every source.
   postingDate: 'posting_date',
-  registrationDate: 'registration_date',
+  registrationDate: 'posting_date',
   availableFromDate: 'available_from_date',
   createdAt: 'created_at',
   // Alias — the new "Created On Date" share checkbox uses `createdOn` as
@@ -182,13 +179,8 @@ const TOP_LEVEL_MAP = {
 };
 
 // Per-kind overrides for TOP_LEVEL_MAP. Only entries here diverge from the
-// default map. Website keeps the legacy `registration_date` column, so a
-// `postingDate` field key falls back to it there.
-const TOP_LEVEL_MAP_OVERRIDES = {
-  website: {
-    postingDate: 'registration_date',
-  },
-};
+// default map. All three report sources now use posting_date.
+const TOP_LEVEL_MAP_OVERRIDES = {};
 
 function resolveTopLevelColumn(propertyKind, key) {
   const overrides = TOP_LEVEL_MAP_OVERRIDES[propertyKind];
@@ -372,7 +364,8 @@ async function formatFieldValue(propertyKind, row, field, rawValue) {
   // not a plain stringify.
   if (key === 'price') return formatPrice(rawValue);
   if (key === 'areaValue') return formatArea(row);
-  // Date-only fields (Posting Date, Available From, legacy Registration Date).
+// Date-only fields (Posting Date, Available From, and the legacy
+// registrationDate alias).
   if (key === 'postingDate' || key === 'registrationDate' || key === 'availableFromDate') {
     return formatDate(rawValue);
   }

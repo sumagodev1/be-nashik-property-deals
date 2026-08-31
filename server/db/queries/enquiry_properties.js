@@ -67,6 +67,8 @@ async function list({
   maxBudget,
   dateFrom,
   dateTo,
+  postingDateFrom,
+  postingDateTo,
   sort,
   isDraft,
   // Owner Search filter - see WHERE branch below.
@@ -247,6 +249,17 @@ async function list({
   if (dateTo) {
     where.push('ep.created_at < DATE_ADD(?, INTERVAL 1 DAY)');
     params.push(dateTo);
+  }
+  // Reports Posting Date Wise uses this explicit pair. Keep it separate
+  // from dateFrom/dateTo, which remain Created Date filters for the
+  // existing Enquiry list and dashboard callers.
+  if (postingDateFrom) {
+    where.push('ep.posting_date >= ?');
+    params.push(postingDateFrom);
+  }
+  if (postingDateTo) {
+    where.push('ep.posting_date < DATE_ADD(?, INTERVAL 1 DAY)');
+    params.push(postingDateTo);
   }
   if (typeof isDraft === 'boolean') {
     where.push('ep.is_draft = ?');

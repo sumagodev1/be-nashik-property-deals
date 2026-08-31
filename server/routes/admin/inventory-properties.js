@@ -179,6 +179,11 @@ const listQuery = Joi.object({
   maxBudget: Joi.number().min(0).optional(),
   dateFrom: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateTo: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  // Reports-only bounds against the actual posting_date column. The
+  // existing dateFrom/dateTo pair above remains the Created Date contract
+  // used by the Inventory list and dashboard.
+  postingDateFrom: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  postingDateTo: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
   // T-2026-117: Draft Status list filter. Two documented values plus
   // absence — anything else returns 400 VALIDATION_ERROR with a clear
   // message (no silent coercion). Normalised by applyDraftStatusFilter()

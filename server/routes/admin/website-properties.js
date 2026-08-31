@@ -58,6 +58,10 @@ const listQuery = Joi.object({
   priceMax: Joi.number().min(0).optional(),
   dateFrom: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateTo: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  // Reports-only bounds against Website's canonical posting_date field.
+  // dateFrom/dateTo above remain the legacy Created Date contract.
+  postingDateFrom: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  postingDateTo: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional(),
   sort: Joi.string()
     .pattern(/^(created_at|price|location|property_type|title|approved_at):(asc|desc)$/)
     .default('title:asc'),
@@ -75,6 +79,7 @@ const createBody = Joi.object({
   district: masterCodeField.optional().allow('', null),
   taluka: masterCodeField.optional().allow('', null),
   shivar: masterCodeField.optional().allow('', null),
+  postingDate: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional().allow('', null),
   pincode: Joi.string().trim().max(10).optional().allow('', null),
   latitude: Joi.number().min(-90).max(90).optional().allow(null, ''),
   longitude: Joi.number().min(-180).max(180).optional().allow(null, ''),
@@ -95,6 +100,7 @@ const updateBody = Joi.object({
   district: masterCodeField.optional().allow('', null),
   taluka: masterCodeField.optional().allow('', null),
   shivar: masterCodeField.optional().allow('', null),
+  postingDate: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).optional().allow('', null),
   pincode: Joi.string().trim().max(10).optional().allow('', null),
   latitude: Joi.number().min(-90).max(90).optional().allow(null, ''),
   longitude: Joi.number().min(-180).max(180).optional().allow(null, ''),

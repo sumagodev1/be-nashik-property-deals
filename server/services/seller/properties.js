@@ -68,7 +68,7 @@ async function listOwn(sellerId, { page, pageSize, sort }) {
     `SELECT id, property_code, title, property_type, transaction_type, location,
             district, taluka, shivar, pincode,
             area_value, area_unit, bhk, price, approval_status, is_active, is_featured,
-            approved_at, rejection_reason, created_at, updated_at
+            approved_at, rejection_reason, posting_date, created_at, updated_at
      FROM website_properties
      WHERE seller_id = ? AND deleted_at IS NULL
      ${orderSql}
@@ -206,6 +206,7 @@ function toListItem(row) {
   return {
     id: row.id,
     propertyCode: row.property_code,
+    postingDate: formatIsoDate(row.posting_date),
     title: row.title,
     propertyType: row.property_type,
     transactionType: row.transaction_type,
@@ -226,6 +227,15 @@ function toListItem(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function formatIsoDate(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value.slice(0, 10);
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+  return String(value).slice(0, 10) || null;
 }
 
 function toDetail(row, images, amenityFiles = []) {

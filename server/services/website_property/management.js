@@ -9,7 +9,9 @@ const excel = require('../files/excel');
 const { buildTablePdf } = require('../files/pdf');
 const { assignUniqueCode, resolvePropertyTypeIdCode } = require('../properties/propertyCode');
 const masters = require('../masters/management');
-const { getDistrictShortCode } = require('../../db/queries/locations');
+const locationsQuery = require('../../db/queries/locations');
+const { getDistrictShortCode } = locationsQuery;
+const { attachLocationNames } = require('../locationLabels');
 // Centralised Property Type / Transaction Type / Property Variety
 // validator — see services/masters/propertyMasters.js for the contract.
 const { validatePropertyClassification } = require('../masters/propertyMasters');
@@ -69,8 +71,9 @@ function csvField(value) {
 
 async function listProperties(query) {
   const { rows, total } = await wp.list(query);
+  const data = await attachLocationNames(rows, toListItem);
   return {
-    data: rows.map(toListItem),
+    data,
     page: query.page,
     pageSize: query.pageSize,
     total,
@@ -324,6 +327,9 @@ function toListItem(row) {
   return {
     id: row.id,
     propertyCode: row.property_code,
+    // Website exposes the canonical posting_date column under the same DTO
+    // key as Inventory and Enquiry. It is never derived from created_at.
+    postingDate: formatIsoDate(row.posting_date),
     title: row.title,
     propertyType: row.property_type,
     transactionType: row.transaction_type,
@@ -343,6 +349,24 @@ function toListItem(row) {
     approvedAt: row.approved_at,
     rejectionReason: row.rejection_reason,
     leadsCount: Number(row.leads_count || 0),
+    // The seller form's saved values (landmark, address, gut / survey
+    // numbers, Cost to Customer, Rate (Rs. / Sq. Ft.), area unit, ...) live
+    // only inside the `details` JSON blob — website_properties has no
+    // dedicated columns for them. The list SQL already selects `wp.details`
+    // (it is needed by extractPropertyVariety above); exposing it on the DTO
+    // brings the Website LIST projection to parity with the Inventory and
+    // Enquiry list DTOs, which have shipped `details` since T-2026-044, and
+    // with website's own toDetail() below.
+    //
+    // Without it the Reports module received website rows with blank
+    // Landmark / Address / Gut-Survey / Rate cells while the same fields
+    // rendered correctly for the other two sources, so one property could
+    // not be reported consistently across sources.
+    //
+    // Parsed defensively so both mysql2 driver shapes (string vs object)
+    // yield the same object; `undefined` when a caller's SQL omitted the
+    // column, matching toListItem() in services/inventory/management.js.
+    details: row.details !== undefined ? parseDetailsField(row.details) : undefined,
     seller: {
       id: row.seller_id,
       name: row.seller_name,
@@ -382,17 +406,16 @@ function toDetail(row, images = [], documents = []) {
     // PDF Download modal (T-2026-102) walks. Every one of these already
     // exists on the underlying row via `wp.*` in db/queries/website_
     // properties.js#findById — this block simply surfaces them on the
-    // response DTO so the FE catalog builder finds them. No schema
-    // change, no destructive rename; all additive fields default to
-    // `null` when the DB row is a legacy record without that column set.
+    // response DTO so the FE catalog builder finds them. The canonical
+    // posting_date column is additive (migration 126); legacy rows remain
+    // `null` until their real posting date is known.
     //
-    //   * postingDate           — aliased from `registration_date` because
-    //                              website_properties.registration_date was
-    //                              intentionally left unrenamed by
-    //                              migration 081 (see the header comment
-    //                              of that migration). The FE PDF catalog
-    //                              reads `property.postingDate` uniformly
-    //                              across all three surfaces.
+    //   * postingDate           — read from the canonical
+    //                              website_properties.posting_date column.
+    //                              It is deliberately not derived from
+    //                              created_at or available_from_date. The FE
+    //                              PDF catalog reads property.postingDate
+    //                              uniformly across all three surfaces.
     //   * availableFromDate     — column added by migration 080; not
     //                              previously exposed on website toDetail.
     //   * details               — JSON blob from migration 013; the FE
@@ -403,7 +426,7 @@ function toDetail(row, images = [], documents = []) {
     //                              Parsed defensively so both mysql2
     //                              driver shapes (string vs object) yield
     //                              the same object.
-    postingDate: row.registration_date ?? null,
+    postingDate: formatIsoDate(row.posting_date),
     availableFromDate: row.available_from_date ?? null,
     details: row.details !== undefined ? parseDetailsField(row.details) : {},
     seller: {
@@ -468,6 +491,14 @@ const WEBSITE_PDF_COLUMNS = [
 function formatInr(n) {
   if (n === null || n === undefined || n === '') return '';
   return Number(n).toLocaleString('en-IN');
+}
+function formatIsoDate(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value.slice(0, 10);
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+  return String(value).slice(0, 10) || null;
 }
 function formatDate(d) {
   if (!d) return '';

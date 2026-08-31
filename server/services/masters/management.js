@@ -601,19 +601,37 @@ async function resolveParentLabel(masterKey, parentCode) {
   }
 }
 
-// Fixed-vocabulary masters: the admin can toggle active/inactive on existing
-// rows but cannot add, rename or delete them. Currently empty — property
-// status was removed in migration 056 so admins can extend the vocabulary
-// (e.g. add "Reserved") from the master admin without a code change. Keep
-// the constant + guard in place because future masters may need to be
-// locked down again.
-const FIXED_MASTERS = new Set();
+// Fixed-vocabulary masters: system-defined catalogues an admin can read and
+// search, but cannot add to, rename, delete or deactivate.
+//
+// `transaction_type` is fixed because it is not an independent vocabulary.
+// The Inventory / Enquiry chooser and every registration form are driven by
+// `master_property_forms`, where each row must terminate at a `form_code`
+// backed by a *FormsConfig.js entry on the frontend. A transaction type
+// added here could therefore never produce a form to fill in, and renaming
+// or removing one would silently break the chooser, the list filters, the
+// dashboards and the reports that group by it — including for properties
+// already saved against that code.
+//
+// Deactivating is blocked for the same reason: `is_active = 0` drops the row
+// out of every dropdown and master lookup, which is indistinguishable from
+// deleting a required system value as far as the forms are concerned.
+//
+// This is the authoritative control. The frontend disables the matching
+// buttons (see MasterListPage.jsx), but that is only a guard against a
+// mistake — a direct API call still lands here.
+//
+// NOTE: property status was removed from this set in migration 056 so admins
+// can extend that vocabulary (e.g. add "Reserved") without a code change.
+const FIXED_MASTERS = new Set(['transaction_type']);
 function assertNotFixed(masterKey, action) {
   if (FIXED_MASTERS.has(masterKey)) {
     throw new HttpError(
       403,
       'MASTER_FIXED',
-      `${MASTER_LABELS[masterKey]} is a fixed vocabulary — ${action} is disabled. You can toggle individual rows active/inactive instead.`,
+      `${MASTER_LABELS[masterKey]} is a fixed system catalogue — ${action} is disabled. `
+      + 'These values are set up together with the Inventory / Enquiry form catalogue '
+      + 'and still drive filters, dashboards and reports.',
     );
   }
 }
@@ -1032,11 +1050,14 @@ async function update(masterKey, id, payload, req) {
   const discriminator = discriminatorFor(masterKey);
   const existing = await repo.findById(table, id, { discriminator });
   if (!existing) throw new HttpError(404, 'NOT_FOUND', `${MASTER_LABELS[masterKey]} not found`);
-  // For fixed masters the admin may still flip is_active but cannot change
-  // code or label. Strip those out of the payload before validation/persist.
-  if (FIXED_MASTERS.has(masterKey)) {
-    payload = { isActive: payload.isActive, sortOrder: payload.sortOrder };
-  }
+  // A fixed master is fully immutable from this surface. This previously
+  // stripped code/label and let `isActive` through, but deactivating a row
+  // removes it from every dropdown and master lookup, which is
+  // indistinguishable from deleting a required system value as far as the
+  // Inventory / Enquiry forms, filters, dashboards and reports are
+  // concerned. Rename, re-code, re-sort and the active/inactive toggle all
+  // reject here — the toggle reaches this same PUT endpoint.
+  assertNotFixed(masterKey, 'editing entries');
   // Snapshot pre-mutation DTO for the audit metadata + activate/deactivate
   // detection. Uses toDto so shape matches what the API returns for `after`.
   const beforeDto = toDto(existing);
