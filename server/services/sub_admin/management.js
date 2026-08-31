@@ -103,14 +103,36 @@ function dedupePermissions(input) {
   return Array.from(byKey.values());
 }
 
+/**
+ * How many sub-admin accounts may exist at once.
+ *
+ * The product allows exactly one delegated account alongside the single
+ * built-in Administrator. Enforced HERE, in the service, so it holds for
+ * every caller — the "+ New Sub Admin" button is hidden in the UI, but a
+ * direct POST /api/admin/sub-admins would otherwise walk straight past that.
+ *
+ * A seat is held by an ACTIVE account. Deactivating or deleting the current
+ * sub admin frees the slot immediately — an account that cannot sign in is
+ * not using its seat, and deactivating is the non-destructive way to hand the
+ * seat to someone else while keeping the old account's history.
+ */
+const MAX_SUB_ADMINS = 1;
+
 async function list({ page, pageSize, search, isActive }) {
   const { rows, total } = await subAdmins.list({ page, pageSize, search, isActive });
+  // `total` is filtered by search / isActive, so it cannot drive the seat
+  // cap — a search that matches nothing would look like a free slot. Send the
+  // unfiltered live count and the cap alongside it.
+  const activeCount = await subAdmins.countActive();
   return {
     data: rows.map(toListItem),
     page,
     pageSize,
     total,
     totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    activeCount,
+    maxSubAdmins: MAX_SUB_ADMINS,
+    canCreate: activeCount < MAX_SUB_ADMINS,
   };
 }
 
@@ -122,6 +144,18 @@ async function getOne(id) {
 }
 
 async function create({ email, password, fullName, isActive, modules, createdByAdminId, req = null }) {
+  // Seat cap. Checked before anything else so a rejected attempt neither
+  // hashes a password nor touches a row. Covers the restore-in-place branch
+  // below too: reviving a soft-deleted account also consumes a seat.
+  const activeCount = await subAdmins.countActive();
+  if (activeCount >= MAX_SUB_ADMINS) {
+    throw new HttpError(
+      409,
+      'SUB_ADMIN_LIMIT_REACHED',
+      `Only ${MAX_SUB_ADMINS} active sub admin account is allowed. `
+      + 'Deactivate or delete the existing sub admin before creating another one.',
+    );
+  }
   if (await subAdmins.emailTaken(email)) {
     throw new HttpError(409, 'EMAIL_TAKEN', 'A sub admin with this email already exists');
   }
@@ -192,6 +226,24 @@ async function update(id, { email, fullName, isActive, password }, req = null) {
       throw new HttpError(409, 'EMAIL_TAKEN', 'A sub admin with this email already exists');
     }
   }
+  // Activating consumes a seat, so it is capped exactly like creating.
+  // Without this, the seat freed by deactivating account A could be used to
+  // create account B, and A could then simply be switched back on — leaving
+  // two active sub admins. `excludeId` keeps THIS row out of the count so
+  // re-saving an already-active account is never blocked by itself.
+  const willBeActive = typeof isActive === 'boolean' ? isActive : Boolean(existing.is_active);
+  if (willBeActive && !existing.is_active) {
+    const otherActive = await subAdmins.countActive(id);
+    if (otherActive >= MAX_SUB_ADMINS) {
+      throw new HttpError(
+        409,
+        'SUB_ADMIN_LIMIT_REACHED',
+        `Only ${MAX_SUB_ADMINS} active sub admin account is allowed. `
+        + 'Deactivate the other sub admin before activating this one.',
+      );
+    }
+  }
+
   const nextEmail = email ?? existing.email;
   const nextFullName = fullName ?? existing.full_name;
   await subAdmins.updateProfile(id, {
@@ -331,4 +383,5 @@ function toDetail(row, modules) {
   };
 }
 
-module.exports = { list, getOne, create, update, updateModules, remove };
+module.exports = {
+  MAX_SUB_ADMINS, list, getOne, create, update, updateModules, remove };

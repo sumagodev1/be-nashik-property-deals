@@ -118,6 +118,33 @@ async function list({ page, pageSize, search, isActive }) {
   return { rows, total };
 }
 
+/**
+ * How many sub admins currently HOLD ACCESS, ignoring search filters.
+ *
+ * A seat is consumed by an active, non-deleted account. Deactivated and
+ * soft-deleted rows are excluded because neither can sign in — deactivating
+ * the current sub admin frees the seat just as deleting one does, which is
+ * what lets a replacement be created without first destroying the old
+ * account's audit trail.
+ *
+ * Must NOT be derived from the filtered `list()` total: a search that matched
+ * nothing would look like a free seat.
+ *
+ * @param {number|null} excludeId  ignore this row — used when checking
+ *   whether ACTIVATING a specific account would exceed the cap, so the row
+ *   being activated is not counted twice.
+ */
+async function countActive(excludeId = null) {
+  const params = [];
+  let sql = 'SELECT COUNT(*) AS total FROM sub_admins WHERE deleted_at IS NULL AND is_active = 1';
+  if (excludeId) {
+    sql += ' AND id <> ?';
+    params.push(excludeId);
+  }
+  const [[{ total }]] = await pool.query(sql, params);
+  return Number(total) || 0;
+}
+
 async function create({ email, passwordHash, fullName, isActive, createdByAdminId }) {
   const [result] = await pool.query(
     `INSERT INTO sub_admins (email, password_hash, full_name, is_active, created_by_admin_id)
@@ -171,6 +198,7 @@ async function listAssignableForLeads() {
 }
 
 module.exports = {
+  countActive,
   findActiveByEmail,
   findByEmail,
   findById,
