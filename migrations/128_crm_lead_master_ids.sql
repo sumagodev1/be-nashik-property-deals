@@ -47,6 +47,12 @@
 --   it. Deactivating removes a value from the "choose a new one" lists; it must
 --   not blank out leads already saved on it. Nothing here filters on is_active.
 --
+-- PORTABILITY: MySQL has no `ADD COLUMN IF NOT EXISTS` / `ADD INDEX IF NOT
+--   EXISTS` — that is MariaDB-only, and this migration failed on a MySQL server
+--   with a syntax error at exactly that clause. Every conditional DDL below
+--   therefore uses the information_schema + PREPARE guard already established
+--   by migration 063, which runs on both engines and keeps the re-run safety.
+--
 -- Additive only: no DROP, no column removal. Re-run safe throughout.
 -- ============================================================================
 
@@ -83,24 +89,53 @@ UPDATE crm_enquiries e
 -- (2) The three reference columns
 -- ------------------------------------------------------------------
 -- BIGINT UNSIGNED to match master_lookups.id (migration 026).
-ALTER TABLE crm_enquiries
-  ADD COLUMN IF NOT EXISTS lead_stage_id BIGINT UNSIGNED NULL
-    COMMENT 'master_lookups.id for master_key = crm_lead_stage. Authoritative reference; lead_stage_code is the denormalised display key.'
-    AFTER lead_rating_code;
+SET @c := (SELECT COUNT(*) FROM information_schema.columns
+            WHERE table_schema = DATABASE() AND table_name = 'crm_enquiries'
+              AND column_name = 'lead_stage_id');
+SET @sql := IF(@c = 0,
+  "ALTER TABLE crm_enquiries ADD COLUMN lead_stage_id BIGINT UNSIGNED NULL COMMENT 'master_lookups.id for master_key = crm_lead_stage. Authoritative reference; lead_stage_code is the denormalised display key.' AFTER lead_rating_code",
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-ALTER TABLE crm_enquiries
-  ADD COLUMN IF NOT EXISTS lead_status_id BIGINT UNSIGNED NULL
-    COMMENT 'master_lookups.id for master_key = crm_lead_status.'
-    AFTER lead_stage_id;
+SET @c := (SELECT COUNT(*) FROM information_schema.columns
+            WHERE table_schema = DATABASE() AND table_name = 'crm_enquiries'
+              AND column_name = 'lead_status_id');
+SET @sql := IF(@c = 0,
+  "ALTER TABLE crm_enquiries ADD COLUMN lead_status_id BIGINT UNSIGNED NULL COMMENT 'master_lookups.id for master_key = crm_lead_status.' AFTER lead_stage_id",
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-ALTER TABLE crm_enquiries
-  ADD COLUMN IF NOT EXISTS lead_rating_id BIGINT UNSIGNED NULL
-    COMMENT 'master_lookups.id for master_key = crm_lead_rating. NULL when no rating is set.'
-    AFTER lead_status_id;
+SET @c := (SELECT COUNT(*) FROM information_schema.columns
+            WHERE table_schema = DATABASE() AND table_name = 'crm_enquiries'
+              AND column_name = 'lead_rating_id');
+SET @sql := IF(@c = 0,
+  "ALTER TABLE crm_enquiries ADD COLUMN lead_rating_id BIGINT UNSIGNED NULL COMMENT 'master_lookups.id for master_key = crm_lead_rating. NULL when no rating is set.' AFTER lead_status_id",
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-ALTER TABLE crm_enquiries ADD INDEX IF NOT EXISTS idx_enquiry_lead_stage_id  (lead_stage_id);
-ALTER TABLE crm_enquiries ADD INDEX IF NOT EXISTS idx_enquiry_lead_status_id (lead_status_id);
-ALTER TABLE crm_enquiries ADD INDEX IF NOT EXISTS idx_enquiry_lead_rating_id (lead_rating_id);
+SET @i := (SELECT COUNT(*) FROM information_schema.statistics
+            WHERE table_schema = DATABASE() AND table_name = 'crm_enquiries'
+              AND index_name = 'idx_enquiry_lead_stage_id');
+SET @sql := IF(@i = 0,
+  'ALTER TABLE crm_enquiries ADD INDEX idx_enquiry_lead_stage_id (lead_stage_id)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @i := (SELECT COUNT(*) FROM information_schema.statistics
+            WHERE table_schema = DATABASE() AND table_name = 'crm_enquiries'
+              AND index_name = 'idx_enquiry_lead_status_id');
+SET @sql := IF(@i = 0,
+  'ALTER TABLE crm_enquiries ADD INDEX idx_enquiry_lead_status_id (lead_status_id)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @i := (SELECT COUNT(*) FROM information_schema.statistics
+            WHERE table_schema = DATABASE() AND table_name = 'crm_enquiries'
+              AND index_name = 'idx_enquiry_lead_rating_id');
+SET @sql := IF(@i = 0,
+  'ALTER TABLE crm_enquiries ADD INDEX idx_enquiry_lead_rating_id (lead_rating_id)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ------------------------------------------------------------------
 -- (3) Backfill from the existing codes

@@ -38,13 +38,24 @@
 
 SET NAMES utf8mb4;
 
-ALTER TABLE crm_deal_installments
-  ADD COLUMN IF NOT EXISTS is_calculated TINYINT(1) NOT NULL DEFAULT 0
-    COMMENT 'T-2026-201: 1 = operator confirmed this installment via "Calculate Amount", so it counts toward Total Amount Paid. 0 = planned/scheduled only.'
-    AFTER amount;
+-- MySQL has no ADD COLUMN / ADD INDEX "IF NOT EXISTS" (MariaDB-only), so the
+-- information_schema + PREPARE guard from migration 063 is used instead. Same
+-- re-run safety, and it runs on both engines.
+SET @c := (SELECT COUNT(*) FROM information_schema.columns
+            WHERE table_schema = DATABASE() AND table_name = 'crm_deal_installments'
+              AND column_name = 'is_calculated');
+SET @sql := IF(@c = 0,
+  "ALTER TABLE crm_deal_installments ADD COLUMN is_calculated TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'T-2026-201: 1 = operator confirmed this installment via Calculate Amount, so it counts toward Total Amount Paid. 0 = planned/scheduled only.' AFTER amount",
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- Totals are computed as SUM(amount) WHERE is_calculated = 1 per deal, so the
 -- index leads with deal_id and carries the flag and the amount to keep that a
 -- covering read.
-ALTER TABLE crm_deal_installments
-  ADD INDEX IF NOT EXISTS ix_crm_deal_installments_calc (deal_id, is_calculated, amount);
+SET @i := (SELECT COUNT(*) FROM information_schema.statistics
+            WHERE table_schema = DATABASE() AND table_name = 'crm_deal_installments'
+              AND index_name = 'ix_crm_deal_installments_calc');
+SET @sql := IF(@i = 0,
+  'ALTER TABLE crm_deal_installments ADD INDEX ix_crm_deal_installments_calc (deal_id, is_calculated, amount)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
