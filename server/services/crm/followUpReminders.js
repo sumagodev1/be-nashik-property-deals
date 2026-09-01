@@ -260,6 +260,21 @@ async function listByReminder(reminder, { unmasked = false } = {}) {
       // 1-hour list still needs to see whether the 1-day reminder exists.
       reminderOneDay: offset(r.reminder_minutes_before_a, r.reminder_a_sent_at),
       reminderOneHour: offset(r.reminder_minutes_before_b, r.reminder_b_sent_at),
+      // The event's own title, rebuilt exactly as googleCalendar.js builds the
+      // summary: `CRM Follow-up — <name> — <enquiry code>`, falling back the
+      // same way when a name is missing.
+      //
+      // Built from the MASKED name this payload already carries. The real
+      // calendar entry holds the unmasked one — reconstructing it here would
+      // leak the very value the masking exists to hide, so the title shown is
+      // masked to match everything else on screen.
+      calendarSummary: (() => {
+        const nm = unmasked ? (r.full_name || '') : maskName(r.full_name);
+        const code = r.enquiry_code || '';
+        if (nm && code) return `CRM Follow-up — ${nm.slice(0, 80)} — ${code}`;
+        if (code) return `CRM Follow-up — ${code}`;
+        return 'CRM Follow-up';
+      })(),
       googleEventId: r.google_event_id || null,
       syncStatus: r.sync_status || null,
       syncLastError: r.sync_last_error || null,
