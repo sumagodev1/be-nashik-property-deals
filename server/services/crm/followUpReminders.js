@@ -17,14 +17,26 @@
  *                                   pending or failing
  *     booking_status = 'active'     still on — a cancelled meeting will never
  *                                   fire a reminder
- *   ...and then by the offset that meeting carries:
- *     reminder_minutes_before_b = 60    -> the 1-hour card
- *     reminder_minutes_before_a = 1440  -> the 1-day card
+ *   ...and then by HOW SOON the meeting is:
+ *     due within the next hour            -> the 1-hour card
+ *     due after that, within 24 hours     -> the 1-day card
  *
- *   The unit is the ENQUIRY, not the meeting: an enquiry with three qualifying
- *   meetings counts once, hence COUNT(DISTINCT enquiry_id). The two cards
- *   overlap by design — a meeting normally carries both offsets, so the same
- *   enquiry appears in both numbers.
+ *   THE WINDOW, NOT THE CONFIGURATION. These cards first counted any meeting
+ *   that merely had the offset configured, which put a meeting 15 hours away in
+ *   the 1-hour card — reported as a bug, and rightly: virtually every meeting
+ *   configures both offsets, so both cards showed the same number and neither
+ *   told the operator anything. A card now answers "what needs me in the next
+ *   hour / today", which is the question a reminder counter exists to answer.
+ *
+ *   The two windows are mutually exclusive, so one meeting is in exactly one
+ *   card and the numbers can be read side by side. A meeting whose time has
+ *   already passed is in neither: its reminders are done.
+ *
+ *   The offset must still be configured — a meeting with no 1-hour reminder
+ *   cannot appear in the 1-hour card however close it is.
+ *
+ *   The unit is the ENQUIRY, not the meeting: an enquiry with several
+ *   qualifying meetings counts once, hence COUNT(DISTINCT enquiry_id).
  *
  * WHY booking_status AND NOT sync_status
  *   booking_status is what says a meeting is still on. sync_status only
@@ -47,11 +59,39 @@ const ONE_HOUR_MINUTES = 60;
  */
 const SCHEDULED_MEETING_SQL = "a.google_event_id IS NOT NULL AND a.booking_status = 'active'";
 
-/** reminder key -> the column and value that define it. */
+/**
+ * Now, as IST wall-clock, to compare against scheduled_at — which is also IST
+ * wall-clock (see splitWallClock). Comparing it against UTC NOW() would shift
+ * every window by 5½ hours.
+ */
+function nowIstSql() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(new Date()).reduce((acc, x) => { acc[x.type] = x.value; return acc; }, {});
+  // Intl renders midnight as hour 24 in some engines; normalise it.
+  const hour = parts.hour === '24' ? '00' : parts.hour;
+  return `${parts.year}-${parts.month}-${parts.day} ${hour}:${parts.minute}:${parts.second}`;
+}
+
+/**
+ * reminder key -> the window that defines it, in minutes from now.
+ *
+ * `?` is bound to nowIstSql(). Boundaries are half-open so the two cards never
+ * both claim the same meeting: (0, 60] for the hour, (60, 1440] for the day.
+ */
 const REMINDER_CLAUSE = Object.freeze({
-  '1h': `a.reminder_minutes_before_b = ${ONE_HOUR_MINUTES}`,
-  '1d': `a.reminder_minutes_before_a = ${ONE_DAY_MINUTES}`,
+  '1h': `a.reminder_minutes_before_b = ${ONE_HOUR_MINUTES}
+         AND TIMESTAMPDIFF(MINUTE, ?, a.scheduled_at) >= 0
+         AND TIMESTAMPDIFF(MINUTE, ?, a.scheduled_at) <= ${ONE_HOUR_MINUTES}`,
+  '1d': `a.reminder_minutes_before_a = ${ONE_DAY_MINUTES}
+         AND TIMESTAMPDIFF(MINUTE, ?, a.scheduled_at) > ${ONE_HOUR_MINUTES}
+         AND TIMESTAMPDIFF(MINUTE, ?, a.scheduled_at) <= ${ONE_DAY_MINUTES}`,
 });
+
+/** Each clause binds `now` twice. */
+const CLAUSE_ARGS = 2;
 
 /** Same masking as appointmentSlots.js — last 4 digits kept. */
 function maskMobile(raw) {
@@ -99,6 +139,9 @@ function splitWallClock(raw) {
  * number (many meetings, few enquiries) can be explained.
  */
 async function counts() {
+  const now = nowIstSql();
+  // Four clause instances, two bindings each, in the order they appear.
+  const args = Array(4 * CLAUSE_ARGS).fill(now);
   const [[row]] = await pool.query(
     `SELECT
        COUNT(DISTINCT CASE WHEN ${REMINDER_CLAUSE['1h']} THEN a.enquiry_id END) AS one_hour_enquiries,
@@ -107,6 +150,7 @@ async function counts() {
        SUM(${REMINDER_CLAUSE['1d']}) AS one_day_meetings
      FROM crm_calendar_activities a
      WHERE ${SCHEDULED_MEETING_SQL}`,
+    args,
   );
   return {
     oneHour: Number(row.one_hour_enquiries) || 0,
@@ -118,7 +162,7 @@ async function counts() {
 
 /** code -> label for the three CRM taxonomies, from the live masters. */
 async function taxonomyLabelMaps() {
-  const keys = ['crm_lead_stage', 'crm_lead_status', 'crm_lead_rating', 'crm_status'];
+  const keys = ['crm_lead_stage', 'crm_lead_status', 'crm_lead_rating'];
   const entries = await Promise.all(keys.map(async (key) => {
     try {
       // Unfiltered: a lead on a since-deactivated value must still show its
@@ -160,7 +204,6 @@ async function listByReminder(reminder, { unmasked = false } = {}) {
             a.context_note, a.detailed_note,
             a.google_event_id, a.sync_status, a.sync_last_error,
             e.enquiry_code, e.source_type, e.interested_property_ids,
-            e.status_code,
             e.lead_stage_code, e.lead_status_code, e.lead_rating_code,
             p.full_name, p.normalized_mobile, p.normalized_email
        FROM crm_calendar_activities a
@@ -168,6 +211,7 @@ async function listByReminder(reminder, { unmasked = false } = {}) {
        LEFT JOIN crm_parents p ON p.id = e.parent_id
       WHERE ${SCHEDULED_MEETING_SQL} AND ${clause}
       ORDER BY a.scheduled_at ASC, a.id ASC`,
+    Array(CLAUSE_ARGS).fill(nowIstSql()),
   );
 
   const labelMaps = await taxonomyLabelMaps();
@@ -194,9 +238,6 @@ async function listByReminder(reminder, { unmasked = false } = {}) {
       email: unmasked ? (r.normalized_email || '') : maskEmail(r.normalized_email),
       enquiryType: r.source_type || null,
       propertyCodes: parsePropertyCodes(r.interested_property_ids),
-      // The CRM Status column the list page shows (legacy crm_status master),
-      // kept distinct from the three lead taxonomies below it.
-      crmStatusLabel: label('crm_status', r.status_code),
       leadStageLabel: label('crm_lead_stage', r.lead_stage_code),
       leadStatusLabel: label('crm_lead_status', r.lead_status_code),
       leadRatingLabel: label('crm_lead_rating', r.lead_rating_code),

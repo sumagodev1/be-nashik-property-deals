@@ -148,11 +148,18 @@ async function listForEnquiry(enquiryId) {
     );
     byAct = Object.fromEntries(actRows.map((r) => [r.id, r]));
   }
-  const labelMaps = await labelMapsFor(historyRows);
+  // The legacy 'status' scope (crm_status) is not shown: that field was retired
+  // from the UI when the three lead taxonomies replaced it, so a transition on
+  // it reads as a phantom field nobody can see or set. The rows are NOT
+  // deleted — they stay in crm_status_history, and this is a display filter
+  // only, so the audit trail is intact if it is ever needed again.
+  const visibleRows = historyRows.filter((r) => (r.field_scope || 'status') !== 'status');
+
+  const labelMaps = await labelMapsFor(visibleRows);
   // crm.listStatusHistory already orders by created_at ASC, id ASC — oldest
   // first, with the stored insertion order breaking ties, so simultaneous
   // changes keep the order they were written in rather than being re-sorted.
-  return historyRows.map((r) => historyDto(r, byAct, labelMaps));
+  return visibleRows.map((r) => historyDto(r, byAct, labelMaps));
 }
 
 async function listCalendarForEnquiry(enquiryId) {
