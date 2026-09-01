@@ -58,6 +58,7 @@ const parents = require('../../services/crm/parents');
 const enquiries = require('../../services/crm/enquiries');
 const statusHistory = require('../../services/crm/statusHistory');
 const statuses = require('../../services/crm/statuses');
+const dealPayments = require('../../services/crm/dealPayments');
 const duplicateResolver = require('../../services/crm/duplicateResolver');
 const allocations = require('../../services/crm/allocations');
 const propertyCodes = require('../../db/queries/property_codes');
@@ -358,6 +359,50 @@ router.get('/lead-rating', async (req, res, next) => {
     res.json({ data: rows });
   } catch (e) { next(e); }
 });
+
+// ------------------------------------------------------------------
+// Deal / Payment Details (migration 129)
+// ------------------------------------------------------------------
+// Only meaningful for a lead on the "Converted to Deal" stage, but the GET is
+// deliberately not gated on the stage: the Edit Lead modal opens the section as
+// soon as the operator PICKS Deal, before anything is saved, and must be able
+// to load the existing figures at that moment. Hiding the section for other
+// stages is a display rule (§14 keeps the data), not an access rule.
+router.get('/enquiries/:id/deal-payment', async (req, res, next) => {
+  try {
+    res.json({ data: await dealPayments.getForLead(req.params.id) });
+  } catch (e) { next(e); }
+});
+
+const installmentSchema = Joi.object({
+  // A blank row the operator has not filled in yet is legal on the way in and
+  // is stored as zero; the service is what rejects negatives and non-numbers.
+  amount:      Joi.alternatives(Joi.number(), Joi.string().allow('')).optional(),
+  paymentDate: Joi.string().allow('', null).optional(),
+  remarks:     Joi.string().allow('', null).max(500).optional(),
+});
+
+const dealPaymentSchema = Joi.object({
+  propertyCode:   Joi.string().max(64).allow('').optional(),
+  advanceAmount:  Joi.alternatives(Joi.number(), Joi.string().allow('')).optional(),
+  installments:   Joi.array().items(installmentSchema).max(50).optional(),
+});
+
+// The 50-item cap above is a payload guard, not the business rule: the real
+// ceiling of 10 lives in the service so it is enforced identically for any
+// caller, and a 12-item payload gets the business message rather than a schema
+// error that does not explain itself.
+// No per-route write gate: router.use(requireModuleWriteOnMutation(...)) above
+// already covers every mutation verb on this router, and auth.js states that is
+// deliberately router-level so a new endpoint is gated by default. Repeating it
+// here would just run the same check twice.
+router.put('/enquiries/:id/deal-payment',
+  validate(dealPaymentSchema),
+  async (req, res, next) => {
+    try {
+      res.json({ data: await dealPayments.saveForLead(req.params.id, req.body) });
+    } catch (e) { next(e); }
+  });
 
 // ------------------------------------------------------------------
 // Calendar activity retry-sync (T-2026-164)
