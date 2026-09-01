@@ -273,7 +273,7 @@ const MASTER_LABELS = Object.freeze({
   enquiry_status:   'Enquiry / Property Status',
   builder_status:   'Builder Property / Unit Status',
   crm_status:       'CRM / Enquiry Status',
-  crm_lead_stage:   'CRM / Lead Stages',
+  crm_lead_stage:   'CRM / Lead Stage',
   crm_lead_status:  'CRM / Lead Status',
   crm_lead_rating:  'CRM / Lead Rating',
   enquiry_relation: 'Enquiry / Relation',

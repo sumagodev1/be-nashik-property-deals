@@ -332,23 +332,29 @@ router.get('/statuses', async (req, res, next) => {
 // vocabularies live per project convention (§14: FE loads masters from
 // BE, never hardcoded). Each endpoint returns { data: [{code,label,...}] }
 // sorted by sort_order then label.
+// The three vocabularies are INDEPENDENT: none of these endpoints filters by
+// another field, so any active Stage / Status / Rating can be combined freely.
+//
+// ?keep=<code> re-admits one deactivated value — the one the lead being edited
+// currently holds — so an existing lead keeps showing its saved value instead
+// of opening on a blank dropdown. See statuses.js for why.
 router.get('/lead-stages', async (req, res, next) => {
   try {
-    const rows = await statuses.listActiveLeadStages();
+    const rows = await statuses.listActiveLeadStages(req.query.keep || '');
     res.json({ data: rows });
   } catch (e) { next(e); }
 });
 
 router.get('/lead-status', async (req, res, next) => {
   try {
-    const rows = await statuses.listActiveLeadStatus();
+    const rows = await statuses.listActiveLeadStatus(req.query.keep || '');
     res.json({ data: rows });
   } catch (e) { next(e); }
 });
 
 router.get('/lead-rating', async (req, res, next) => {
   try {
-    const rows = await statuses.listActiveLeadRating();
+    const rows = await statuses.listActiveLeadRating(req.query.keep || '');
     res.json({ data: rows });
   } catch (e) { next(e); }
 });

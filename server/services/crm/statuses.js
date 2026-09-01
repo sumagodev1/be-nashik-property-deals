@@ -11,6 +11,21 @@
  *
  * All four helpers return the same DTO shape (id / code / label /
  * sortOrder / isActive) sorted by sort_order then label.
+ *
+ * THE THREE VOCABULARIES ARE INDEPENDENT. There is no parent/child link
+ * between Stage, Status and Rating and no notion of a valid combination: any
+ * active Stage may be saved with any active Status and any active Rating.
+ *
+ * KEEPING A DEACTIVATED VALUE VISIBLE
+ * Each helper takes an optional `keepCode`. Deactivating a master value must
+ * stop it being CHOSEN for new work without blanking the leads already saved
+ * on it — so when a lead currently holds a value the admin has since
+ * deactivated, that one row is appended to the list it would otherwise be
+ * missing from. Without this the dialog's <select> would find no matching
+ * option, render as unselected, and an operator saving an unrelated field
+ * would silently overwrite the value. The appended row keeps isActive:false so
+ * the client can mark it, and only the code actually in use is re-admitted —
+ * every other deactivated value stays gone.
  */
 
 const masters = require('../masters/management');
@@ -24,9 +39,18 @@ function sortRows(rows) {
   });
 }
 
-async function listActiveFor(masterKey) {
+async function listActiveFor(masterKey, keepCode = '') {
   const { data } = await masters.listAll(masterKey, { isActive: true });
-  return sortRows(data);
+  const rows = sortRows(data);
+  if (!keepCode || rows.some((r) => r.code === keepCode)) return rows;
+
+  // The wanted code is not among the active rows: either it was deactivated,
+  // or it no longer exists at all. Look it up unfiltered and append it if it
+  // is a real (not soft-deleted) row; if it has genuinely gone, return the
+  // active list unchanged rather than inventing an option for it.
+  const { data: all } = await masters.listAll(masterKey, {});
+  const kept = (all || []).find((r) => r.code === keepCode);
+  return kept ? [...rows, { ...kept, isActive: false }] : rows;
 }
 
 /** Legacy CRM status (T-2026-151). Preserved for backward compat. */
@@ -34,19 +58,19 @@ async function listActive() {
   return listActiveFor('crm_status');
 }
 
-/** T-2026-169 Phase A: CRM Lead Stages. */
-async function listActiveLeadStages() {
-  return listActiveFor('crm_lead_stage');
+/** CRM Lead Stages. `keepCode` re-admits the lead's own deactivated value. */
+async function listActiveLeadStages(keepCode = '') {
+  return listActiveFor('crm_lead_stage', keepCode);
 }
 
-/** T-2026-169 Phase A: CRM Lead Status. */
-async function listActiveLeadStatus() {
-  return listActiveFor('crm_lead_status');
+/** CRM Lead Status. Independent of Stage — no filtering by any other field. */
+async function listActiveLeadStatus(keepCode = '') {
+  return listActiveFor('crm_lead_status', keepCode);
 }
 
-/** T-2026-169 Phase A: CRM Lead Rating. */
-async function listActiveLeadRating() {
-  return listActiveFor('crm_lead_rating');
+/** CRM Lead Rating. Independent of Status — no filtering by any other field. */
+async function listActiveLeadRating(keepCode = '') {
+  return listActiveFor('crm_lead_rating', keepCode);
 }
 
 module.exports = {

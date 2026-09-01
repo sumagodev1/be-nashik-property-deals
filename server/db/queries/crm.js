@@ -504,14 +504,40 @@ async function updateEnquiryLeadTaxonomyForConn(conn, enquiryId, {
   const normStatus = (leadStatusCode === '' ? null : leadStatusCode);
   const normRating = (leadRatingCode === '' ? null : leadRatingCode);
 
+  // T-2026-196: every code write also writes the master_lookups.id it
+  // resolves to. The id is the authoritative reference (migration 128); the
+  // code stays as the denormalised display key that CrmList.jsx switches on
+  // for chip colours and that crm_status_history records.
+  //
+  // Resolved by a correlated subquery inside the SAME statement rather than by
+  // a prior SELECT, so id and code are written atomically and cannot drift --
+  // there is no window in which a crash leaves the code updated and the id
+  // stale. The subquery reads master_lookups, a different table from the one
+  // being updated, so MariaDB permits it.
+  //
+  // deleted_at IS NULL only: resolving to a soft-deleted master row would
+  // resurrect a reference the admin removed. is_active is deliberately NOT
+  // filtered here -- the service layer decides what may be SELECTED; this
+  // layer only records what was chosen, and re-saving a lead that already
+  // sits on a since-deactivated value must not null out its reference.
+  const idSubquery = (masterKey) => (
+    `(SELECT m.id FROM master_lookups m
+       WHERE m.master_key = '${masterKey}' AND m.code = ? AND m.deleted_at IS NULL
+       LIMIT 1)`
+  );
+
   const sets = [];
   const params = [];
   if (normStage != null) {
     sets.push('lead_stage_code = ?');
     params.push(normStage);
+    sets.push(`lead_stage_id = ${idSubquery('crm_lead_stage')}`);
+    params.push(normStage);
   }
   if (normStatus != null) {
     sets.push('lead_status_code = ?');
+    params.push(normStatus);
+    sets.push(`lead_status_id = ${idSubquery('crm_lead_status')}`);
     params.push(normStatus);
   }
   if (normRating != null) {
@@ -520,10 +546,13 @@ async function updateEnquiryLeadTaxonomyForConn(conn, enquiryId, {
     // valid master code when not "no-touch").
     if (normRating === 'CLEAR') {
       sets.push('lead_rating_code = NULL');
-      // No param push -- the placeholder is baked into the SQL string
+      sets.push('lead_rating_id = NULL');
+      // No param push -- both placeholders are baked into the SQL string
       // above, keeping the sets<->params alignment invariant.
     } else {
       sets.push('lead_rating_code = ?');
+      params.push(normRating);
+      sets.push(`lead_rating_id = ${idSubquery('crm_lead_rating')}`);
       params.push(normRating);
     }
   }
