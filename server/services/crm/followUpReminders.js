@@ -93,30 +93,20 @@ const REMINDER_CLAUSE = Object.freeze({
 /** Each clause binds `now` twice. */
 const CLAUSE_ARGS = 2;
 
-/** Same masking as appointmentSlots.js — last 4 digits kept. */
-function maskMobile(raw) {
-  if (!raw) return '';
-  const digits = String(raw).replace(/\D+/g, '');
-  if (digits.length < 4) return 'XXXX';
-  return 'X'.repeat(digits.length - 4) + digits.slice(-4);
-}
-
-function maskName(raw) {
-  if (!raw) return '';
-  const s = String(raw).trim();
-  if (s.length <= 2) return `${s.charAt(0)}*`;
-  return `${s.slice(0, 2)}${'*'.repeat(Math.max(2, s.length - 2))}`;
-}
-
-function maskEmail(raw) {
-  if (!raw) return '';
-  const s = String(raw).trim();
-  const at = s.indexOf('@');
-  if (at < 1) return '****';
-  const local = s.slice(0, at);
-  const shown = local.slice(0, Math.min(2, local.length));
-  return `${shown}${'*'.repeat(Math.max(2, local.length - shown.length))}${s.slice(at)}`;
-}
+/**
+ * Masking comes from parents.js, which is what the CRM list itself uses.
+ *
+ * This module previously carried its own copies (lifted from
+ * appointmentSlots.js) that pad ONE asterisk per hidden character. That made
+ * the same person read as "Vi**********" and "ke*******************@gmail.com"
+ * here while the list showed "Vi******" and "ke****@gmail.com" — and the long
+ * form was wide enough to wrap onto a second line in the dialog.
+ *
+ * parents.js caps the runs (6 for a name, 4 for an email local part), so
+ * importing it fixes both the inconsistency and the wrapping, and leaves one
+ * definition of what masked data looks like instead of a third copy.
+ */
+const { maskName, maskMobile, maskEmail } = require('./parents');
 
 /**
  * scheduled_at is IST WALL-CLOCK, not UTC.
