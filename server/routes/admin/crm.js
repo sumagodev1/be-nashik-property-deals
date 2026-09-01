@@ -382,10 +382,12 @@ router.get('/follow-up-reminders/:reminder', gateUnmask, async (req, res, next) 
     if (key !== '1h' && key !== '1d') {
       throw new HttpError(400, 'VALIDATION_ERROR', 'reminder must be 1h or 1d');
     }
-    const rows = await followUpReminders.listByReminder(key, {
-      unmasked: boolQ(req.query.unmasked),
-    });
-    res.json({ data: rows });
+    const [rows, calendar] = await Promise.all([
+      followUpReminders.listByReminder(key, { unmasked: boolQ(req.query.unmasked) }),
+      // Account-level, so it rides in meta rather than being repeated per row.
+      followUpReminders.calendarAccount(),
+    ]);
+    res.json({ data: rows, meta: { calendar } });
   } catch (e) { next(e); }
 });
 

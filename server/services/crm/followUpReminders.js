@@ -118,7 +118,7 @@ async function counts() {
 
 /** code -> label for the three CRM taxonomies, from the live masters. */
 async function taxonomyLabelMaps() {
-  const keys = ['crm_lead_stage', 'crm_lead_status', 'crm_lead_rating'];
+  const keys = ['crm_lead_stage', 'crm_lead_status', 'crm_lead_rating', 'crm_status'];
   const entries = await Promise.all(keys.map(async (key) => {
     try {
       // Unfiltered: a lead on a since-deactivated value must still show its
@@ -155,9 +155,12 @@ async function listByReminder(reminder, { unmasked = false } = {}) {
 
   const [rows] = await pool.query(
     `SELECT a.id, a.enquiry_id, a.scheduled_at, a.timezone,
+            a.reminder_minutes_before_a, a.reminder_minutes_before_b,
             a.reminder_a_sent_at, a.reminder_b_sent_at,
-            a.context_note, a.detailed_note, a.google_event_id,
+            a.context_note, a.detailed_note,
+            a.google_event_id, a.sync_status, a.sync_last_error,
             e.enquiry_code, e.source_type, e.interested_property_ids,
+            e.status_code,
             e.lead_stage_code, e.lead_status_code, e.lead_rating_code,
             p.full_name, p.normalized_mobile, p.normalized_email
        FROM crm_calendar_activities a
@@ -169,6 +172,14 @@ async function listByReminder(reminder, { unmasked = false } = {}) {
 
   const labelMaps = await taxonomyLabelMaps();
   const label = (key, code) => (code ? (labelMaps[key]?.[code] || code) : null);
+
+  // One row per qualifying MEETING, carrying everything the Google Calendar
+  // event carries, so the list and the calendar entry agree field for field.
+  const offset = (minutes, sentAt) => {
+    const n = Number(minutes);
+    const configured = Number.isFinite(n) && n > 0;
+    return { configured, minutes: configured ? n : null, sentAt: sentAt || null };
+  };
 
   return rows.map((r) => {
     const when = splitWallClock(r.scheduled_at);
@@ -183,17 +194,52 @@ async function listByReminder(reminder, { unmasked = false } = {}) {
       email: unmasked ? (r.normalized_email || '') : maskEmail(r.normalized_email),
       enquiryType: r.source_type || null,
       propertyCodes: parsePropertyCodes(r.interested_property_ids),
+      // The CRM Status column the list page shows (legacy crm_status master),
+      // kept distinct from the three lead taxonomies below it.
+      crmStatusLabel: label('crm_status', r.status_code),
       leadStageLabel: label('crm_lead_stage', r.lead_stage_code),
       leadStatusLabel: label('crm_lead_status', r.lead_status_code),
       leadRatingLabel: label('crm_lead_rating', r.lead_rating_code),
       meetingDate: when.date,
       meetingTime: when.time,
       timezone: r.timezone || 'Asia/Kolkata',
-      // The operator's own text, exactly as stored. Never defaulted.
-      remarks: r.context_note || r.detailed_note || null,
-      reminderSentAt: reminder === '1h' ? (r.reminder_b_sent_at || null) : (r.reminder_a_sent_at || null),
+      // The two notes stay SEPARATE. context_note is the Context / Reminder
+      // Note that goes into the calendar event; detailed_note is the longer
+      // body. Collapsing them would hide whichever one lost the coin toss.
+      contextNote: r.context_note || null,
+      detailedNote: r.detailed_note || null,
+      // Both offsets are reported on every row, not just the one that was
+      // clicked: the calendar event carries both, and an operator checking the
+      // 1-hour list still needs to see whether the 1-day reminder exists.
+      reminderOneDay: offset(r.reminder_minutes_before_a, r.reminder_a_sent_at),
+      reminderOneHour: offset(r.reminder_minutes_before_b, r.reminder_b_sent_at),
+      googleEventId: r.google_event_id || null,
+      syncStatus: r.sync_status || null,
+      syncLastError: r.sync_last_error || null,
     };
   });
 }
 
-module.exports = { counts, listByReminder, ONE_DAY_MINUTES, ONE_HOUR_MINUTES };
+/**
+ * The Google account the events live in.
+ *
+ * google_calendar_tokens is a singleton row (scope = 'singleton'). Only what is
+ * actually recorded is reported — connected_by_admin_email is NULL in this
+ * deployment, so the client shows "connected" without inventing an address.
+ */
+async function calendarAccount() {
+  const [rows] = await pool.query(
+    `SELECT connected_by_admin_email, connected_at, scope_granted
+       FROM google_calendar_tokens
+      ORDER BY id DESC
+      LIMIT 1`,
+  );
+  if (!rows.length) return { connected: false, email: null, connectedAt: null };
+  return {
+    connected: true,
+    email: rows[0].connected_by_admin_email || null,
+    connectedAt: rows[0].connected_at || null,
+  };
+}
+
+module.exports = { counts, listByReminder, calendarAccount, ONE_DAY_MINUTES, ONE_HOUR_MINUTES };
