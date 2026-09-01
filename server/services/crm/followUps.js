@@ -16,6 +16,26 @@
  * *_sent_at timestamps, context_note and detailed_note, google_event_id,
  * sync_status, and booking_status.
  *
+ * ONLY REAL GOOGLE CALENDAR MEETINGS
+ *   Every row here is filtered on google_event_id IS NOT NULL, so the page
+ *   lists follow-ups that genuinely reached Google Calendar and nothing else.
+ *   Note this table already holds ONE ROW PER SCHEDULED FOLLOW-UP, not one per
+ *   enquiry — an enquiry that never had a meeting has no row at all, so the
+ *   "100 enquiries but only 20 follow-ups" case is structural rather than
+ *   something this filter has to enforce.
+ *
+ *   The test is google_event_id, NOT sync_status = 'SYNCED'. A cancelled
+ *   meeting keeps its event id but moves to sync_status 'CANCELLED', and a
+ *   cancelled meeting must stay visible so its status can read Cancelled.
+ *   The event id is the durable evidence that the meeting once existed in
+ *   Google Calendar; sync_status only describes the latest sync attempt.
+ *
+ *   Rows with no event id — a follow-up saved while the Google sync was
+ *   pending or failing — are excluded from both the list and the summary, and
+ *   counted separately into meta.pendingCalendarSync. They are not displayed as
+ *   records, but the count is surfaced so a broken sync shows up as a number on
+ *   screen rather than as follow-ups that quietly disappeared.
+ *
  * WHAT "STATUS" MEANS HERE
  *   booking_status is the stored lifecycle: 'active' | 'cancelled' |
  *   'superseded' (a rebooked slot supersedes its predecessor). There is NO
@@ -143,7 +163,10 @@ async function list(params = {}) {
     status = '', page = 1, pageSize = 25, unmasked = false,
   } = params;
 
-  const where = [];
+  // First and non-negotiable: a follow-up only belongs on this page if it
+  // actually reached Google Calendar. Seeded before any user filter so no call
+  // path can omit it.
+  const where = ['a.google_event_id IS NOT NULL'];
   const args = [];
 
   if (search) {
@@ -179,6 +202,9 @@ async function list(params = {}) {
 
   // LEFT JOIN on the parent: an enquiry with no parent row is still a real
   // follow-up and must not drop out of the list.
+  //
+  // GOOGLE_EVENT_FILTER is applied to the list AND to the summary below, so the
+  // cards count exactly the rows the table can show.
   const baseFrom = `
       FROM crm_calendar_activities a
       JOIN crm_enquiries e ON e.id = a.enquiry_id
@@ -214,6 +240,14 @@ async function list(params = {}) {
        SUM(a.booking_status = 'superseded')                           AS superseded
      ${baseFrom}`,
     [today, today, today, ...args],
+  );
+
+  // How many follow-ups exist but have no Google Calendar event yet. Reported
+  // so a stalled sync is visible instead of looking like missing data.
+  const [[pendingRow]] = await pool.query(
+    `SELECT COUNT(*) AS n
+       FROM crm_calendar_activities
+      WHERE google_event_id IS NULL`,
   );
 
   const labelMaps = await taxonomyLabelMaps();
@@ -259,6 +293,7 @@ async function list(params = {}) {
       pageSize: limit,
       total: Number(total) || 0,
       today,
+      pendingCalendarSync: Number(pendingRow.n) || 0,
       summary: {
         total: Number(summaryRow.total) || 0,
         today: Number(summaryRow.today) || 0,
