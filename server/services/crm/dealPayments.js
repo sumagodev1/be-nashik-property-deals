@@ -7,8 +7,13 @@
  * Cost to Customer already captured on the allocated inventory property, read
  * live on every request so a re-priced property is reflected immediately.
  *
+ * PLANNED vs CONFIRMED
+ *   An installment is a SCHEDULE entry until the operator confirms it. Entering
+ *   "₹50,000 due 02-09-2026" does not mean the money arrived, so only rows with
+ *   is_calculated = 1 count toward Total Amount Paid (migration 130).
+ *
  * DERIVED, NEVER STORED
- *   totalAmountPaid    = advance + sum(installments)
+ *   totalAmountPaid    = advance + sum(CONFIRMED installments)
  *   totalAmountPending = totalCustomerCost - totalAmountPaid
  * Storing either would create a second source of truth that drifts the first
  * time a row is edited outside this service.
@@ -67,8 +72,14 @@ function parseDate(raw, label) {
 }
 
 function totalsFor(cost, advance, installments) {
+  // Only confirmed installments count. A planned one carries an amount and a
+  // date but no money has changed hands, so adding it would overstate what the
+  // customer has paid and understate what they still owe.
   const paid = round2(
-    installments.reduce((sum, it) => sum + Number(it.amount || 0), Number(advance || 0)),
+    installments.reduce(
+      (sum, it) => (it.isCalculated ? sum + Number(it.amount || 0) : sum),
+      Number(advance || 0),
+    ),
   );
   return {
     totalAmountPaid: paid,
@@ -183,11 +194,18 @@ async function saveForLead(enquiryId, payload = {}) {
   }
   const installments = rawInstallments.map((it, i) => ({
     amount: parseAmount(it?.amount, `Installment ${i + 1} amount`),
+    // Confirmation is the client's to assert, but it is stored server-side so
+    // it survives reload — it is never re-derived from the date, which would be
+    // wrong in both directions (a payment can be recorded late or taken early).
+    isCalculated: Boolean(it?.isCalculated),
     paymentDate: parseDate(it?.paymentDate, `Installment ${i + 1} payment date`),
     remarks: it?.remarks == null ? null : String(it.remarks).slice(0, 500),
   }));
 
   const { totalAmountPaid } = totalsFor(chosen.costToCustomer, advanceAmount, installments);
+  // Measured on CONFIRMED amounts only — totalsFor already excludes planned
+  // rows, so scheduling more than the property costs is allowed (a schedule can
+  // legitimately be revised), while confirming more than it costs is not.
   if (totalAmountPaid > chosen.costToCustomer) {
     throw new HttpError(400, 'VALIDATION_ERROR',
       'Total paid amount cannot be greater than Total Customer Cost.');

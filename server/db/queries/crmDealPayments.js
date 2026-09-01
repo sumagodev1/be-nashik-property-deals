@@ -97,7 +97,7 @@ async function findDealForEnquiry(enquiryId) {
   const d = deals[0];
 
   const [installments] = await pool.query(
-    `SELECT id, seq, amount, payment_date, remarks
+    `SELECT id, seq, amount, is_calculated, payment_date, remarks
        FROM crm_deal_installments
       WHERE deal_id = ?
       ORDER BY seq`,
@@ -116,6 +116,9 @@ async function findDealForEnquiry(enquiryId) {
       id: i.id,
       seq: i.seq,
       amount: toAmount(i.amount) ?? 0,
+      // Whether the operator confirmed this one counts toward Total Paid. A
+      // planned installment carries an amount but is not money received.
+      isCalculated: Boolean(i.is_calculated),
       // DATE columns come back as plain 'YYYY-MM-DD' strings (db/pool.js
       // typeCast), so no timezone shifting happens on the way out.
       paymentDate: i.payment_date || null,
@@ -161,10 +164,11 @@ async function replaceInstallmentsForConn(conn, dealId, installments) {
   await conn.query('DELETE FROM crm_deal_installments WHERE deal_id = ?', [dealId]);
   if (!installments || !installments.length) return 0;
   const values = installments.map((it, i) => [
-    dealId, i + 1, it.amount, it.paymentDate || null, it.remarks || null,
+    dealId, i + 1, it.amount, it.isCalculated ? 1 : 0,
+    it.paymentDate || null, it.remarks || null,
   ]);
   await conn.query(
-    `INSERT INTO crm_deal_installments (deal_id, seq, amount, payment_date, remarks)
+    `INSERT INTO crm_deal_installments (deal_id, seq, amount, is_calculated, payment_date, remarks)
      VALUES ?`,
     [values],
   );

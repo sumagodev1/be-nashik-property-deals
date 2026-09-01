@@ -378,6 +378,9 @@ const installmentSchema = Joi.object({
   // A blank row the operator has not filled in yet is legal on the way in and
   // is stored as zero; the service is what rejects negatives and non-numbers.
   amount:      Joi.alternatives(Joi.number(), Joi.string().allow('')).optional(),
+  // true once the operator has confirmed the row with "Calculate Amount";
+  // only then does it count toward Total Amount Paid.
+  isCalculated: Joi.boolean().optional(),
   paymentDate: Joi.string().allow('', null).optional(),
   remarks:     Joi.string().allow('', null).max(500).optional(),
 });
