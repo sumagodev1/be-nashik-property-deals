@@ -59,6 +59,7 @@ const enquiries = require('../../services/crm/enquiries');
 const statusHistory = require('../../services/crm/statusHistory');
 const statuses = require('../../services/crm/statuses');
 const dealPayments = require('../../services/crm/dealPayments');
+const followUps = require('../../services/crm/followUps');
 const duplicateResolver = require('../../services/crm/duplicateResolver');
 const allocations = require('../../services/crm/allocations');
 const propertyCodes = require('../../db/queries/property_codes');
@@ -357,6 +358,35 @@ router.get('/lead-rating', async (req, res, next) => {
   try {
     const rows = await statuses.listActiveLeadRating(req.query.keep || '');
     res.json({ data: rows });
+  } catch (e) { next(e); }
+});
+
+// ------------------------------------------------------------------
+// CRM Follow-ups — read-only listing across every lead
+// ------------------------------------------------------------------
+// Backs the Reminders -> CRM Follow-ups Reminder page. It only SELECTs from
+// crm_calendar_activities: the follow-up, its Google Calendar event and its two
+// reminder emails are all created by the existing scheduling flow, and this
+// endpoint must never produce a second one.
+//
+// gateUnmask, exactly as the enquiries list uses it: real names and mobiles
+// require ?unmasked=true plus the Key PIN header, and the default response is
+// masked.
+router.get('/follow-ups', gateUnmask, async (req, res, next) => {
+  try {
+    const result = await followUps.list({
+      search:     req.query.search || '',
+      dateFrom:   req.query.dateFrom || '',
+      dateTo:     req.query.dateTo || '',
+      leadStage:  req.query.leadStage || '',
+      leadStatus: req.query.leadStatus || '',
+      leadRating: req.query.leadRating || '',
+      status:     req.query.status || '',
+      page:       req.query.page,
+      pageSize:   req.query.pageSize,
+      unmasked:   boolQ(req.query.unmasked),
+    });
+    res.json(result);
   } catch (e) { next(e); }
 });
 
