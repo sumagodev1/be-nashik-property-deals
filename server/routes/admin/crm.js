@@ -59,7 +59,7 @@ const enquiries = require('../../services/crm/enquiries');
 const statusHistory = require('../../services/crm/statusHistory');
 const statuses = require('../../services/crm/statuses');
 const dealPayments = require('../../services/crm/dealPayments');
-const followUps = require('../../services/crm/followUps');
+const followUpReminders = require('../../services/crm/followUpReminders');
 const duplicateResolver = require('../../services/crm/duplicateResolver');
 const allocations = require('../../services/crm/allocations');
 const propertyCodes = require('../../db/queries/property_codes');
@@ -362,31 +362,30 @@ router.get('/lead-rating', async (req, res, next) => {
 });
 
 // ------------------------------------------------------------------
-// CRM Follow-ups — read-only listing across every lead
+// CRM follow-up reminder counters (the two cards on the CRM page)
 // ------------------------------------------------------------------
-// Backs the Reminders -> CRM Follow-ups Reminder page. It only SELECTs from
-// crm_calendar_activities: the follow-up, its Google Calendar event and its two
-// reminder emails are all created by the existing scheduling flow, and this
-// endpoint must never produce a second one.
-//
-// gateUnmask, exactly as the enquiries list uses it: real names and mobiles
-// require ?unmasked=true plus the Key PIN header, and the default response is
-// masked.
-router.get('/follow-ups', gateUnmask, async (req, res, next) => {
+// Read-only. The follow-up, its Google Calendar event and its 1-day / 1-hour
+// reminder emails all come from the existing scheduling flow; these endpoints
+// only count and list them, so nothing here can produce a duplicate.
+router.get('/follow-up-reminders/counts', async (req, res, next) => {
   try {
-    const result = await followUps.list({
-      search:     req.query.search || '',
-      dateFrom:   req.query.dateFrom || '',
-      dateTo:     req.query.dateTo || '',
-      leadStage:  req.query.leadStage || '',
-      leadStatus: req.query.leadStatus || '',
-      leadRating: req.query.leadRating || '',
-      status:     req.query.status || '',
-      page:       req.query.page,
-      pageSize:   req.query.pageSize,
-      unmasked:   boolQ(req.query.unmasked),
+    res.json({ data: await followUpReminders.counts() });
+  } catch (e) { next(e); }
+});
+
+// Drill-down for one card. gateUnmask exactly as the enquiries list uses it:
+// real names, mobiles and emails need ?unmasked=true plus the Key PIN header,
+// and the default response is masked.
+router.get('/follow-up-reminders/:reminder', gateUnmask, async (req, res, next) => {
+  try {
+    const key = String(req.params.reminder || '');
+    if (key !== '1h' && key !== '1d') {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'reminder must be 1h or 1d');
+    }
+    const rows = await followUpReminders.listByReminder(key, {
+      unmasked: boolQ(req.query.unmasked),
     });
-    res.json(result);
+    res.json({ data: rows });
   } catch (e) { next(e); }
 });
 
