@@ -238,6 +238,12 @@ async function listByReminder(reminder, { unmasked = false } = {}) {
       email: unmasked ? (r.normalized_email || '') : maskEmail(r.normalized_email),
       enquiryType: r.source_type || null,
       propertyCodes: parsePropertyCodes(r.interested_property_ids),
+      // Codes AND labels: the client renders the CRM list's own LeadChip, which
+      // colours by code, while the label stays available for anything that
+      // needs the master's wording.
+      leadStageCode: r.lead_stage_code || null,
+      leadStatusCode: r.lead_status_code || null,
+      leadRatingCode: r.lead_rating_code || null,
       leadStageLabel: label('crm_lead_stage', r.lead_stage_code),
       leadStatusLabel: label('crm_lead_status', r.lead_status_code),
       leadRatingLabel: label('crm_lead_rating', r.lead_rating_code),
