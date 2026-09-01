@@ -73,9 +73,72 @@ function sqlDatetime(d) {
   return d.toISOString().slice(0, 19).replace('T', ' ');
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// In-process drainer
+// ─────────────────────────────────────────────────────────────────────
+//
+// WHY THIS EXISTS
+//   trySendMail() sends inline and falls back to enqueue() when SMTP fails, so
+//   the outbox is where every undelivered admin notification lands. Until now
+//   nothing drained it automatically — the only path was an operator calling
+//   POST /admin/email-outbox/process by hand. A deployment that never wired
+//   that up therefore queued mail forever: this database held 5 rows, the
+//   oldest from 31 Aug, every one `pending` with attempts = 0, including a CRM
+//   follow-up reminder the UI was already reporting as sent.
+//
+//   Same shape as the Google Calendar and appointment-reminder workers in
+//   app.js: an interval, gated by an env flag, safe to run alongside the manual
+//   route because processBatch claims rows before sending.
+//
+// Failures inside a tick are logged and swallowed — a broken SMTP config must
+// not take the API process down, and the rows stay queued for the next tick.
+
+const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
+let timer = null;
+
+function start() {
+  if (String(process.env.EMAIL_OUTBOX_WORKER_ENABLED || 'true').toLowerCase() === 'false') {
+    return { started: false, reason: 'EMAIL_OUTBOX_WORKER_ENABLED=false' };
+  }
+  if (timer) return { started: false, reason: 'ALREADY_RUNNING' };
+
+  const intervalMs = Math.max(
+    60 * 1000,
+    Number(process.env.EMAIL_OUTBOX_WORKER_INTERVAL_MS) || DEFAULT_INTERVAL_MS,
+  );
+
+  const tick = async () => {
+    try {
+      const summary = await processBatch({});
+      // Only speak up when something actually moved, so a healthy idle queue
+      // does not fill the log.
+      if (summary && (summary.sent || summary.failed || summary.retried)) {
+        // eslint-disable-next-line no-console
+        console.log('[emailOutbox] tick', summary);
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[emailOutbox] tick error', (e && e.message) || 'unknown');
+    }
+  };
+
+  timer = setInterval(tick, intervalMs);
+  if (timer.unref) timer.unref();
+  // Drain once at boot so a backlog left by a previous run goes out without
+  // waiting a full interval.
+  tick();
+  return { started: true, intervalMs };
+}
+
+function stop() {
+  if (timer) { clearInterval(timer); timer = null; }
+}
+
 module.exports = {
   enqueue,
   processBatch,
+  start,
+  stop,
   BACKOFF_MINUTES,
   MAX_ATTEMPTS,
   DEFAULT_BATCH_SIZE,

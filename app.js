@@ -112,6 +112,23 @@ if (require.main === module) {
         // eslint-disable-next-line no-console
         console.error('[appointmentReminders] boot error', (e && e.message) || 'unknown');
       }
+
+      // Drain email_outbox. trySendMail() enqueues whenever an inline SMTP
+      // send fails, and nothing was draining that queue -- so a transient (or
+      // in this deployment, a persistent) SMTP failure meant the mail was
+      // queued and never retried, while the reminder that produced it was
+      // already marked as sent. Gated by EMAIL_OUTBOX_WORKER_ENABLED (default
+      // true); POST /admin/email-outbox/process remains available and both
+      // paths are safe together because processBatch claims rows first.
+      try {
+        const outboxWorker = require('./server/services/email/outbox');
+        const outcome = outboxWorker.start();
+        // eslint-disable-next-line no-console
+        console.log('[emailOutbox] start', outcome);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('[emailOutbox] boot error', (e && e.message) || 'unknown');
+      }
     });
   });
 }

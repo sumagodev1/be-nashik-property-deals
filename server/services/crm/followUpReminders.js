@@ -279,6 +279,32 @@ async function listByReminder(reminder, { unmasked = false } = {}) {
  * actually recorded is reported — connected_by_admin_email is NULL in this
  * deployment, so the client shows "connected" without inventing an address.
  */
+/**
+ * How much admin mail is stuck in the outbox.
+ *
+ * trySendMail() enqueues whenever an inline SMTP send fails, so a non-zero
+ * pending count is the real answer to "the reminder says sent but no email
+ * arrived". Surfacing it beside the reminders turns a silent failure into a
+ * number with an error attached.
+ */
+async function emailQueueHealth() {
+  const [rows] = await pool.query(
+    `SELECT status, COUNT(*) AS n, MAX(last_error) AS last_error
+       FROM email_outbox
+      WHERE status IN ('pending', 'failed')
+      GROUP BY status`,
+  );
+  let pending = 0;
+  let failed = 0;
+  let lastError = null;
+  for (const r of rows) {
+    if (r.status === 'pending') pending = Number(r.n) || 0;
+    if (r.status === 'failed') failed = Number(r.n) || 0;
+    if (r.last_error && !lastError) lastError = String(r.last_error).slice(0, 120);
+  }
+  return { pending, failed, lastError };
+}
+
 async function calendarAccount() {
   const [rows] = await pool.query(
     `SELECT connected_by_admin_email, connected_at, scope_granted
@@ -294,4 +320,7 @@ async function calendarAccount() {
   };
 }
 
-module.exports = { counts, listByReminder, calendarAccount, ONE_DAY_MINUTES, ONE_HOUR_MINUTES };
+module.exports = {
+  counts, listByReminder, calendarAccount, emailQueueHealth,
+  ONE_DAY_MINUTES, ONE_HOUR_MINUTES,
+};
