@@ -109,6 +109,33 @@ const forgotSchema = Joi.object({
   email: Joi.string().email({ tlds: { allow: false } }).max(255).required(),
 });
 
+// SELF-SERVICE PASSWORD RESET IS DISABLED (client decision, 2026-09-01).
+//
+// An administrator password is not recoverable by the account holder; only the
+// system administrator resets it. The admin UI states this instead of offering
+// a form, and these two endpoints refuse so the rule holds for any caller —
+// a stale client, a bookmarked page, or a direct POST. Disabling only the UI
+// would have left a working reset path behind a hidden form.
+//
+// 403 with an explicit code, not 404: the routes exist and are deliberately
+// closed, and a client that still calls them deserves to be told which.
+//
+// To restore: delete this handler pair, uncomment the originals below, and
+// render <EmailStep> again in ForgotPasswordModal.jsx. passwordReset and its
+// OTP service are untouched and still work.
+function resetDisabled(req, res) {
+  res.status(403).json({
+    error: {
+      code: 'PASSWORD_RESET_DISABLED',
+      message: 'Self-service password reset is disabled. Contact your system administrator.',
+    },
+  });
+}
+
+router.post('/forgot-password', forgotLimiter, resetDisabled);
+router.post('/reset-password', resetLimiter, resetDisabled);
+
+/* Original self-service flow, retained for restoration:
 router.post('/forgot-password', forgotLimiter, validate(forgotSchema), async (req, res, next) => {
   try {
     res.json(await passwordReset.requestReset(req.body.email));
@@ -130,5 +157,6 @@ router.post('/reset-password', resetLimiter, validate(resetSchema), async (req, 
     next(err);
   }
 });
+*/
 
 module.exports = router;
