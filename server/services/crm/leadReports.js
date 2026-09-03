@@ -216,7 +216,7 @@ function groupBy(rows, key) {
  * quietly partial set to chart. The limit reaches the database - see
  * listLeadRows - rather than trimming a full read after the fact.
  */
-async function list({ maxRows = 5000 } = {}) {
+async function list({ maxRows = 5000, search = '' } = {}) {
   const now = nowIstSql();
 
   // Two round trips, not one: the page of leads has to be known before the
@@ -226,7 +226,7 @@ async function list({ maxRows = 5000 } = {}) {
   // One extra row is requested so "there are more" can be answered without a
   // second COUNT.
   const [pagePlusOne, maps] = await Promise.all([
-    query.listLeadRows(maxRows + 1),
+    query.listLeadRows(maxRows + 1, search),
     labelMaps(),
   ]);
   const truncated = pagePlusOne.length > maxRows;
@@ -308,6 +308,9 @@ async function list({ maxRows = 5000 } = {}) {
       sourceType: row.source_type,
       ...identityFor(row),
       createdAt: row.created_at,
+      // The CRM listing prints this beside the lead chips, so the report can
+      // show the same "last changed" moment without a second lookup.
+      updatedAt: row.updated_at,
       nextFollowUpAt: followUpByEnquiry.get(Number(row.id)) || null,
       leadStageCode: row.lead_stage_code || null,
       leadStageLabel: labelOr(maps.crm_lead_stage, row.lead_stage_code),

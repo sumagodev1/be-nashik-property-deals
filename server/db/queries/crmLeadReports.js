@@ -82,7 +82,37 @@ const ORPHAN_GUARD = `(
  * table), so a website-sourced lead reports a null variety rather than an
  * invented one.
  */
-async function listLeadRows(limit) {
+/**
+ * The search clause, copied from listEnquiries so the report's Global Search
+ * finds exactly what the CRM listing's search finds.
+ *
+ * It has to run in SQL: the report DTO masks name, mobile and email
+ * (parents.js), so "Vinayak" matches nothing once the rows reach the client -
+ * verified: 0 rows client-side, against the 1 the CRM search returns. Only the
+ * database holds the values a person actually types.
+ *
+ * interested_property_ids is matched as raw JSON text, which the CRM list does
+ * client-side over its current page instead. Doing it here means a Property ID
+ * search finds a lead on page 4 too.
+ */
+const SEARCH_SQL = `(
+      e.enquiry_code LIKE ?
+      OR l.buyer_name LIKE ? OR l.buyer_mobile LIKE ? OR l.buyer_email LIKE ?
+      OR ep.owner_name LIKE ? OR ep.owner_contact LIKE ?
+      OR JSON_UNQUOTE(JSON_EXTRACT(ep.details, '$.dynamicData.contacts[0].name')) LIKE ?
+      OR JSON_UNQUOTE(JSON_EXTRACT(ep.details, '$.dynamicData.contacts[0].mobiles[0]')) LIKE ?
+      OR JSON_UNQUOTE(JSON_EXTRACT(ep.details, '$.dynamicData.contacts[0].emails[0]')) LIKE ?
+      OR ep.property_code LIKE ?
+      OR wp.property_code LIKE ?
+      OR e.interested_property_ids LIKE ?
+    )`;
+/** How many placeholders SEARCH_SQL binds. */
+const SEARCH_PARAMS = 12;
+
+async function listLeadRows(limit, search = '') {
+  const term = String(search || '').trim();
+  const searchClause = term ? ` AND ${SEARCH_SQL}` : '';
+  const searchArgs = term ? Array(SEARCH_PARAMS).fill(`%${term}%`) : [];
   const [rows] = await pool.query(
     `SELECT
             e.id, e.parent_id, e.enquiry_code, e.source_type, e.source_id,
@@ -126,10 +156,10 @@ async function listLeadRows(limit) {
             ep.taluka                AS ep_taluka,
             ep.shivar                AS ep_shivar
        ${FROM_JOINS}
-      WHERE ${ORPHAN_GUARD}
+      WHERE ${ORPHAN_GUARD}${searchClause}
       ORDER BY e.created_at DESC, e.id DESC
       LIMIT ?`,
-    [limit],
+    [...searchArgs, limit],
   );
   return rows;
 }

@@ -51,9 +51,21 @@ router.use(requireAuth, requireModule(MODULES.REPORTS));
  */
 const MAX_ROWS = 5000;
 
+/**
+ * `search` is optional and, when present, is applied in SQL through the same
+ * clause the CRM listing uses. It cannot be done on the client: the response
+ * masks name, mobile and email, so the words an operator actually types are not
+ * in the payload at all.
+ *
+ * Trimmed and length-capped. The value is bound as a parameter, never
+ * interpolated - see SEARCH_SQL in db/queries/crmLeadReports.js.
+ */
+const MAX_SEARCH = 200;
+
 router.get('/crm-leads', async (req, res, next) => {
   try {
-    res.json(await leadReports.list({ maxRows: MAX_ROWS }));
+    const search = String(req.query.search || '').trim().slice(0, MAX_SEARCH);
+    res.json(await leadReports.list({ maxRows: MAX_ROWS, search }));
   } catch (e) { next(e); }
 });
 
