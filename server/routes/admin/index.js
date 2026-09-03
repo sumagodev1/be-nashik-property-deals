@@ -30,6 +30,9 @@ const agreementReminders = require('./agreement-reminders');
 // menu. Endpoints under /admin/crm/*. See routes/admin/crm.js for the
 // endpoint list.
 const crm = require('./crm');
+// Read-only aggregation for the CRM-backed report sections. Gated on
+// MODULES.REPORTS to match the FE /admin/reports guard -- see the file header.
+const reports = require('./reports');
 const { MODULE_KEYS } = require('../../constants/modules');
 const { requireAuth, requireRole } = require('../../middleware/auth');
 
@@ -57,6 +60,7 @@ router.use('/documents', documents);
 router.use('/owner-search', ownerSearch);
 router.use('/agreement-reminders', agreementReminders);
 router.use('/crm', crm);
+router.use('/reports', reports);
 
 router.get('/modules', requireAuth, requireRole('admin'), (req, res) => {
   res.json({ modules: MODULE_KEYS });

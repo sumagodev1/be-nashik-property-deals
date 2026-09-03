@@ -321,6 +321,10 @@ async function calendarAccount() {
 }
 
 module.exports = {
+  // Exported for services/crm/leadReports.js, which also has to compare
+  // against scheduled_at and must not grow a second opinion about what "now"
+  // means. See the comment on the function: scheduled_at is IST wall-clock.
+  nowIstSql,
   counts, listByReminder, calendarAccount, emailQueueHealth,
   ONE_DAY_MINUTES, ONE_HOUR_MINUTES,
 };

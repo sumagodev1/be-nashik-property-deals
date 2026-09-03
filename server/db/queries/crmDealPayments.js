@@ -176,6 +176,12 @@ async function replaceInstallmentsForConn(conn, dealId, installments) {
 }
 
 module.exports = {
+  // Exported so the reports aggregation reads Cost to Customer through the
+  // SAME json path and the SAME string->number coercion the CRM deal uses. A
+  // second copy in the report layer is exactly how a report starts quoting a
+  // different figure from the screen it reports on.
+  COST_JSON_PATH,
+  toAmount,
   listAllocatableProperties,
   costForProperty,
   findDealForEnquiry,

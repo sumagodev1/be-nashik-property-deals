@@ -70,9 +70,16 @@ const MODULES = Object.freeze({
   //   - AUDIT_LOG is read-only in practice (audit-log.js has no mutating
   //     verbs), so the write gate is a no-op but is applied for future-
   //     proofing.
-  //   - REPORTS and CONVERSION_TABLE have no dedicated BE routes -- they
-  //     are FE-only surfaces that compose other endpoints. The keys exist
-  //     purely for FE sidebar filter + route guard.
+  //   - CONVERSION_TABLE has no dedicated BE route -- it is an FE-only
+  //     surface that composes other endpoints, so its key exists purely for
+  //     the FE sidebar filter + route guard.
+  //   - REPORTS was the same until the CRM-backed report sections landed.
+  //     routes/admin/reports.js is now gated on this key: the General Report
+  //     still composes the property list endpoints client-side, but Sold
+  //     Property / Financial / Marketing read a server-side aggregation
+  //     (a lead joined to its property and its deal) that cannot be
+  //     assembled in the browser without N+1 round-trips. That route is
+  //     read-only; see its header.
   SUB_ADMIN_MANAGEMENT: 'sub_admin_management',
   AUDIT_LOG: 'audit_log',
   REPORTS: 'reports',

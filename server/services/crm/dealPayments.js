@@ -229,6 +229,11 @@ async function saveForLead(enquiryId, payload = {}) {
 
 module.exports = {
   DEAL_STAGE_CODE,
+  // Exported for services/crm/leadReports.js. The Financial Report must show
+  // the same Total Paid / Total Pending as the Deal section, so it calls THIS
+  // function rather than re-deriving the rule — including the part that makes
+  // it correct: only a confirmed (isCalculated) installment counts.
+  totalsFor,
   MAX_INSTALLMENTS,
   getForLead,
   saveForLead,

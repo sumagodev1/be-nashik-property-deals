@@ -1,0 +1,322 @@
+/**
+ * The dataset behind the three CRM-backed report sections under /admin/reports:
+ * Sold Property Reports, Financial Reports and Marketing Report.
+ *
+ * READ-ONLY. This module SELECTs, resolves labels and derives nothing that is
+ * not already derived somewhere else. It creates no data, stores no copy of the
+ * CRM taxonomy and owns no calculation of its own - every number and every
+ * label below comes from the module that already owns it:
+ *
+ *   Total Paid / Total Pending  -> dealPayments.totalsFor   (the ONE rule; a
+ *                                  planned installment does not count)
+ *   Cost to Customer            -> crmDealPayments.COST_JSON_PATH + toAmount
+ *   Name / Mobile / Email mask  -> parents.maskName/Mobile/Email
+ *   District / Taluka / Village -> locationLabels.attachLocationNames
+ *   Lead Stage/Status/Rating    -> masters.listAll on the live master keys
+ *   Which leads exist at all    -> the join topology + orphan guard copied
+ *                                  from listEnquiries
+ *
+ * If a figure here ever disagrees with the CRM screen, that is a bug in this
+ * file, not a difference of opinion - the report has no opinions.
+ *
+ * WHY THE WHOLE DATASET IN ONE RESPONSE
+ *   The reports filter, chart and tabulate the same rows, and the filter
+ *   dropdowns narrow themselves to the values actually present in the current
+ *   result. All of that needs the full set, not a page of it. This mirrors the
+ *   existing General Report, which likewise walks its sources to exhaustion
+ *   client-side before charting. The route caps the response (see MAX_ROWS)
+ *   so this cannot silently become an unbounded query as the CRM grows.
+ *
+ * THE THREE CRM MASTERS ARE STILL INDEPENDENT
+ *   Nothing here relates Lead Stage to Lead Status to Lead Rating. There is no
+ *   combination table and no parent_code between them - per the CRM 3-separate-
+ *   masters decision. The report UI narrows those three dropdowns by what the
+ *   currently filtered rows actually contain, which is a property of the DATA,
+ *   not a taxonomy, and needs no schema to express.
+ */
+
+const query = require('../../db/queries/crmLeadReports');
+const { toAmount } = require('../../db/queries/crmDealPayments');
+const { totalsFor, DEAL_STAGE_CODE } = require('./dealPayments');
+const { nowIstSql } = require('./followUpReminders');
+const { maskName, maskMobile, maskEmail } = require('./parents');
+const { attachLocationNames } = require('../locationLabels');
+const masters = require('../masters/management');
+
+/**
+ * Master keys whose labels this report resolves.
+ *
+ * Inventory and enquiry properties already carry denormalised *_name columns
+ * (property_type_name / transaction_type_name / property_variety_name), so
+ * they need no lookup - their labels come straight off the row. Only WEBSITE
+ * properties store a bare code, and only those two vocabularies are looked up
+ * here. There is deliberately no `property_type` master key in master_lookups
+ * (verified) - inventory/enquiry types come from the property form catalog,
+ * which is exactly why the denormalised name column exists.
+ */
+const WEBSITE_TYPE_KEYS = Object.freeze(['website_property_type', 'website_transaction_type']);
+const CRM_TAXONOMY_KEYS = Object.freeze(['crm_lead_stage', 'crm_lead_status', 'crm_lead_rating']);
+
+/** code -> label for one master key, from the LIVE master rows. */
+async function labelMapFor(key) {
+  try {
+    // Unfiltered by is_active on purpose: a lead sitting on a since-deactivated
+    // value must still report its label rather than a raw code. Deactivating a
+    // master removes it from "pick a new one" lists; it does not rewrite
+    // history.
+    const { data } = await masters.listAll(key, {});
+    return Object.fromEntries((data || []).map((m) => [m.code, m.label]));
+  } catch {
+    return {};
+  }
+}
+
+async function labelMaps() {
+  const keys = [...WEBSITE_TYPE_KEYS, ...CRM_TAXONOMY_KEYS];
+  const entries = await Promise.all(keys.map(async (k) => [k, await labelMapFor(k)]));
+  return Object.fromEntries(entries);
+}
+
+/** A label if one resolves, else the raw code, else null. Never an invention. */
+const labelOr = (map, code) => (code ? (map[code] || code) : null);
+
+/** The identity fields, masked exactly as the CRM list masks them. */
+function identityFor(row) {
+  let name = '';
+  let mobile = '';
+  let email = '';
+  if (row.source_type === 'website') {
+    name = row.live_website_name || '';
+    mobile = row.live_website_mobile || '';
+    email = row.live_website_email || '';
+  } else if (row.source_type === 'npd') {
+    name = row.live_npd_owner_name || '';
+    mobile = row.live_npd_owner_contact || '';
+    email = row.live_npd_owner_email || '';
+  }
+  // Same fallback as enquiryDto: an identity-less source row still gets the
+  // parent's placeholder label ("Enquiry #19") rather than reading as blank.
+  const displayName = name || (row.parent_full_name && !mobile && !email ? row.parent_full_name : '');
+  return {
+    customerName: maskName(displayName) || null,
+    mobile: maskMobile(mobile) || null,
+    email: maskEmail(email) || null,
+  };
+}
+
+/**
+ * The property context of a lead: ONE property, chosen by specificity.
+ *
+ *   deal       - the lead has a deal, so the priced property is the subject.
+ *   allocation - no deal, but inventory has been allocated to the lead.
+ *   enquiry    - neither, so the listing the enquiry originally came from.
+ *
+ * One property per lead is what makes a report row mean something: a lead
+ * counted once under "Flat" and again under "Plot" would inflate every chart
+ * and every total. The full allocation list stays available separately on
+ * `inventoryProperties`, which is what the Marketing report's Inventory
+ * Property filter matches against - so narrowing to one context here does not
+ * lose a lead that is interested in several properties.
+ *
+ * A lead with several allocations and no deal has no single subject, so the
+ * first by property code is used and `ambiguous` marks it. That is reported
+ * rather than hidden.
+ */
+function propertyContextFor(row, allocations, deal, maps) {
+  if (deal) {
+    return {
+      origin: 'deal',
+      ambiguous: false,
+      code: deal.property_code || null,
+      title: deal.property_title || null,
+      propertyType: deal.property_type || null,
+      propertyTypeLabel: deal.property_type_name || deal.property_type || null,
+      transactionType: deal.transaction_type || null,
+      transactionTypeLabel: deal.transaction_type_name || deal.transaction_type || null,
+      propertyVariety: deal.transaction_variant || null,
+      propertyVarietyLabel: deal.property_variety_name || deal.transaction_variant || null,
+      district: deal.district || null,
+      taluka: deal.taluka || null,
+      shivar: deal.shivar || null,
+    };
+  }
+  if (allocations.length) {
+    const a = allocations[0];
+    return {
+      origin: 'allocation',
+      ambiguous: allocations.length > 1,
+      code: a.property_code || null,
+      title: a.title || null,
+      propertyType: a.property_type || null,
+      propertyTypeLabel: a.property_type_name || a.property_type || null,
+      transactionType: a.transaction_type || null,
+      transactionTypeLabel: a.transaction_type_name || a.transaction_type || null,
+      propertyVariety: a.transaction_variant || null,
+      propertyVarietyLabel: a.property_variety_name || a.transaction_variant || null,
+      district: a.district || null,
+      taluka: a.taluka || null,
+      shivar: a.shivar || null,
+    };
+  }
+  if (row.source_type === 'website') {
+    return {
+      origin: 'enquiry',
+      ambiguous: false,
+      code: row.wp_property_code || null,
+      title: row.wp_title || null,
+      propertyType: row.wp_property_type || null,
+      propertyTypeLabel: labelOr(maps.website_property_type, row.wp_property_type),
+      transactionType: row.wp_transaction_type || null,
+      transactionTypeLabel: labelOr(maps.website_transaction_type, row.wp_transaction_type),
+      // website_properties has no variety column. Null, not a guess.
+      propertyVariety: null,
+      propertyVarietyLabel: null,
+      district: row.wp_district || null,
+      taluka: row.wp_taluka || null,
+      shivar: row.wp_shivar || null,
+    };
+  }
+  return {
+    origin: 'enquiry',
+    ambiguous: false,
+    code: row.ep_property_code || null,
+    title: row.ep_title || null,
+    propertyType: row.ep_property_type || null,
+    propertyTypeLabel: row.ep_property_type_name || row.ep_property_type || null,
+    transactionType: row.ep_transaction_type || null,
+    transactionTypeLabel: row.ep_transaction_type_name || row.ep_transaction_type || null,
+    propertyVariety: row.ep_transaction_variant || null,
+    propertyVarietyLabel: row.ep_property_variety || row.ep_transaction_variant || null,
+    district: row.ep_district || null,
+    taluka: row.ep_taluka || null,
+    shivar: row.ep_shivar || null,
+  };
+}
+
+/** Group rows by a numeric key into a Map of arrays, preserving order. */
+function groupBy(rows, key) {
+  const out = new Map();
+  for (const r of rows) {
+    const k = Number(r[key]);
+    if (!out.has(k)) out.set(k, []);
+    out.get(k).push(r);
+  }
+  return out;
+}
+
+/**
+ * The whole report dataset.
+ *
+ * `maxRows` truncates rather than paginating: a truncated report is a wrong
+ * report, so the caller is told (`truncated: true`) instead of being handed a
+ * quietly partial set to chart.
+ */
+async function list({ maxRows = 5000 } = {}) {
+  const now = nowIstSql();
+  const [leadRows, allocRows, dealData, followUps, maps] = await Promise.all([
+    query.listLeadRows(),
+    query.listAllocationRows(),
+    query.listDealRows(),
+    query.nextFollowUpRows(now),
+    labelMaps(),
+  ]);
+
+  const allocByEnquiry = groupBy(allocRows, 'enquiry_id');
+  const dealByEnquiry = new Map(dealData.deals.map((d) => [Number(d.enquiry_id), d]));
+  const instByDeal = groupBy(dealData.installments, 'deal_id');
+  const followUpByEnquiry = new Map(
+    followUps.map((f) => [Number(f.enquiry_id), f.next_scheduled_at]),
+  );
+
+  const truncated = leadRows.length > maxRows;
+  const source = truncated ? leadRows.slice(0, maxRows) : leadRows;
+
+  const assembled = source.map((row) => {
+    const allocations = allocByEnquiry.get(Number(row.id)) || [];
+    const dealRow = dealByEnquiry.get(Number(row.id)) || null;
+
+    let deal = null;
+    if (dealRow) {
+      const installments = (instByDeal.get(Number(dealRow.id)) || []).map((i) => ({
+        id: i.id,
+        seq: i.seq,
+        amount: toAmount(i.amount) ?? 0,
+        // Whether the operator confirmed this one through "Calculate Amount".
+        // A planned installment carries an amount and a date but no money has
+        // changed hands, and totalsFor below is what enforces that.
+        isCalculated: Boolean(i.is_calculated),
+        // DATE columns arrive as plain 'YYYY-MM-DD' (db/pool.js typeCast), so
+        // no timezone shifting happens on the way out.
+        paymentDate: i.payment_date || null,
+        remarks: i.remarks || '',
+      }));
+      // Live from the property, never a stored copy - the same rule as the
+      // Deal section, so re-pricing a property moves the report too.
+      const totalCustomerCost = toAmount(dealRow.cost_to_customer);
+      const advanceAmount = toAmount(dealRow.advance_amount) ?? 0;
+      deal = {
+        propertyCode: dealRow.property_code || null,
+        propertyTitle: dealRow.property_title || null,
+        propertyDeleted: Boolean(dealRow.property_deleted_at),
+        totalCustomerCost,
+        advanceAmount,
+        installments,
+        installmentCount: installments.length,
+        // The one rule, imported. Not re-implemented here.
+        ...totalsFor(totalCustomerCost, advanceAmount, installments),
+      };
+    }
+
+    return {
+      enquiryId: row.id,
+      enquiryCode: row.enquiry_code,
+      sourceType: row.source_type,
+      ...identityFor(row),
+      createdAt: row.created_at,
+      nextFollowUpAt: followUpByEnquiry.get(Number(row.id)) || null,
+      leadStageCode: row.lead_stage_code || null,
+      leadStageLabel: labelOr(maps.crm_lead_stage, row.lead_stage_code),
+      leadStatusCode: row.lead_status_code || null,
+      leadStatusLabel: labelOr(maps.crm_lead_status, row.lead_status_code),
+      leadRatingCode: row.lead_rating_code || null,
+      leadRatingLabel: labelOr(maps.crm_lead_rating, row.lead_rating_code),
+      property: propertyContextFor(row, allocations, dealRow, maps),
+      inventoryProperties: allocations.map((a) => ({
+        code: a.property_code,
+        title: a.title || null,
+        costToCustomer: toAmount(a.cost_to_customer),
+      })),
+      deal,
+    };
+  });
+
+  // Location labels resolved in ONE batched pass over every row's property
+  // context, through the same resolver the other report surfaces use.
+  // attachLocationNames reads district/taluka/shivar off the row it is given,
+  // so it is fed the property contexts and the names are folded back.
+  const withNames = await attachLocationNames(
+    assembled.map((r) => r.property),
+    (p) => p,
+  );
+  const rows = assembled.map((r, i) => ({
+    ...r,
+    property: {
+      ...r.property,
+      districtLabel: withNames[i].districtName,
+      talukaLabel: withNames[i].talukaName,
+      shivarLabel: withNames[i].shivarName,
+    },
+  }));
+
+  return {
+    rows,
+    total: rows.length,
+    truncated,
+    // Echoed so the Financial section filters on the same code the CRM writes,
+    // rather than hardcoding the string 'converted_to_deal' in the client.
+    dealStageCode: DEAL_STAGE_CODE,
+    generatedAt: now,
+  };
+}
+
+module.exports = { list };
