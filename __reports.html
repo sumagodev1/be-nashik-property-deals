@@ -1,0 +1,31 @@
+<div id="root"></div>
+<script type="module">
+  import React from 'react';
+  import { createRoot } from 'react-dom/client';
+  import { MemoryRouter } from 'react-router-dom';
+  import '/src/index.css';
+  import { ConfirmProvider } from '/src/shared/components/ConfirmContext.jsx';
+  import { api } from '/src/shared/api/client.js';
+  import fx from '/__fixtures.json';
+  const ok = (data, config) => ({ data, status: 200, statusText: 'OK', headers: {}, config });
+  api.defaults.adapter = async (config) => {
+    const url = String(config.url || '');
+    if (url.includes('/admin/reports/crm-leads')) {
+      const q = (config.params && config.params.search) || '';
+      return ok(fx.bySearch[q] || { ...fx.bySearch[''], rows: [], total: 0 }, config);
+    }
+    if (url.includes('/masters/property_type')) return ok({ data: fx.property_type }, config);
+    if (url.includes('/lead-status')) return ok({ data: fx.crm_lead_status }, config);
+    if (url.includes('/lead-rating')) return ok({ data: fx.crm_lead_rating }, config);
+    if (url.includes('/public/locations/')) {
+      const qs = new URLSearchParams(config.params || {}).toString();
+      return ok(await (await fetch('/api' + url + (qs ? '?' + qs : ''))).json(), config);
+    }
+    return ok({ data: [], rows: [], total: 0 }, config);
+  };
+  const { default: ReportsModule } = await import('/src/admin/pages/Reports/ReportsModule.jsx');
+  createRoot(document.getElementById('root')).render(
+    React.createElement(React.StrictMode, null,
+      React.createElement(MemoryRouter, null,
+        React.createElement(ConfirmProvider, null, React.createElement(ReportsModule)))));
+</script>

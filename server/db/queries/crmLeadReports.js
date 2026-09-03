@@ -109,10 +109,32 @@ const SEARCH_SQL = `(
 /** How many placeholders SEARCH_SQL binds. */
 const SEARCH_PARAMS = 12;
 
-async function listLeadRows(limit, search = '') {
+/**
+ * The three CRM taxonomy filters, applied on the SAME columns listEnquiries
+ * filters on (lead_stage_code / lead_status_code / lead_rating_code), so a
+ * report and the CRM listing mean the same thing by "Lead Stage = Deal".
+ *
+ * Combined as AND: every selected value must hold. A blank is not a filter.
+ */
+function taxonomyWhere({ leadStage, leadStatus, leadRating }) {
+  const clauses = [];
+  const args = [];
+  const add = (col, val) => {
+    const v = String(val || '').trim();
+    if (v) { clauses.push(` AND e.${col} = ?`); args.push(v); }
+  };
+  add('lead_stage_code', leadStage);
+  add('lead_status_code', leadStatus);
+  add('lead_rating_code', leadRating);
+  return { sql: clauses.join(''), args };
+}
+
+async function listLeadRows(limit, filters = {}) {
+  const { search = '' } = typeof filters === 'string' ? { search: filters } : filters;
   const term = String(search || '').trim();
   const searchClause = term ? ` AND ${SEARCH_SQL}` : '';
   const searchArgs = term ? Array(SEARCH_PARAMS).fill(`%${term}%`) : [];
+  const taxonomy = taxonomyWhere(typeof filters === 'string' ? {} : filters);
   const [rows] = await pool.query(
     `SELECT
             e.id, e.parent_id, e.enquiry_code, e.source_type, e.source_id,
@@ -156,10 +178,10 @@ async function listLeadRows(limit, search = '') {
             ep.taluka                AS ep_taluka,
             ep.shivar                AS ep_shivar
        ${FROM_JOINS}
-      WHERE ${ORPHAN_GUARD}${searchClause}
+      WHERE ${ORPHAN_GUARD}${searchClause}${taxonomy.sql}
       ORDER BY e.created_at DESC, e.id DESC
       LIMIT ?`,
-    [...searchArgs, limit],
+    [...searchArgs, ...taxonomy.args, limit],
   );
   return rows;
 }

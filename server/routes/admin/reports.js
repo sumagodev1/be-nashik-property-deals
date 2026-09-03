@@ -65,7 +65,17 @@ const MAX_SEARCH = 200;
 router.get('/crm-leads', async (req, res, next) => {
   try {
     const search = String(req.query.search || '').trim().slice(0, MAX_SEARCH);
-    res.json(await leadReports.list({ maxRows: MAX_ROWS, search }));
+    // Master CODES, bound as parameters and matched exactly against the same
+    // columns the CRM listing filters on. Length-capped because an arbitrarily
+    // long value is never a real code.
+    const code = (v) => String(v || '').trim().slice(0, 64);
+    res.json(await leadReports.list({
+      maxRows: MAX_ROWS,
+      search,
+      leadStage: code(req.query.leadStage),
+      leadStatus: code(req.query.leadStatus),
+      leadRating: code(req.query.leadRating),
+    }));
   } catch (e) { next(e); }
 });
 

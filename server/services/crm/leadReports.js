@@ -61,24 +61,47 @@ const masters = require('../masters/management');
 const WEBSITE_TYPE_KEYS = Object.freeze(['website_property_type', 'website_transaction_type']);
 const CRM_TAXONOMY_KEYS = Object.freeze(['crm_lead_stage', 'crm_lead_status', 'crm_lead_rating']);
 
-/** code -> label for one master key, from the LIVE master rows. */
-async function labelMapFor(key) {
+/** The live master rows for one key, or [] when the lookup fails. */
+async function masterRows(key) {
   try {
     // Unfiltered by is_active on purpose: a lead sitting on a since-deactivated
     // value must still report its label rather than a raw code. Deactivating a
     // master removes it from "pick a new one" lists; it does not rewrite
     // history.
     const { data } = await masters.listAll(key, {});
-    return Object.fromEntries((data || []).map((m) => [m.code, m.label]));
+    return data || [];
   } catch {
-    return {};
+    return [];
   }
 }
 
-async function labelMaps() {
+/** code -> label, for resolving what a lead holds. */
+const labelMapOf = (rows) => Object.fromEntries(rows.map((m) => [m.code, m.label]));
+
+/**
+ * Every master this report touches, loaded once.
+ *
+ * The CRM three are returned as OPTION LISTS as well as label maps. A report
+ * filter has to offer every configured value, not only the ones some lead
+ * happens to hold today: a freshly added stage has no leads by definition, so
+ * a list derived from the rows could never show it. Deriving the dropdowns
+ * from the rows is exactly why Lead Rating offered one value out of four.
+ *
+ * Inactive rows are excluded from the OPTIONS - "choose a new one" lists are
+ * what is_active governs - while the label maps keep them, so a lead sitting on
+ * a deactivated value still renders its label.
+ */
+async function loadMasters() {
   const keys = [...WEBSITE_TYPE_KEYS, ...CRM_TAXONOMY_KEYS];
-  const entries = await Promise.all(keys.map(async (k) => [k, await labelMapFor(k)]));
-  return Object.fromEntries(entries);
+  const entries = await Promise.all(keys.map(async (k) => [k, await masterRows(k)]));
+  const rowsByKey = Object.fromEntries(entries);
+  const maps = Object.fromEntries(
+    Object.entries(rowsByKey).map(([k, rows]) => [k, labelMapOf(rows)]),
+  );
+  const options = Object.fromEntries(CRM_TAXONOMY_KEYS.map((k) => [k, rowsByKey[k]
+    .filter((m) => m.is_active !== 0 && m.is_active !== false)
+    .map((m) => ({ code: m.code, label: m.label }))]));
+  return { maps, options };
 }
 
 /** A label if one resolves, else the raw code, else null. Never an invention. */
@@ -216,7 +239,9 @@ function groupBy(rows, key) {
  * quietly partial set to chart. The limit reaches the database - see
  * listLeadRows - rather than trimming a full read after the fact.
  */
-async function list({ maxRows = 5000, search = '' } = {}) {
+async function list({
+  maxRows = 5000, search = '', leadStage = '', leadStatus = '', leadRating = '',
+} = {}) {
   const now = nowIstSql();
 
   // Two round trips, not one: the page of leads has to be known before the
@@ -225,9 +250,9 @@ async function list({ maxRows = 5000, search = '' } = {}) {
   // of them, and it left the allocation join with nothing to anchor on.
   // One extra row is requested so "there are more" can be answered without a
   // second COUNT.
-  const [pagePlusOne, maps] = await Promise.all([
-    query.listLeadRows(maxRows + 1, search),
-    labelMaps(),
+  const [pagePlusOne, { maps, options }] = await Promise.all([
+    query.listLeadRows(maxRows + 1, { search, leadStage, leadStatus, leadRating }),
+    loadMasters(),
   ]);
   const truncated = pagePlusOne.length > maxRows;
   const leadRows = truncated ? pagePlusOne.slice(0, maxRows) : pagePlusOne;
@@ -355,6 +380,15 @@ async function list({ maxRows = 5000, search = '' } = {}) {
     // "N of 10".
     dealStageCode: DEAL_STAGE_CODE,
     maxInstallments: MAX_INSTALLMENTS,
+    // Every ACTIVE value each CRM master offers, so a report's filters can list
+    // what is configured rather than what happens to be in use. Shipped with
+    // the rows so the client needs no second request - and no CRM_MANAGEMENT
+    // grant, which /admin/crm/lead-stages would have required.
+    masters: {
+      leadStage: options.crm_lead_stage,
+      leadStatus: options.crm_lead_status,
+      leadRating: options.crm_lead_rating,
+    },
     generatedAt: now,
   };
 }
