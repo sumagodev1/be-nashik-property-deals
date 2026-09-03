@@ -65,7 +65,13 @@ const ORPHAN_GUARD = `(
   )`;
 
 /**
- * Every lead, with its identity columns and its SOURCE property's attributes.
+ * One page of leads, with their identity columns and their SOURCE property's
+ * attributes.
+ *
+ * LIMIT is applied HERE rather than by slicing the result in the service. The
+ * cap exists to stop this becoming an unbounded read as the CRM grows, and a
+ * cap enforced after MySQL has sorted and returned every row - and after Node
+ * has materialised them - does not do that.
  *
  * The identity projection (live_website_* / live_npd_*) is copied from
  * listEnquiries including the JSON-first COALESCE for NPD contacts, so a lead
@@ -76,7 +82,7 @@ const ORPHAN_GUARD = `(
  * table), so a website-sourced lead reports a null variety rather than an
  * invented one.
  */
-async function listLeadRows() {
+async function listLeadRows(limit) {
   const [rows] = await pool.query(
     `SELECT
             e.id, e.parent_id, e.enquiry_code, e.source_type, e.source_id,
@@ -121,19 +127,30 @@ async function listLeadRows() {
             ep.shivar                AS ep_shivar
        ${FROM_JOINS}
       WHERE ${ORPHAN_GUARD}
-      ORDER BY e.created_at DESC, e.id DESC`,
+      ORDER BY e.created_at DESC, e.id DESC
+      LIMIT ?`,
+    [limit],
   );
   return rows;
 }
 
 /**
- * Allocated inventory properties for every lead, one row per (lead, property).
+ * Allocated inventory properties for the given leads, one row per (lead,
+ * property).
  *
  * Only INVENTORY rows, matching listAllocatableProperties in
  * queries/crmDealPayments.js: Cost to Customer is an inventory field and the
  * other two surfaces must never be a source for it.
+ *
+ * ANCHORED ON enquiryIds, and that is not merely a filter. JSON_CONTAINS gives
+ * the optimiser no equality predicate to index, so without a bound on `e` this
+ * evaluates once per (enquiry x property) pair across both whole tables.
+ * listAllocatableProperties gets away with the same construct because it is
+ * anchored by `WHERE e.id = ?`; an earlier version of this function dropped
+ * that anchor and inherited the full cross product.
  */
-async function listAllocationRows() {
+async function listAllocationRows(enquiryIds) {
+  if (!enquiryIds.length) return [];
   const [rows] = await pool.query(
     `SELECT e.id AS enquiry_id,
             ip.property_code,
@@ -149,9 +166,10 @@ async function listAllocationRows() {
        FROM crm_enquiries e
        JOIN inventory_properties ip
          ON JSON_CONTAINS(e.interested_property_ids, JSON_QUOTE(ip.property_code))
-      WHERE ip.deleted_at IS NULL
+      WHERE e.id IN (${enquiryIds.map(() => '?').join(',')})
+        AND ip.deleted_at IS NULL
       ORDER BY e.id, ip.property_code`,
-    [COST_JSON_PATH],
+    [COST_JSON_PATH, ...enquiryIds],
   );
   return rows;
 }
@@ -163,7 +181,8 @@ async function listAllocationRows() {
  * filter, because a deal recorded against a since-deleted property must still
  * report its numbers rather than drop out of the financial totals.
  */
-async function listDealRows() {
+async function listDealRows(enquiryIds) {
+  if (!enquiryIds.length) return { deals: [], installments: [] };
   const [deals] = await pool.query(
     `SELECT d.id, d.enquiry_id, d.property_code, d.advance_amount,
             ip.title                 AS property_title,
@@ -178,8 +197,9 @@ async function listDealRows() {
             JSON_UNQUOTE(JSON_EXTRACT(ip.details, ?)) AS cost_to_customer
        FROM crm_deal_payments d
        LEFT JOIN inventory_properties ip ON ip.property_code = d.property_code
-      WHERE d.deleted_at IS NULL`,
-    [COST_JSON_PATH],
+      WHERE d.enquiry_id IN (${enquiryIds.map(() => '?').join(',')})
+        AND d.deleted_at IS NULL`,
+    [COST_JSON_PATH, ...enquiryIds],
   );
   if (!deals.length) return { deals, installments: [] };
 
@@ -202,15 +222,17 @@ async function listDealRows() {
  * see the comment on nowIstSql, which this caller reuses rather than forming a
  * second opinion about what "now" means.
  */
-async function nextFollowUpRows(nowIst) {
+async function nextFollowUpRows(nowIst, enquiryIds) {
+  if (!enquiryIds.length) return [];
   const [rows] = await pool.query(
     `SELECT a.enquiry_id, MIN(a.scheduled_at) AS next_scheduled_at
        FROM crm_calendar_activities a
-      WHERE a.google_event_id IS NOT NULL
+      WHERE a.enquiry_id IN (${enquiryIds.map(() => '?').join(',')})
+        AND a.google_event_id IS NOT NULL
         AND a.booking_status = 'active'
         AND a.scheduled_at >= ?
       GROUP BY a.enquiry_id`,
-    [nowIst],
+    [...enquiryIds, nowIst],
   );
   return rows;
 }

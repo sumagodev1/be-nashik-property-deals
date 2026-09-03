@@ -97,12 +97,20 @@ function totalsFor(cost, advance, installments) {
  * client can render its own empty/blocked states from one response rather than
  * inferring them from a 404.
  */
-async function getForLead(enquiryId) {
-  const [deal, allocatable] = await Promise.all([
-    deals.findDealForEnquiry(enquiryId),
-    deals.listAllocatableProperties(enquiryId),
-  ]);
-
+/**
+ * Which property a lead's deal is about, and what it costs, when there may not
+ * be a saved deal yet.
+ *
+ * Extracted from getForLead unchanged so the Financial Report can answer the
+ * question the same way the Deal section does. A lead sitting at the Deal stage
+ * before anyone opened its payment details still HAS a subject and a price -
+ * CRM shows them - and a report that showed nothing for such a lead would
+ * disagree with the screen it reports on.
+ *
+ * `allocatable` is listAllocatableProperties()'s shape; `deal` is
+ * findDealForEnquiry()'s, or null.
+ */
+function dealSubjectFor(allocatable, deal) {
   const propertyCode = deal?.propertyCode
     // Exactly one allocation is not a choice — preselect it so the operator
     // never picks from a list of one.
@@ -111,6 +119,17 @@ async function getForLead(enquiryId) {
   const totalCustomerCost = deal
     ? deal.totalCustomerCost
     : (allocatable.find((p) => p.propertyCode === propertyCode)?.costToCustomer ?? null);
+
+  return { propertyCode, totalCustomerCost };
+}
+
+async function getForLead(enquiryId) {
+  const [deal, allocatable] = await Promise.all([
+    deals.findDealForEnquiry(enquiryId),
+    deals.listAllocatableProperties(enquiryId),
+  ]);
+
+  const { propertyCode, totalCustomerCost } = dealSubjectFor(allocatable, deal);
 
   const advanceAmount = deal?.advanceAmount ?? 0;
   const installments = deal?.installments ?? [];
@@ -234,6 +253,10 @@ module.exports = {
   // function rather than re-deriving the rule — including the part that makes
   // it correct: only a confirmed (isCalculated) installment counts.
   totalsFor,
+  // Exported for services/crm/leadReports.js, so the Financial Report resolves
+  // a deal's property and cost through the same rule the Deal section uses -
+  // including for a Deal-stage lead whose payment details were never saved.
+  dealSubjectFor,
   MAX_INSTALLMENTS,
   getForLead,
   saveForLead,

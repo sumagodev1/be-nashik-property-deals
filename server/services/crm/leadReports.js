@@ -24,8 +24,10 @@
  *   dropdowns narrow themselves to the values actually present in the current
  *   result. All of that needs the full set, not a page of it. This mirrors the
  *   existing General Report, which likewise walks its sources to exhaustion
- *   client-side before charting. The route caps the response (see MAX_ROWS)
- *   so this cannot silently become an unbounded query as the CRM grows.
+ *   client-side before charting. The route's MAX_ROWS becomes a SQL LIMIT on
+ *   the lead query, and every other query here is anchored to the ids that
+ *   returned - so the cap bounds what the DATABASE reads, not just what is
+ *   serialised back.
  *
  * THE THREE CRM MASTERS ARE STILL INDEPENDENT
  *   Nothing here relates Lead Stage to Lead Status to Lead Rating. There is no
@@ -37,7 +39,9 @@
 
 const query = require('../../db/queries/crmLeadReports');
 const { toAmount } = require('../../db/queries/crmDealPayments');
-const { totalsFor, DEAL_STAGE_CODE } = require('./dealPayments');
+const {
+  totalsFor, dealSubjectFor, DEAL_STAGE_CODE, MAX_INSTALLMENTS,
+} = require('./dealPayments');
 const { nowIstSql } = require('./followUpReminders');
 const { maskName, maskMobile, maskEmail } = require('./parents');
 const { attachLocationNames } = require('../locationLabels');
@@ -209,16 +213,30 @@ function groupBy(rows, key) {
  *
  * `maxRows` truncates rather than paginating: a truncated report is a wrong
  * report, so the caller is told (`truncated: true`) instead of being handed a
- * quietly partial set to chart.
+ * quietly partial set to chart. The limit reaches the database - see
+ * listLeadRows - rather than trimming a full read after the fact.
  */
 async function list({ maxRows = 5000 } = {}) {
   const now = nowIstSql();
-  const [leadRows, allocRows, dealData, followUps, maps] = await Promise.all([
-    query.listLeadRows(),
-    query.listAllocationRows(),
-    query.listDealRows(),
-    query.nextFollowUpRows(now),
+
+  // Two round trips, not one: the page of leads has to be known before the
+  // allocations, deals and follow-ups can be fetched FOR that page. Fetching
+  // all four in parallel meant reading three whole tables and discarding most
+  // of them, and it left the allocation join with nothing to anchor on.
+  // One extra row is requested so "there are more" can be answered without a
+  // second COUNT.
+  const [pagePlusOne, maps] = await Promise.all([
+    query.listLeadRows(maxRows + 1),
     labelMaps(),
+  ]);
+  const truncated = pagePlusOne.length > maxRows;
+  const leadRows = truncated ? pagePlusOne.slice(0, maxRows) : pagePlusOne;
+  const enquiryIds = leadRows.map((r) => r.id);
+
+  const [allocRows, dealData, followUps] = await Promise.all([
+    query.listAllocationRows(enquiryIds),
+    query.listDealRows(enquiryIds),
+    query.nextFollowUpRows(now, enquiryIds),
   ]);
 
   const allocByEnquiry = groupBy(allocRows, 'enquiry_id');
@@ -228,16 +246,17 @@ async function list({ maxRows = 5000 } = {}) {
     followUps.map((f) => [Number(f.enquiry_id), f.next_scheduled_at]),
   );
 
-  const truncated = leadRows.length > maxRows;
-  const source = truncated ? leadRows.slice(0, maxRows) : leadRows;
-
-  const assembled = source.map((row) => {
+  const assembled = leadRows.map((row) => {
     const allocations = allocByEnquiry.get(Number(row.id)) || [];
     const dealRow = dealByEnquiry.get(Number(row.id)) || null;
 
-    let deal = null;
-    if (dealRow) {
-      const installments = (instByDeal.get(Number(dealRow.id)) || []).map((i) => ({
+    // `deal` is ALWAYS an object, never null; `hasDeal` says whether a payment
+    // record has been saved. A lead sitting at the Deal stage before anyone
+    // opened its payment details still has a subject and a price - CRM's own
+    // getForLead resolves them from the single allocation - so reporting
+    // nothing for such a lead would disagree with the screen it reports on.
+    const deal = (() => {
+      const installments = (instByDeal.get(Number(dealRow?.id)) || []).map((i) => ({
         id: i.id,
         seq: i.seq,
         amount: toAmount(i.amount) ?? 0,
@@ -250,22 +269,38 @@ async function list({ maxRows = 5000 } = {}) {
         paymentDate: i.payment_date || null,
         remarks: i.remarks || '',
       }));
-      // Live from the property, never a stored copy - the same rule as the
-      // Deal section, so re-pricing a property moves the report too.
-      const totalCustomerCost = toAmount(dealRow.cost_to_customer);
-      const advanceAmount = toAmount(dealRow.advance_amount) ?? 0;
-      deal = {
-        propertyCode: dealRow.property_code || null,
-        propertyTitle: dealRow.property_title || null,
-        propertyDeleted: Boolean(dealRow.property_deleted_at),
-        totalCustomerCost,
+      // Which property, and what it costs - resolved through the Deal
+      // section's own rule so a lead with no saved deal reports the same
+      // subject and price CRM would show for it.
+      const subject = dealSubjectFor(
+        allocations.map((a) => ({
+          propertyCode: a.property_code,
+          costToCustomer: toAmount(a.cost_to_customer),
+        })),
+        dealRow && {
+          propertyCode: dealRow.property_code,
+          // Live from the property, never a stored copy - the same rule as the
+          // Deal section, so re-pricing a property moves the report too.
+          totalCustomerCost: toAmount(dealRow.cost_to_customer),
+        },
+      );
+      const advanceAmount = toAmount(dealRow?.advance_amount) ?? 0;
+      const fromAllocation = allocations.find((a) => a.property_code === subject.propertyCode);
+      return {
+        hasDeal: Boolean(dealRow),
+        propertyCode: subject.propertyCode || null,
+        propertyTitle: dealRow
+          ? (dealRow.property_title || null)
+          : (fromAllocation?.title || null),
+        propertyDeleted: Boolean(dealRow?.property_deleted_at),
+        totalCustomerCost: subject.totalCustomerCost,
         advanceAmount,
         installments,
         installmentCount: installments.length,
         // The one rule, imported. Not re-implemented here.
-        ...totalsFor(totalCustomerCost, advanceAmount, installments),
+        ...totalsFor(subject.totalCustomerCost, advanceAmount, installments),
       };
-    }
+    })();
 
     return {
       enquiryId: row.id,
@@ -312,9 +347,11 @@ async function list({ maxRows = 5000 } = {}) {
     rows,
     total: rows.length,
     truncated,
-    // Echoed so the Financial section filters on the same code the CRM writes,
-    // rather than hardcoding the string 'converted_to_deal' in the client.
+    // Echoed so the client never hardcodes a value the server owns: the stage
+    // code it filters on, and the installment cap the detail view prints as
+    // "N of 10".
     dealStageCode: DEAL_STAGE_CODE,
+    maxInstallments: MAX_INSTALLMENTS,
     generatedAt: now,
   };
 }
